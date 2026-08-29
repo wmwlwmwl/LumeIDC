@@ -1,0 +1,15 @@
+{{define "page"}}
+<div style="display:flex;align-items:center;justify-content:space-between">
+<h1>产品管理</h1>
+<a class="btn" href="/admin/products/new" style="background:#4f46e5;color:#fff;padding:8px 16px;border-radius:6px;text-decoration:none">新增产品</a>
+</div>
+{{if .Error}}<p style="color:#b91c1c">{{.Error}}</p>{{end}}
+<table><tr><th>ID</th><th>名称</th><th>分类</th><th>月付价</th><th>显示</th><th>操作</th></tr>
+{{range .Rows}}
+<tr><td>{{.ID}}</td><td>{{.A}}</td><td>{{.B}}</td><td>￥{{.C}}</td><td>{{.D}}</td>
+<td><a href="/admin/products/{{.ID}}/edit">编辑</a> ·
+<form method="post" action="/admin/products/{{.ID}}/delete" style="display:inline"><input type="hidden" name="_csrf" value="{{$.CSRF}}"><button style="background:none;border:0;color:#b91c1c;cursor:pointer;padding:0;font-size:.88rem">删除</button></form></td></tr>
+{{end}}
+{{if not .Rows}}<tr><td colspan="6" style="color:#888">暂无产品，点击右上角新增。</td></tr>{{end}}
+</table>
+{{end}}

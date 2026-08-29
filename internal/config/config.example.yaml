@@ -1,0 +1,7 @@
+listen: ":8080"
+db_dsn: "postgres://lumeidc:password@localhost:5432/lumeidc?sslmode=disable"
+# 32 random bytes, base64 encoded; generate: openssl rand -base64 32
+secret_key: ""
+base_url: "http://localhost:8080"
+# 显式放行 sslmode=disable 的远程数据库（默认拒绝；仅本地/127.0.0.1 例外）
+allow_insecure_db: false

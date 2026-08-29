@@ -1,0 +1,205 @@
+{{define "page"}}
+<h1>{{.Product.Name}}</h1>
+<p class="muted">{{.Product.Description}}</p>
+<div style="display:flex;gap:18px;align-items:flex-start;flex-wrap:wrap">
+<form method="post" action="/order" id="buyForm" class="card" style="flex:2;min-width:300px;padding:20px">
+<input type="hidden" name="_csrf" value="{{.CSRF}}">
+<input type="hidden" name="product_id" value="{{.Product.ID}}">
+
+<label style="display:block;margin:10px 0 4px;font-weight:600;font-size:.9rem">计费周期</label>
+<select name="cycle" id="cycleSel" style="width:100%;padding:9px;border:1px solid #ccc;border-radius:6px" onchange="recalc()">
+<option value="monthly">月付 ￥{{.Monthly}}</option>
+{{if .ShowQuarterly}}<option value="quarterly">季付 ￥{{.Quarterly}}</option>{{end}}
+{{if .ShowYearly}}<option value="yearly">年付 ￥{{.Yearly}}</option>{{end}}
+</select>
+
+{{range .Options}}
+<label style="display:block;margin:14px 0 4px;font-weight:600;font-size:.9rem">{{.Name}}{{if .Unit}}（{{.Unit}}）{{end}}</label>
+{{if eq .Mode "range"}}
+<div style="display:flex;align-items:center;gap:8px">
+<button type="button" onclick="stepVal('cfg_{{.Field}}', -1)" style="width:38px;height:38px;display:flex;align-items:center;justify-content:center;font-size:1.3rem;font-weight:700;background:#eef2ff;color:#4f46e5;border:1px solid #c7d2fe;border-radius:8px;cursor:pointer">−</button>
+<input name="cfg_{{.Field}}" id="cfg_{{.Field}}" type="number" value="{{.Min}}" min="{{.Min}}" max="{{.Max}}" step="{{.Step}}"
+ style="width:92px;padding:8px;border:1px solid #ccc;border-radius:6px;text-align:center;font-size:.95rem" oninput="syncNum(this.id)" onchange="clampVal(this.id)">
+<button type="button" onclick="stepVal('cfg_{{.Field}}', 1)" style="width:38px;height:38px;display:flex;align-items:center;justify-content:center;font-size:1.3rem;font-weight:700;background:#eef2ff;color:#4f46e5;border:1px solid #c7d2fe;border-radius:8px;cursor:pointer">+</button>
+<input id="rng_{{.Field}}" type="range" min="{{.Min}}" max="{{.Max}}" step="{{.Step}}" value="{{.Min}}" style="flex:1" oninput="onRange(this)">
+</div>
+<p class="muted" style="margin:4px 0 0;font-size:.75rem">范围 {{.Min}}~{{.Max}}{{if .Unit}} {{.Unit}}{{end}}</p>
+{{else}}
+<select name="cfg_{{.Field}}" id="cfg_{{.Field}}" style="width:100%;padding:9px;border:1px solid #ccc;border-radius:6px" onchange="recalc()">
+{{$f := .Field}}
+{{range .Subs}}
+<option value="{{if .Value}}{{.Value}}{{else}}{{.Name}}{{end}}" {{if and $.Options (index .Pricing "monthly")}}data-m="{{$f}}|{{.Name}}|{{index .Pricing "monthly"}}"{{end}}>{{.Name}}</option>
+{{end}}
+</select>
+{{end}}
+{{end}}
+
+<label style="display:block;margin:14px 0 4px;font-weight:600;font-size:.9rem">优惠码（可选）</label>
+<input name="coupon" placeholder="如有优惠码请填写" style="width:100%;padding:9px;border:1px solid #ccc;border-radius:6px">
+</form>
+
+<div class="card" style="flex:1;min-width:260px;padding:20px;background:#fff">
+<h3 style="margin-top:0;font-size:1rem">配置费用</h3>
+<p class="muted" id="stockMsg">当前库存充足，可直接提交账单。</p>
+<table style="font-size:.85rem"><tbody id="cfgLines"></tbody></table>
+<hr style="border:0;border-top:1px solid #eef0f4;margin:10px 0">
+<div style="display:flex;justify-content:space-between;font-size:.88rem;color:#666"><span>基础价格</span><span id="basePrice"></span></div>
+<div style="margin-top:12px">
+<div style="color:#888;font-size:.82rem">合计费用</div>
+<div><span style="font-size:1.5rem;font-weight:700;color:#4f46e5" id="totalPrice">0</span>
+<span class="muted" id="cycleLabel">/月付</span></div>
+</div>
+{{if .LoggedIn}}
+<button type="submit" form="buyForm" style="margin-top:16px;width:100%;padding:11px;background:#4f46e5;color:#fff;border:0;border-radius:6px;font-size:.95rem;cursor:pointer">立即购买</button>
+{{else}}
+<a href="/login?next=/buy/{{.Product.ID}}" class="btn" style="display:block;text-align:center;margin-top:16px;width:100%;padding:11px;box-sizing:border-box">登录后购买</a>
+<p class="muted" style="margin-top:8px;font-size:.8rem">选择配置无需登录，购买时需要账号。</p>
+{{end}}
+</div>
+</div>
+
+<script>
+const CFG = {{.ConfigData}};
+const cycleNames = {monthly:"月付", quarterly:"季付", yearly:"年付"};
+
+function esc(s){const d=document.createElement("div");d.textContent=s;return d.innerHTML;}
+
+// 数量型配置项：滑块与「− 数字框 +」共存，均限定在 min~max 并按 step 对齐。
+function rngOf(id){ return document.getElementById("rng_" + id.slice(4)); }
+function stepVal(id, dir){
+  const el = document.getElementById(id), rng = rngOf(id);
+  const step = parseFloat(el.step) || 1;
+  let v = parseFloat(el.value) || 0;
+  v += dir * step;
+  const min = parseFloat(el.min), max = parseFloat(el.max);
+  if(v < min) v = min;
+  if(v > max) v = max;
+  el.value = v;
+  if(rng) rng.value = v;
+  recalc();
+}
+function clampVal(id){
+  const el = document.getElementById(id), rng = rngOf(id);
+  let v = parseFloat(el.value);
+  const step = parseFloat(el.step) || 1, min = parseFloat(el.min), max = parseFloat(el.max);
+  if(isNaN(v)) v = min;
+  v = Math.round(v / step) * step;
+  if(v < min) v = min;
+  if(v > max) v = max;
+  el.value = v;
+  if(rng) rng.value = v;
+  recalc();
+}
+function syncNum(id){
+  const el = document.getElementById(id), rng = rngOf(id);
+  let v = parseFloat(el.value);
+  const min = parseFloat(el.min), max = parseFloat(el.max);
+  if(!isNaN(v)){
+    if(v < min) v = min;
+    if(v > max) v = max;
+    if(rng) rng.value = v;
+  }
+  recalc();
+}
+function onRange(rng){
+  const id = "cfg_" + rng.id.slice(4);
+  const el = document.getElementById(id);
+  el.value = rng.value;
+  recalc();
+}
+
+function subFor(opt, val){
+  for(const s of (opt.sub||[])){
+    const v = s.value || s.option_name;
+    if(v === val || s.option_name === val) return s;
+  }
+  return null;
+}
+
+function priceOf(s, cycle){
+  if(!s.pricing) return 0;
+  if(s.pricing[cycle] !== undefined) return s.pricing[cycle];
+  return s.pricing.monthly || 0;
+}
+
+// minPrice1 读取子项月价（缺省视为 0 = 免费档）。
+function minPrice1(s){ return (s.pricing && s.pricing.monthly !== undefined) ? s.pricing.monthly : 0; }
+
+// setSelectDefaults 对齐上游默认：select 档选中“单价最低”的子项（免费/基础档）。
+function setSelectDefaults(){
+  for(const opt of (CFG.options||[])){
+    if(opt.option_mode === "select" && opt.field !== "os" && (opt.sub||[]).length){
+      const el = document.getElementById("cfg_" + opt.field);
+      if(!el) continue;
+      let best = opt.sub[0], bp = minPrice1(opt.sub[0]);
+      for(const s of opt.sub){ const p = minPrice1(s); if(p < bp){ bp = p; best = s; } }
+      el.value = best.value || best.option_name;
+    }
+  }
+}
+
+function recalc(){
+  const cycle = document.getElementById("cycleSel").value;
+  let total = CFG.base[cycle] || 0;
+  document.getElementById("basePrice").textContent = "￥" + (CFG.base[cycle] || 0).toFixed(2);
+  document.getElementById("cycleLabel").textContent = "/" + cycleNames[cycle];
+
+  const lines = [];
+  for(const opt of (CFG.options||[])){
+    if(opt.hidden || opt.field === "os") continue;
+    const el = document.getElementById("cfg_" + opt.field);
+    if(!el) continue;
+    const val = el.value;
+    if(opt.option_mode === "range"){
+      const v = parseFloat(val);
+      if(isNaN(v)) continue;
+      if(v <= 0){ lines.push([opt.name, "0" + (opt.unit||""), 0]); continue; }
+      const subs = (opt.sub||[]).slice().sort((a,b)=>(a.min||0)-(b.min||0));
+      function subSize(s){
+        for(const str of [s.value, s.name]){
+          if(str == null) continue;
+          const m = String(str).match(/^[\d.]+/);
+          if(m) return parseFloat(m[0]);
+        }
+        return s.min || 0;
+      }
+      // 跨度区间子项（s.max>s.min，如数据盘 "0|0G" 0~120GB）：单价×数量；
+      // 离散规格包（s.max===s.min，如 "20|20G"）：按名称解析规格，仅当 v==规格时命中（单价即总价）。
+      let exact = null, rangeSub = null;
+      for(const s of subs){
+        const maxB = s.max || opt.max;
+        if(v >= (s.min||0) && v <= maxB){
+          if(s.max > s.min){ if(!rangeSub) rangeSub = s; }
+          else if(subSize(s) === v){ exact = s; break; }
+        }
+      }
+      const picked = exact || rangeSub;
+      if(picked){
+        const step = opt.step > 0 ? opt.step : 1;
+        let p;
+        if(picked.max > picked.min){ p = priceOf(picked, cycle) * Math.floor(v/step); }
+        else { p = priceOf(picked, cycle); }
+        lines.push([opt.name, v + (opt.unit||""), p]);
+        total += p;
+      }
+    } else {
+      const s = subFor(opt, val);
+      if(s){
+        const p = priceOf(s, cycle);
+        lines.push([opt.name, s.option_name, p]);
+        total += p;
+      }
+    }
+  }
+  const tb = document.getElementById("cfgLines");
+  tb.innerHTML = lines.map(l =>
+    `<tr><td style="padding:3px 0;color:#666">${esc(l[0])}</td>` +
+    `<td style="padding:3px 0">${esc(l[1])}</td>` +
+    `<td style="padding:3px 0;text-align:right">${l[2]>0?"+"+l[2].toFixed(2):"0.00"}</td></tr>`
+  ).join("");
+  document.getElementById("totalPrice").textContent = total.toFixed(2);
+}
+setSelectDefaults();
+recalc();
+</script>
+{{end}}

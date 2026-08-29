@@ -1,0 +1,13 @@
+-- 上游供应商对接：servers 扩展、产品绑定、服务开通数据
+ALTER TABLE servers ADD COLUMN IF NOT EXISTS provider TEXT NOT NULL DEFAULT 'zjmf';
+ALTER TABLE servers ADD COLUMN IF NOT EXISTS api_username TEXT NOT NULL DEFAULT '';
+ALTER TABLE servers ADD COLUMN IF NOT EXISTS meta JSONB NOT NULL DEFAULT '{}';
+
+-- 本地产品 ↔ 上游产品绑定
+ALTER TABLE products ADD COLUMN IF NOT EXISTS server_id BIGINT REFERENCES servers(id);
+ALTER TABLE products ADD COLUMN IF NOT EXISTS upstream_pid INT NOT NULL DEFAULT 0;
+ALTER TABLE products ADD COLUMN IF NOT EXISTS upstream_cycle TEXT NOT NULL DEFAULT '';
+
+-- 服务实例的上游凭据与开通检查点（幂等续跑）
+ALTER TABLE services ADD COLUMN IF NOT EXISTS upstream_host_id BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE services ADD COLUMN IF NOT EXISTS provision_data JSONB NOT NULL DEFAULT '{}';

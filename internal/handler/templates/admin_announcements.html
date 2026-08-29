@@ -1,0 +1,25 @@
+{{define "page"}}
+<h1>公告管理</h1>
+{{if .Error}}<p style="color:#b91c1c">{{.Error}}</p>{{end}}
+{{if .Msg}}<p style="color:#15803d">{{.Msg}}</p>{{end}}
+<p><a class="btn" href="/admin/announcements/edit">+ 新建公告</a></p>
+<table id="annTbody">
+<tr><th>ID</th><th>标题</th><th>置顶</th><th>显示</th><th>创建时间</th><th>操作</th></tr>
+{{range .Rows}}
+<tr data-id="{{.ID}}">
+<td>{{.ID}}</td>
+<td>{{if .Pinned}}📌 {{end}}{{.Title}}</td>
+<td>{{if .Pinned}}是{{else}}否{{end}}</td>
+<td>{{if .Hidden}}<span style="color:#b91c1c">隐藏</span>{{else}}显示{{end}}</td>
+<td>{{.CreatedAt.Format "2006-01-02 15:04"}}</td>
+<td style="white-space:nowrap">
+<a class="btn" href="/admin/announcements/edit?id={{.ID}}">编辑</a>
+<form method="post" action="/admin/announcements/{{.ID}}/delete" style="display:inline" onsubmit="return confirm('确认删除该公告？')">
+<input type="hidden" name="_csrf" value="{{$.CSRF}}"><button style="background:none;border:0;color:#b91c1c;cursor:pointer;padding:0;font-size:.85rem">删除</button>
+</form>
+</td>
+</tr>
+{{end}}
+{{if not .Rows}}<tr><td colspan="6" style="color:#888">暂无公告。</td></tr>{{end}}
+</table>
+{{end}}

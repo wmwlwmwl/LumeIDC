@@ -1,0 +1,25 @@
+{{define "page"}}
+<h1>优惠码</h1>
+{{if .Error}}<p style="color:#b91c1c">{{.Error}}</p>{{end}}
+{{if .Msg}}<p style="color:#047857">创建成功</p>{{end}}
+<table>
+<tr><th>ID</th><th>码</th><th>类型</th><th>值</th><th>最低消费</th><th>次数</th><th>已用</th><th>过期</th><th>启用</th></tr>
+{{range .Rows}}<tr>
+<td>{{.ID}}</td><td>{{.Code}}</td><td>{{.Type}}</td><td>{{.Value}}</td><td>{{.MinAmount}}</td>
+<td>{{if eq .UsageLimit 0}}不限{{else}}{{.UsageLimit}}{{end}}</td><td>{{.UsedCount}}</td>
+<td>{{if .ExpiresAt}}{{.ExpiresAt.Format "2006-01-02"}}{{else}}永久{{end}}</td><td>{{if .Active}}是{{else}}否{{end}}</td>
+</tr>{{end}}
+</table>
+
+<h2 style="margin-top:24px;font-size:1rem">新建优惠码</h2>
+<form method="post" action="/admin/coupons/save" style="display:flex;gap:8px;flex-wrap:wrap;align-items:end">
+<input type="hidden" name="_csrf" value="{{.CSRF}}">
+<input name="code" placeholder="优惠码（唯一）" required>
+<select name="type"><option value="percent">百分比%</option><option value="fixed">固定金额</option></select>
+<input name="value" placeholder="值" size="6">
+<input name="min_amount" placeholder="最低消费" size="8">
+<input name="usage_limit" placeholder="次数(0不限)" size="8">
+<input name="expires_at" placeholder="过期日 2026-12-31" size="14">
+<button type="submit">创建</button>
+</form>
+{{end}}

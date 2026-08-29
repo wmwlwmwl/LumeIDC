@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>LumeIDC 安装</title>
+<style>
+body{font-family:system-ui,sans-serif;max-width:480px;margin:48px auto;padding:0 16px;color:#1a1a2e}
+h1{font-size:1.4rem}label{display:block;margin:14px 0 4px;font-weight:600;font-size:.9rem}
+input{width:100%;padding:9px;border:1px solid #ccc;border-radius:6px;box-sizing:border-box;font-size:1rem}
+button{margin-top:20px;width:100%;padding:11px;background:#4f46e5;color:#fff;border:0;border-radius:6px;font-size:1rem;cursor:pointer}
+.hint{color:#666;font-size:.82rem;margin-top:2px}
+</style>
+</head>
+<body>
+<h1>LumeIDC 安装向导</h1>
+<form method="post" action="/install">
+<label>数据库地址</label>
+<input name="db_host" value="localhost" required>
+<label>端口</label>
+<input name="db_port" value="5432" required>
+<label>数据库名</label>
+<input name="db_name" placeholder="lumeidc" required>
+<label>数据库用户</label>
+<input name="db_user" required>
+<label>数据库密码</label>
+<input name="db_pass" type="password">
+<label>管理员用户名</label>
+<input name="admin_user" required>
+<label>管理员密码</label>
+<input name="admin_pass" type="password" minlength="8" required>
+<p class="hint">至少 8 位，将使用 bcrypt 哈希存储。</p>
+<label>站点地址</label>
+<input name="base_url" value="http://localhost:8080" required>
+<button type="submit">开始安装</button>
+</form>
+</body>
+</html>

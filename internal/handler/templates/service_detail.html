@@ -1,0 +1,695 @@
+{{define "page"}}
+<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+<h1 style="margin:0">{{.Svc.Name}}</h1>
+<span id="powerDot" class="badge badge-idle" title="电源状态">…</span>
+<span class="badge {{if eq .Svc.StatusText "激活"}}badge-ok{{else if eq .Svc.StatusText "已停机"}}badge-warn{{else}}badge-idle{{end}}">{{.Svc.StatusText}}</span>
+<a href="/services" style="margin-left:auto;font-size:.85rem;color:#4f46e5">← 返回列表</a>
+</div>
+
+{{if .Flash}}
+<div class="card" style="margin-top:16px;background:#f0fdf4;border:1px solid #bbf7d0">
+<p style="margin:0;color:#15803d;font-size:.9rem;font-weight:600">操作成功</p>
+<p style="margin:6px 0 0;font-size:.88rem;word-break:break-all">{{.Flash}}</p>
+<p class="muted" style="margin:6px 0 0;font-size:.72rem">提示：此消息仅显示一次，请妥善保存。</p>
+</div>
+{{end}}
+
+{{if .Svc.UpstreamHost}}
+<div class="card" style="margin-top:16px">
+<h3 style="margin-top:0;font-size:1rem">实例控制台</h3>
+<p id="consMsg" class="muted" style="font-size:.8rem;min-height:1em"></p>
+<div style="display:flex;gap:10px;flex-wrap:wrap">
+<form method="post" action="/services/{{.Svc.ID}}/console"><input type="hidden" name="_csrf" value="{{.CSRF}}"><input type="hidden" name="do" value="on"><button class="cbtn" style="background:#15803d">开机</button></form>
+<form method="post" action="/services/{{.Svc.ID}}/console"><input type="hidden" name="_csrf" value="{{.CSRF}}"><input type="hidden" name="do" value="off"><button class="cbtn" style="background:#b45309">关机</button></form>
+<form method="post" action="/services/{{.Svc.ID}}/console"><input type="hidden" name="_csrf" value="{{.CSRF}}"><input type="hidden" name="do" value="reboot"><button class="cbtn" style="background:#4f46e5">重启</button></form>
+<form method="post" action="/services/{{.Svc.ID}}/console" onsubmit="return confirm('强制重启可能丢失数据，确认？')"><input type="hidden" name="_csrf" value="{{.CSRF}}"><input type="hidden" name="do" value="hard_reboot"><button class="cbtn" style="background:#64748b">硬重启</button></form>
+<form method="post" action="/services/{{.Svc.ID}}/console" onsubmit="return confirm('强制关机可能丢失数据，确认？')"><input type="hidden" name="_csrf" value="{{.CSRF}}"><input type="hidden" name="do" value="hard_off"><button class="cbtn" style="background:#64748b">硬关机</button></form>
+<form method="post" action="/services/{{.Svc.ID}}/console" onsubmit="return rescueSubmit(this)"><input type="hidden" name="_csrf" value="{{.CSRF}}"><input type="hidden" name="do" value="rescue"><input type="hidden" name="system" value="2">
+<button class="cbtn" style="background:#b45309">救援系统</button></form>
+<form method="post" action="/services/{{.Svc.ID}}/console" id="exitRescueForm" style="display:none" onsubmit="return confirm('确认退出救援模式？实例将重启回正常系统。')"><input type="hidden" name="_csrf" value="{{.CSRF}}"><input type="hidden" name="do" value="exit_rescue">
+<button class="cbtn" style="background:#64748b">退出救援</button></form>
+<a href="/services/{{.Svc.ID}}/console?do=vnc" target="_blank" class="cbtn" style="background:#0e7490;text-decoration:none;display:inline-block;text-align:center">VNC 控制台</a>
+</div>
+</div>
+{{end}}
+
+<div class="grid" style="grid-template-columns:1fr 1fr;margin-top:16px">
+<div class="card">
+<h3 style="margin-top:0;font-size:1rem">实例信息</h3>
+<table style="font-size:.88rem">
+{{if .Overview.Detail.Status}}<tr><td class="muted" width="90">实例状态</td><td>{{.Overview.Detail.Status}}</td></tr>
+{{else}}<tr><td class="muted" width="90">实例状态</td><td>{{.Svc.StatusText}}</td></tr>{{end}}
+{{if .Overview.Detail.IP}}<tr><td class="muted">实例 IP</td><td>{{.Overview.Detail.IP}}</td></tr>{{end}}
+{{range .Overview.Detail.AdditionalIPs}}<tr><td class="muted">附加 IP</td><td>{{.}}</td></tr>{{end}}
+{{if .Overview.Detail.BWLimit}}<tr><td class="muted">带宽</td><td>{{.Overview.Detail.BWLimit}}{{if .Overview.Detail.BWUsage}}（已用 {{.Overview.Detail.BWUsage}}）{{end}}</td></tr>{{end}}
+{{if .Overview.Detail.Datacenter}}<tr><td class="muted">数据中心</td><td>{{.Overview.Detail.Datacenter}}</td></tr>{{end}}
+</table>
+</div>
+
+<div class="card">
+<h3 style="margin-top:0;font-size:1rem">付费信息</h3>
+<table style="font-size:.88rem">
+<tr><td class="muted" width="90">计费方式</td><td>{{if .Svc.Cycle}}{{.Svc.Cycle}}{{else}} - {{end}}</td></tr>
+<tr><td class="muted">续费价格</td><td>￥{{if .Svc.Amount}}{{.Svc.Amount}}{{else}} - {{end}}</td></tr>
+<tr><td class="muted">到期时间</td><td style="color:#4f46e5;font-weight:600">{{.Svc.ExpiresAt.Format "2006-01-02 15:04"}}</td></tr>
+<tr><td class="muted">本单毛利</td><td>￥{{.Profit}}</td></tr>
+</table>
+<form method="post" action="/services/{{.Svc.ID}}/renew" style="margin-top:10px;display:flex;gap:8px;align-items:center">
+<input type="hidden" name="_csrf" value="{{.CSRF}}">
+<select name="cycle" style="padding:6px;border:1px solid #ccc;border-radius:6px">
+<option value="monthly">月付</option>{{if .ShowQ}}<option value="quarterly">季付</option>{{end}}{{if .ShowY}}<option value="yearly">年付</option>{{end}}
+</select>
+<button style="padding:6px 14px;background:#4f46e5;color:#fff;border:0;border-radius:6px;cursor:pointer">续费</button>
+</form>
+</div>
+</div>
+
+{{if .Overview.Detail.IP}}
+<div class="card" style="margin-top:16px">
+<h3 style="margin-top:0;font-size:1rem">登录信息</h3>
+<table style="font-size:.88rem">
+<tr><td class="muted" width="90">用户名</td><td>{{.Overview.Detail.Username}}</td></tr>
+<tr><td class="muted">密码</td><td>{{.Overview.Detail.Password}} <button class="cbtn" style="background:#4f46e5;font-size:.75rem;padding:2px 8px" onclick="copyText(this,'{{.Overview.Detail.Password}}')">复制</button></td></tr>
+{{if .Overview.Detail.Port}}<tr><td class="muted">端口</td><td>{{.Overview.Detail.Port}}</td></tr>{{end}}
+</table>
+<details style="margin-top:10px">
+<summary style="cursor:pointer;color:#4f46e5;font-size:.88rem">重置密码</summary>
+<form method="post" action="/services/{{.Svc.ID}}/console" style="margin-top:8px;display:flex;gap:8px" onsubmit="return confirm('确认重置实例密码？')">
+<input type="hidden" name="_csrf" value="{{.CSRF}}"><input type="hidden" name="do" value="crack_pass">
+<input id="pwInput" name="password" type="text" placeholder="留空自动生成合规密码" style="flex:1;padding:7px;border:1px solid #ccc;border-radius:6px">
+<button type="button" class="cbtn" style="background:#64748b" onclick="fillPw()">随机生成</button>
+<button class="cbtn" style="background:#4f46e5">重置</button>
+</form>
+</details>
+</div>
+{{end}}
+
+{{if .Overview.Detail.OSVersion}}
+<div class="card" style="margin-top:16px">
+<h3 style="margin-top:0;font-size:1rem">系统信息</h3>
+<table style="font-size:.88rem">
+{{if .Overview.Detail.OSName}}<tr><td class="muted" width="90">系统名称</td><td>{{.Overview.Detail.OSName}}</td></tr>{{end}}
+<tr><td class="muted">系统版本</td><td>{{.Overview.Detail.OSVersion}}</td></tr>
+</table>
+<details style="margin-top:10px">
+<summary style="cursor:pointer;color:#4f46e5;font-size:.88rem">重装系统</summary>
+<div style="margin-top:8px;display:flex;gap:8px;align-items:center">
+<select id="osSel" style="flex:1;padding:7px;border:1px solid #ccc;border-radius:6px"></select>
+<button class="cbtn" style="background:#b91c1c" onclick="doReinstall();return false" formaction="">执行重装</button>
+</div>
+<p class="muted" style="font-size:.75rem;margin-top:4px">重装将清空实例内全部数据。</p>
+</details>
+</div>
+{{end}}
+
+{{if .Svc.Configs}}
+<div class="card" style="margin-top:16px">
+<h3 style="margin-top:0;font-size:1rem">配置信息</h3>
+<table style="font-size:.88rem"><tbody>
+{{range .Svc.Configs}}
+<tr><td class="muted" width="120">{{.Name}}</td><td>{{.Value}}</td>
+<td style="text-align:right;color:#888">{{if gt .Price 0.0}}+￥{{.Price}}/月{{end}}</td></tr>
+{{end}}
+</tbody></table>
+</div>
+{{end}}
+
+{{if .Svc.UpstreamHost}}
+<div class="card" style="margin-top:16px">
+<div style="display:flex;gap:8px;border-bottom:1px solid #e2e8f0;margin-bottom:12px;flex-wrap:wrap">
+<button class="tabbtn" data-tab="monitor" style="background:#4f46e5;color:#fff">监控图表</button>
+<button class="tabbtn" data-tab="traffic" style="background:#f1f5f9;color:#333">网络流量</button>
+{{range .Overview.Summary.Areas}}
+{{if eq .Key "snapshot"}}<button class="tabbtn" data-tab="snapshot" style="background:#f1f5f9;color:#333">快照/备份</button>
+{{else if eq .Key "nat_acl"}}<button class="tabbtn" data-tab="nat" style="background:#f1f5f9;color:#333">NAT转发</button>
+{{else if eq .Key "nat_web"}}<button class="tabbtn" data-tab="natweb" style="background:#f1f5f9;color:#333">共享建站</button>
+{{else if eq .Key "security_groups"}}<button class="tabbtn" data-tab="secgroup" style="background:#f1f5f9;color:#333">安全组</button>
+{{else if eq .Key "setting"}}<button class="tabbtn" data-tab="setting" style="background:#f1f5f9;color:#333">设置</button>{{end}}
+{{end}}
+</div>
+
+<div class="tabpane" id="tab-monitor">
+<div style="display:flex;gap:8px;margin-bottom:10px">
+<span class="muted" style="font-size:.8rem;align-self:center">时间范围：</span>
+<button class="rbtn" data-range="1h" style="background:#f1f5f9">近1小时</button>
+<button class="rbtn" data-range="24h" style="background:#4f46e5;color:#fff">近24小时</button>
+<button class="rbtn" data-range="7d" style="background:#f1f5f9">近7天</button>
+</div>
+<div id="cpu-chart" style="height:220px"></div>
+<div id="mem-chart" style="height:220px"></div>
+<div id="bw-chart" style="height:220px"></div>
+<div id="disk-chart" style="height:220px"></div>
+</div>
+
+<div class="tabpane" id="tab-traffic" style="display:none">
+<p class="muted" style="font-size:.85rem">流量用量（来自上游）：</p>
+<table style="font-size:.88rem"><tbody id="trafficBody">
+<tr><td class="muted" width="120">已用 / 总量</td><td>加载中…</td></tr>
+</tbody></table>
+<div id="traffic-chart" style="height:260px;margin-top:8px"></div>
+</div>
+
+<div class="tabpane" id="tab-snapshot" style="display:none">
+<p id="snapQuota" class="muted" style="font-size:.85rem">加载中…</p>
+<div style="display:flex;gap:10px;margin:10px 0;flex-wrap:wrap">
+<select id="snapDisk" style="padding:6px;border:1px solid #ccc;border-radius:6px"></select>
+<input id="snapRemark" placeholder="备注（可选）" style="padding:6px;border:1px solid #ccc;border-radius:6px;width:180px">
+<button class="cbtn" style="background:#4f46e5" onclick="snapCreate('snap')">创建快照</button>
+<button class="cbtn" style="background:#0e7490" onclick="snapCreate('backup')">创建备份</button>
+</div>
+<table style="font-size:.88rem"><thead><tr><th>名称</th><th>类型</th><th>创建时间</th><th>备注</th><th>操作</th></tr></thead>
+<tbody id="snapBody"><tr><td colspan="5" class="muted">加载中…</td></tr></tbody></table>
+</div>
+
+<div class="tabpane" id="tab-nat" style="display:none">
+<div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;align-items:center">
+<input id="natName" placeholder="名称" style="padding:6px;border:1px solid #ccc;border-radius:6px;width:110px">
+<input id="natIntPort" type="number" min="1" max="65535" placeholder="内部端口" style="padding:6px;border:1px solid #ccc;border-radius:6px;width:110px">
+<input id="natExtPort" type="number" min="1" max="65535" placeholder="外部端口(留空自动)" style="padding:6px;border:1px solid #ccc;border-radius:6px;width:150px">
+<select id="natProto" style="padding:6px;border:1px solid #ccc;border-radius:6px"><option value="1">tcp</option><option value="2">udp</option></select>
+<button class="cbtn" style="background:#4f46e5" onclick="natAdd()">创建转发</button>
+</div>
+<table style="font-size:.88rem"><thead><tr><th>名称</th><th>外部地址</th><th>内部端口</th><th>协议</th><th>操作</th></tr></thead>
+<tbody id="natBody"><tr><td colspan="5" class="muted">加载中…</td></tr></tbody></table>
+</div>
+
+<div class="tabpane" id="tab-natweb" style="display:none">
+<div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;align-items:center">
+<input id="webDomain" placeholder="域名" style="padding:6px;border:1px solid #ccc;border-radius:6px;width:160px">
+<input id="webIntPort" type="number" min="1" max="65535" placeholder="内部端口" style="padding:6px;border:1px solid #ccc;border-radius:6px;width:110px">
+<select id="webExtPort" style="padding:6px;border:1px solid #ccc;border-radius:6px"><option value="80">80</option><option value="443">443</option></select>
+<button class="cbtn" style="background:#4f46e5" onclick="webAdd()">创建站点</button>
+</div>
+<table style="font-size:.88rem"><thead><tr><th>域名</th><th>外部端口</th><th>内部端口</th><th>操作</th></tr></thead>
+<tbody id="webBody"><tr><td colspan="4" class="muted">加载中…</td></tr></tbody></table>
+</div>
+
+<div class="tabpane" id="tab-secgroup" style="display:none">
+<div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;align-items:center">
+<input id="sgName" placeholder="安全组名称" style="padding:6px;border:1px solid #ccc;border-radius:6px;width:130px">
+<input id="sgDesc" placeholder="备注" style="padding:6px;border:1px solid #ccc;border-radius:6px;width:150px">
+<button class="cbtn" style="background:#4f46e5" onclick="sgAdd()">新建安全组</button>
+</div>
+<table style="font-size:.88rem"><thead><tr><th>名称</th><th>描述</th><th>操作</th></tr></thead>
+<tbody id="sgBody"><tr><td colspan="3" class="muted">加载中…</td></tr></tbody></table>
+
+<div id="sgRuleArea" style="display:none;margin-top:14px;border-top:1px dashed #e2e8f0;padding-top:12px">
+<p id="sgRuleTitle" style="margin:0 0 8px;font-weight:600;font-size:.9rem"></p>
+<div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;align-items:center">
+<select id="ruleDir" style="padding:6px;border:1px solid #ccc;border-radius:6px"><option value="in">入方向</option><option value="out">出方向</option></select>
+<select id="ruleProto" style="padding:6px;border:1px solid #ccc;border-radius:6px">
+<option value="all">全部</option><option value="all_tcp">全部TCP</option><option value="all_udp">全部UDP</option>
+<option value="tcp">自定义TCP</option><option value="udp">自定义UDP</option><option value="icmp">ICMP</option><option value="gre">GRE</option>
+</select>
+<input id="rulePort" placeholder="端口: 22 或 22-12345" style="padding:6px;border:1px solid #ccc;border-radius:6px;width:150px">
+<input id="ruleIP" placeholder="IP: 10.0.0.1/32" style="padding:6px;border:1px solid #ccc;border-radius:6px;width:140px">
+<input id="ruleDesc" placeholder="规则描述" style="padding:6px;border:1px solid #ccc;border-radius:6px;width:120px">
+<button class="cbtn" style="background:#4f46e5" onclick="ruleAdd()">新增策略</button>
+</div>
+<table style="font-size:.85rem"><thead><tr><th>描述</th><th>策略</th><th>方向</th><th>协议</th><th>端口</th><th>IP</th><th>操作</th></tr></thead>
+<tbody id="ruleBody"></tbody></table>
+</div>
+</div>
+
+<div class="tabpane" id="tab-setting" style="display:none">
+<p class="muted" style="font-size:.85rem;margin-top:0">挂载 ISO：</p>
+<div style="display:flex;gap:8px;align-items:center;margin-bottom:18px">
+<select id="isoSel" style="padding:6px;border:1px solid #ccc;border-radius:6px;min-width:200px"></select>
+<button class="cbtn" style="background:#4f46e5" onclick="isoMount()">挂载</button>
+</div>
+<p class="muted" style="font-size:.85rem">启动顺序：</p>
+<div style="display:flex;gap:8px;align-items:center">
+<select id="bootSel" style="padding:6px;border:1px solid #ccc;border-radius:6px;min-width:200px"></select>
+<button class="cbtn" style="background:#4f46e5" onclick="bootSet()">更改</button>
+</div>
+</div>
+</div>
+{{end}}
+
+{{if .Svc.UpstreamHost}}
+<div id="rescueModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:100">
+<div style="background:#fff;border-radius:10px;max-width:420px;margin:100px auto;padding:20px;max-height:80vh;overflow:auto">
+<h3 style="margin:0 0 12px;font-size:1rem">进入救援模式</h3>
+<p class="muted" style="font-size:.82rem;margin:0 0 10px">实例将重启并挂载救援系统，原系统数据不受影响。请设置救援系统临时密码：</p>
+<div style="display:flex;gap:8px;margin-bottom:10px;align-items:center">
+<span class="muted" style="font-size:.85rem;width:70px">救援系统</span>
+<select id="rescueSystem" style="flex:1;padding:7px;border:1px solid #ccc;border-radius:6px">
+<option value="2">Linux</option><option value="1">Windows</option>
+</select>
+</div>
+<div style="display:flex;gap:8px;margin-bottom:8px;align-items:center">
+<span class="muted" style="font-size:.85rem;width:70px">临时密码</span>
+<input id="rescuePass" type="text" placeholder="留空自动生成" style="flex:1;padding:7px;border:1px solid #ccc;border-radius:6px">
+<button type="button" class="cbtn" style="background:#64748b" onclick="genRescuePass()">随机</button>
+</div>
+<p class="muted" style="font-size:.75rem;margin:0 0 12px;color:#b45309">温馨提示：请妥善保存当前密码，该密码不会二次使用。</p>
+<div id="rescuePowerBox" style="display:none;border:1px solid #fde68a;background:#fffbeb;border-radius:8px;padding:12px;margin-bottom:12px">
+<p style="margin:0 0 6px;font-size:.85rem;font-weight:600;color:#b45309">温馨提示：当前操作需要实例在关机状态下进行</p>
+<p class="muted" style="margin:0 0 10px;font-size:.78rem">为了避免数据丢失，实例将关机中断您的业务，请仔细确认。强制关机可能会导致数据丢失或文件系统损坏，您也可以主动关机后再进行操作。</p>
+<label style="display:flex;gap:6px;align-items:center;font-size:.85rem;cursor:pointer">
+<input type="checkbox" id="rescueForceOff"> 同意强制关机
+</label>
+</div>
+<div style="display:flex;gap:8px;justify-content:flex-end">
+<button class="cbtn" style="background:#e5e7eb;color:#333" onclick="rescueClose()">取消</button>
+<button class="cbtn" id="rescueGoBtn" style="background:#b45309" onclick="rescueGo()">确认进入</button>
+</div>
+</div>
+</div>
+<script>
+const sid = "{{.Svc.ID}}";
+const CSRF = "{{.CSRF}}";
+document.querySelectorAll(".cbtn").forEach(b => b.style.cssText += ";color:#fff;border:0;border-radius:6px;padding:7px 14px;cursor:pointer;font-size:.85rem");
+// 随机生成合规密码
+function fillPw(){
+  const chars="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789~!@#$&*()_-+=";
+  let pw;
+  do {
+    pw="";
+    for(let i=0;i<12;i++){ pw+=chars[Math.floor(Math.random()*chars.length)]; }
+  } while(!/[A-Z]/.test(pw)||!/[a-z]/.test(pw)||!/[0-9]/.test(pw)||pw[0]==="/");
+  const el=document.getElementById("pwInput");
+  el.value=pw; el.focus();
+}
+async function loadOS(){
+  try {
+    const r = await fetch(`/services/${sid}/reinstall-options`);
+    const j = await r.json();
+    const sel = document.getElementById("osSel");
+    if(j.ok === 1 && (j.os||[]).length){
+      sel.innerHTML = j.os.map(o => `<option value="${o.id}">${o.group ? o.group+" / " : ""}${o.name}</option>`).join("");
+    } else {
+      sel.innerHTML = '<option>上游未提供系统列表</option>'; sel.disabled = true;
+    }
+  } catch(e){ }
+}
+if(document.getElementById("osSel")) loadOS();
+function doReinstall(){
+  const sel = document.getElementById("osSel");
+  if(sel.disabled || !sel.value) return;
+  if(!confirm("确认重装系统？实例内全部数据将被清空！")) return;
+  const f = document.createElement("form");
+  f.method = "post"; f.action = `/services/${sid}/console`;
+  f.innerHTML = `<input name="_csrf" value="{{.CSRF}}"><input name="do" value="reinstall"><input name="os" value="${sel.value}">`;
+  document.body.appendChild(f); f.submit();
+}
+// Tab 切换（面板统一 .tabpane）
+document.querySelectorAll(".tabbtn").forEach(btn=>{
+  btn.onclick=()=>{
+    document.querySelectorAll(".tabbtn").forEach(b=>{b.style.background="#f1f5f9";b.style.color="#333";});
+    btn.style.background="#4f46e5";btn.style.color="#fff";
+    const t=btn.dataset.tab;
+    document.querySelectorAll(".tabpane").forEach(p=>p.style.display=p.id==="tab-"+t?"block":"none");
+    if(t==="traffic") loadTraffic();
+    if(t==="snapshot") loadSnap();
+    if(["nat","natweb","secgroup","setting"].includes(t)) loadBlocks();
+  };
+});
+// 监控图表
+let curRange="24h";
+function renderChart(domId, type, color){
+  const el=document.getElementById(domId);
+  if(typeof echarts==="undefined"||!el) return;
+  const chart=echarts.init(el);
+  fetch(`/services/${sid}/chart?type=${type}&range=${curRange}`).then(r=>r.json()).then(j=>{
+    const s=(j.ok===1 && j.series)?j.series:null;
+    const lines=(s&&s.lines)?s.lines:[];
+    if(!lines.length){
+      chart.setOption({title:{text:type.toUpperCase()+"（上游未提供数据）",left:"center",textStyle:{fontSize:13}}});
+      return;
+    }
+    const title=lines.map(l=>l.label).filter(Boolean).join(" / ")||type.toUpperCase();
+    chart.setOption({
+      title:{text:title+(s.unit?"（"+s.unit+"）":""),left:"center",textStyle:{fontSize:13}},
+      tooltip:{trigger:"axis"},
+      legend:{data:lines.map(l=>l.label),top:24,show:lines.length>1},
+      grid:{left:50,right:20,top:50,bottom:30},
+      xAxis:{type:"category",data:lines[0].points.map(p=>p.time)},
+      yAxis:{type:"value"},
+      series:lines.map((l,i)=>({name:l.label,type:"line",smooth:true,
+        itemStyle:{color:chartColors[i%chartColors.length]},
+        areaStyle:{color:chartColors[i%chartColors.length],opacity:0.10},
+        data:l.points.map(p=>p.value)}))
+    });
+  }).catch(()=>{});
+}
+const chartColors=["#4f46e5","#15803d","#0e7490","#b45309"];
+function loadCharts(){
+  renderChart("cpu-chart","cpu");
+  renderChart("mem-chart","memory");
+  renderChart("bw-chart","flow");
+  renderChart("disk-chart","disk");
+}
+document.querySelectorAll(".rbtn").forEach(b=>{
+  b.onclick=()=>{
+    document.querySelectorAll(".rbtn").forEach(x=>{x.style.background="#f1f5f9";x.style.color="#333";});
+    b.style.background="#4f46e5";b.style.color="#fff";
+    curRange=b.dataset.range; loadCharts();
+  };
+});
+async function loadTraffic(){
+  try{
+    const r=await fetch(`/services/${sid}/usage`); const j=await r.json();
+    const tb=document.getElementById("trafficBody");
+    if(j.ok===1 && j.usage){
+      const u=j.usage.traffic_used||0, l=j.usage.traffic_limit||0;
+      tb.innerHTML=`<tr><td class="muted" width="120">已用 / 总量</td><td>${u} GB / ${l>0?l+" GB":"不限"}</td></tr>`;
+    } else {
+      tb.innerHTML=`<tr><td class="muted" width="120">已用 / 总量</td><td>上游未提供</td></tr>`;
+    }
+  }catch(e){}
+  renderTrafficChart();
+}
+function renderTrafficChart(){
+  const el=document.getElementById("traffic-chart");
+  if(typeof echarts==="undefined"||!el) return;
+  const chart=echarts.init(el);
+  fetch(`/services/${sid}/traffic`).then(r=>r.json()).then(j=>{
+    const days=(j.ok===1 && j.days)?j.days:[];
+    if(!days.length){
+      chart.setOption({title:{text:"每日流量（上游未提供数据）",left:"center",textStyle:{fontSize:13}}});
+      return;
+    }
+    chart.setOption({
+      title:{text:"每日流量（GB）",left:"center",textStyle:{fontSize:13}},
+      tooltip:{trigger:"axis"},
+      legend:{data:["流入","流出"],top:24},
+      grid:{left:50,right:20,top:50,bottom:30},
+      xAxis:{type:"category",data:days.map(d=>d.time)},
+      yAxis:{type:"value"},
+      series:[
+        {name:"流入",type:"bar",itemStyle:{color:"#0e7490"},data:days.map(d=>d.in)},
+        {name:"流出",type:"bar",itemStyle:{color:"#b45309"},data:days.map(d=>d.out)}
+      ]
+    });
+  }).catch(()=>{});
+}
+// 电源状态指示灯（四态：on 运行中 / off 已关机 / operating 操作中 / fault 异常）
+const powerStyle={
+  on:{cls:"badge-ok",text:"● 运行中"},
+  off:{cls:"badge-idle",text:"○ 已关机"},
+  operating:{cls:"badge-warn",text:"◐ 操作中"},
+  fault:{cls:"badge-warn",text:"✖ 异常"}
+};
+async function loadPower(){
+  const el=document.getElementById("powerDot");
+  if(!el) return;
+  try{
+    const r=await fetch(`/services/${sid}/power`); const j=await r.json();
+    const st=(j.ok===1 && j.power)?j.power.status:"fault";
+    const p=powerStyle[st]||powerStyle.fault;
+    el.className="badge "+p.cls;
+    el.textContent=p.text+((j.ok===1&&j.power&&j.power.desc)?"（"+j.power.desc+"）":"");
+  }catch(e){
+    el.className="badge badge-idle"; el.textContent="状态未知";
+  }
+}
+loadPower();
+setInterval(loadPower,10000);
+// 救援模式：状态查询切换按钮 + 弹窗
+async function loadRescueState(){
+  const exitForm=document.getElementById("exitRescueForm");
+  const rescueBtn=document.querySelector('form[action$="/console"] button');
+  if(!exitForm) return;
+  try{
+    const r=await fetch(`/services/${sid}/rescue-state`); const j=await r.json();
+    exitForm.style.display=(j.ok===1&&j.rescue)?"inline-block":"none";
+  }catch(e){}
+}
+loadRescueState();
+setInterval(loadRescueState,30000);
+async function rescueOpen(){
+  document.getElementById("rescueModal").style.display="block";
+  document.getElementById("rescuePass").value="";
+  document.getElementById("rescueForceOff").checked=false;
+  const box=document.getElementById("rescuePowerBox");
+  const goBtn=document.getElementById("rescueGoBtn");
+  box.style.display="none";
+  goBtn.disabled=false;
+  // 实例开机中：提示需关机，勾选"同意强制关机"后才允许继续
+  try{
+    const r=await fetch(`/services/${sid}/power`); const j=await r.json();
+    const st=(j.ok===1&&j.power)?j.power.status:"";
+    if(st==="on"||st==="operating"){
+      box.style.display="block";
+    }
+  }catch(e){}
+}
+function rescueClose(){document.getElementById("rescueModal").style.display="none";}
+function genRescuePass(){
+  const chars="ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789";
+  let pw;
+  do{ pw=""; for(let i=0;i<12;i++){pw+=chars[Math.floor(Math.random()*chars.length)];}
+  }while(!/[A-Z]/.test(pw)||!/[a-z]/.test(pw)||!/[0-9]/.test(pw));
+  document.getElementById("rescuePass").value=pw;
+}
+async function rescueGo(){
+  const form=document.querySelector('form[onsubmit^="return rescueSubmit"]');
+  const box=document.getElementById("rescuePowerBox");
+  const goBtn=document.getElementById("rescueGoBtn");
+  if(box.style.display!=="none"&&!document.getElementById("rescueForceOff").checked){
+    alert("实例处于开机状态，请勾选「同意强制关机」或先手动关机。");
+    return;
+  }
+  // 先执行硬关机（若开机），等待上游受理
+  if(box.style.display!=="none"){
+    goBtn.disabled=true; goBtn.textContent="正在强制关机…";
+    try{
+      const r=await fetch(`/services/${sid}/console`,{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:`_csrf=${CSRF}&do=hard_off`});
+      if(!r.ok&&r.status!==303){throw new Error("http "+r.status);}
+    }catch(e){
+      alert("强制关机请求失败，请稍后重试。");
+      goBtn.disabled=false; goBtn.textContent="确认进入";
+      return;
+    }
+  }
+  form.querySelector('input[name=system]').value=document.getElementById("rescueSystem").value;
+  const pass=document.getElementById("rescuePass").value.trim();
+  const existing=form.querySelector('input[name=temp_pass]');
+  if(existing){existing.remove();}
+  if(pass){
+    let ip=document.createElement("input");ip.type="hidden";ip.name="temp_pass";ip.value=pass;
+    form.appendChild(ip);
+  }
+  rescueClose();
+  form.submit();
+}
+function rescueSubmit(){
+  rescueOpen();
+  return false;
+}
+// ---------- 方块（NAT/共享建站/安全组/设置）原生渲染 ----------
+let blocksCache=null;
+async function loadBlocks(force){
+  if(blocksCache&&!force) return;
+  try{
+    const r=await fetch(`/services/${sid}/blocks`); const j=await r.json();
+    blocksCache=(j.ok===1)?(j.blocks||{}):{};
+    if(j.ok!==1&&j.msg) console.warn("blocks:",j.msg);
+  }catch(e){ blocksCache={}; }
+  renderNat(); renderWeb(); renderSg(); renderSetting();
+}
+async function blockAct(fn,params){
+  const body=new URLSearchParams(params||{});
+  body.set("_csrf",CSRF);
+  const r=await fetch(`/services/${sid}/block/${fn}`,{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:body.toString()});
+  return r.json();
+}
+async function afterAct(j){
+  alert(j.msg||(j.ok?"操作成功":"操作失败"));
+  if(j.ok!==false) loadBlocks(true);
+}
+// NAT 转发
+function renderNat(){
+  const tb=document.getElementById("natBody"); if(!tb) return;
+  const list=blocksCache.nat_acl;
+  if(!list){tb.innerHTML='<tr><td colspan="5" class="muted">上游未提供</td></tr>';return;}
+  if(!list.length){tb.innerHTML='<tr><td colspan="5" class="muted">暂无转发规则</td></tr>';return;}
+  tb.innerHTML=list.map(n=>`<tr>
+  <td>${esc(n.name)}</td><td>${esc(n.external)}</td><td>${esc(n.internal)}</td><td>${esc(n.protocol)}</td>
+  <td>${n.id?`<button class="cbtn" style="background:#b91c1c;font-size:.75rem;padding:3px 10px" onclick="natDel(${n.id},'${esc(n.name)}')">删除</button>`:'<span class="muted">默认</span>'}</td></tr>`).join("");
+}
+async function natAdd(){
+  const name=document.getElementById("natName").value.trim();
+  const intPort=document.getElementById("natIntPort").value.trim();
+  if(!intPort){alert("请填写内部端口");return;}
+  const extPort=document.getElementById("natExtPort").value.trim();
+  const proto=document.getElementById("natProto").value;
+  const j=await blockAct("addNatAcl",{name:name||("nat-"+Date.now()),"int_port":intPort,"ext_port":extPort,"select-protocol":proto});
+  afterAct(j);
+}
+async function natDel(id,name){
+  if(!confirm(`确认删除转发「${name}」？`))return;
+  afterAct(await blockAct("delNatAcl",{id:id}));
+}
+// 共享建站
+function renderWeb(){
+  const tb=document.getElementById("webBody"); if(!tb) return;
+  const list=blocksCache.nat_web;
+  if(!list){tb.innerHTML='<tr><td colspan="4" class="muted">上游未提供</td></tr>';return;}
+  if(!list.length){tb.innerHTML='<tr><td colspan="4" class="muted">暂无站点</td></tr>';return;}
+  tb.innerHTML=list.map(w=>`<tr>
+  <td>${esc(w.domain)}</td><td>${esc(w.external)}</td><td>${esc(w.internal)}</td>
+  <td><button class="cbtn" style="background:#b91c1c;font-size:.75rem;padding:3px 10px" onclick="webDel(${w.id},'${esc(w.domain)}')">删除</button></td></tr>`).join("");
+}
+async function webAdd(){
+  const domain=document.getElementById("webDomain").value.trim();
+  const intPort=document.getElementById("webIntPort").value.trim();
+  if(!domain||!intPort){alert("请填写域名与内部端口");return;}
+  const extPort=document.getElementById("webExtPort").value;
+  afterAct(await blockAct("addNatWeb",{domain:domain,"int_port":intPort,"ext_port":extPort}));
+}
+async function webDel(id,domain){
+  if(!confirm(`确认删除站点「${domain}」？`))return;
+  afterAct(await blockAct("delNatWeb",{id:id}));
+}
+// 安全组
+let curGroup=0;
+function renderSg(){
+  const tb=document.getElementById("sgBody"); if(!tb) return;
+  const list=blocksCache.security_groups;
+  if(!list){tb.innerHTML='<tr><td colspan="3" class="muted">上游未提供</td></tr>';return;}
+  if(!list.length){tb.innerHTML='<tr><td colspan="3" class="muted">暂无安全组</td></tr>';return;}
+  tb.innerHTML=list.map(g=>`<tr>
+  <td>${esc(g.name)}</td><td>${esc(g.description||"-")}</td>
+  <td style="white-space:nowrap">
+  <button class="cbtn" style="background:#0e7490;font-size:.75rem;padding:3px 10px" onclick="sgRules(${g.id},'${esc(g.name)}')">规则</button>
+  <button class="cbtn" style="background:#15803d;font-size:.75rem;padding:3px 10px" onclick="sgLink(${g.id},'${esc(g.name)}')">应用</button>
+  <button class="cbtn" style="background:#b91c1c;font-size:.75rem;padding:3px 10px" onclick="sgDel(${g.id},'${esc(g.name)}')">删除</button>
+  </td></tr>`).join("");
+}
+async function sgAdd(){
+  const name=document.getElementById("sgName").value.trim();
+  if(!name){alert("请填写安全组名称");return;}
+  afterAct(await blockAct("createSecurityGroup",{name:name,description:document.getElementById("sgDesc").value.trim()}));
+}
+async function sgDel(id,name){
+  if(!confirm(`确认删除安全组「${name}」？`))return;
+  afterAct(await blockAct("delSecurityGroup",{id:id}));
+}
+async function sgLink(id,name){
+  if(!confirm(`确认将安全组「${name}」应用到本实例？`))return;
+  afterAct(await blockAct("linkSecurityGroup",{id:id}));
+}
+async function sgRules(gid,name){
+  curGroup=gid;
+  const area=document.getElementById("sgRuleArea");
+  area.style.display="block";
+  document.getElementById("sgRuleTitle").textContent=`「${name}」的规则`;
+  const tb=document.getElementById("ruleBody");
+  tb.innerHTML='<tr><td colspan="7" class="muted">加载中…</td></tr>';
+  try{
+    const r=await fetch(`/services/${sid}/block-rules?gid=${gid}`); const j=await r.json();
+    if(j.ok!==1){tb.innerHTML=`<tr><td colspan="7" class="muted">${esc(j.msg||"加载失败")}</td></tr>`;return;}
+    if(!(j.rules||[]).length){tb.innerHTML='<tr><td colspan="7" class="muted">暂无规则</td></tr>';return;}
+    tb.innerHTML=j.rules.map(x=>`<tr>
+    <td>${esc(x.description||"-")}</td>
+    <td>${x.action==="accept"?"允许":"拒绝"}</td>
+    <td>${x.direction==="in"?"入":"出"}</td>
+    <td>${esc(x.protocol)}</td><td>${esc(x.port_range||"-")}</td><td>${esc(x.ip||"-")}</td>
+    <td><button class="cbtn" style="background:#b91c1c;font-size:.75rem;padding:3px 10px" onclick="ruleDel(${x.id})">删除</button></td></tr>`).join("");
+  }catch(e){tb.innerHTML='<tr><td colspan="7" class="muted">加载失败</td></tr>';}
+}
+async function ruleAdd(){
+  if(!curGroup){alert("请先在某安全组点「规则」");return;}
+  const port=document.getElementById("rulePort").value.trim();
+  const ip=document.getElementById("ruleIP").value.trim();
+  if(!port||!ip){alert("请填写端口与 IP");return;}
+  afterAct(await blockAct("createSecurityRule",{
+    id:curGroup,direction:document.getElementById("ruleDir").value,
+    protocol:document.getElementById("ruleProto").value,port:port,ip:ip,
+    description:document.getElementById("ruleDesc").value.trim()}));
+  setTimeout(()=>sgRules(curGroup,"当前"),400);
+}
+async function ruleDel(id){
+  if(!confirm("确认删除该规则？"))return;
+  const j=await blockAct("delSecurityRule",{id:id});
+  alert(j.msg||(j.ok?"操作成功":"操作失败"));
+  if(j.ok!==false) setTimeout(()=>sgRules(curGroup,"当前"),400);
+}
+// 设置（ISO / 启动顺序）
+function renderSetting(){
+  const iso=document.getElementById("isoSel"), boot=document.getElementById("bootSel");
+  const st=blocksCache.setting; if(!iso||!boot) return;
+  if(!st){iso.innerHTML='<option>上游未提供</option>';boot.innerHTML='<option>上游未提供</option>';return;}
+  iso.innerHTML=(st.iso||[]).map(o=>`<option value="${esc(o.value)}" ${o.selected?"selected":""}>${esc(o.name||o.value||"无")}</option>`).join("")||'<option value="">无</option>';
+  boot.innerHTML=(st.boot||[]).map(o=>`<option value="${esc(o.value)}" ${o.selected?"selected":""}>${esc(o.name||o.value)}</option>`).join("");
+}
+async function isoMount(){
+  const v=document.getElementById("isoSel").value;
+  if(!v){alert("请选择要挂载的 ISO");return;}
+  if(!confirm("确认挂载所选 ISO？"))return;
+  afterAct(await blockAct("mountIso",{id:v}));
+}
+async function bootSet(){
+  const v=document.getElementById("bootSel").value;
+  if(!v){alert("请选择启动顺序");return;}
+  if(!confirm("确认更改启动顺序？"))return;
+  afterAct(await blockAct("setBootOrder",{id:v}));
+}
+// 快照/备份（原生渲染，对齐 ZJMF-CBAP）
+async function loadSnap(){
+  try{
+    const r=await fetch(`/services/${sid}/snapshot`); const j=await r.json();
+    if(j.ok!==1){document.getElementById("snapQuota").textContent="快照信息获取失败："+(j.msg||"");return;}
+    const info=j.info;
+    document.getElementById("snapQuota").textContent=
+      `快照 ${count(info.list,"snap")}/${info.snap_num} · 备份 ${count(info.list,"backup")}/${info.backup_num}`;
+    const diskSel=document.getElementById("snapDisk");
+    diskSel.innerHTML=(info.disk||[]).map(d=>`<option value="${d.id}">${d.name||d.dev}（${d.size}GB）</option>`).join("")||'<option value="">无可用磁盘</option>';
+    const tb=document.getElementById("snapBody");
+    if(!(info.list||[]).length){tb.innerHTML='<tr><td colspan="5" class="muted">暂无快照/备份</td></tr>';return;}
+    tb.innerHTML=info.list.map(it=>{
+      const type=it.type==="snap"?"快照":"备份";
+      const act = it.type==="snap" ? ["restoreSnap","delSnap"] : ["restoreBackup","delBackup"];
+      return `<tr>
+      <td>${esc(it.name)}</td><td>${type}</td><td>${esc(it.create_time)}</td><td>${esc(it.remarks||"-")}</td>
+      <td style="white-space:nowrap">
+      ${it.status===1?`<button class="cbtn" style="background:#15803d;font-size:.75rem;padding:3px 10px" onclick="snapAct('${act[0]}',${it.id},'${esc(it.name)}')">恢复</button>
+      <button class="cbtn" style="background:#b91c1c;font-size:.75rem;padding:3px 10px" onclick="snapAct('${act[1]}',${it.id},'${esc(it.name)}')">删除</button>`:'<span class="muted">处理中</span>'}
+      </td></tr>`;}).join("");
+  }catch(e){document.getElementById("snapQuota").textContent="快照信息获取失败";}
+}
+function count(list,t){return (list||[]).filter(i=>i.type===t).length;}
+function esc(s){return String(s==null?"":s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));}
+async function snapCreate(kind){
+  const disk=document.getElementById("snapDisk").value;
+  if(!disk){alert("无可用磁盘");return;}
+  const remark=document.getElementById("snapRemark").value;
+  const fn=kind==="snap"?"createSnap":"createBackup";
+  const r=await fetch(`/services/${sid}/snapshot/${fn}`,{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:`disk_id=${disk}&name=${encodeURIComponent(remark||("auto-"+Date.now()))}&_csrf=${CSRF}`});
+  const j=await r.json();
+  alert(j.msg|| (j.ok?"操作成功":"操作失败"));
+  if(j.ok) loadSnap();
+}
+async function snapAct(fn,id,name){
+  if(!confirm(`确认对「${name}」执行${fn.startsWith("restore")?"恢复":"删除"}？`))return;
+  const r=await fetch(`/services/${sid}/snapshot/${fn}`,{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:`id=${id}&_csrf=${CSRF}`});
+  const j=await r.json();
+  alert(j.msg|| (j.ok?"操作成功":"操作失败"));
+  if(j.ok) loadSnap();
+}
+// 加载 echarts 后渲染监控
+(function(){
+  const s=document.createElement("script");
+  s.src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js";
+  s.onload=loadCharts;
+  document.head.appendChild(s);
+})();
+</script>
+{{end}}
+
+<script>
+(function(){
+  const p = new URLSearchParams(location.search);
+  const ok = p.get("ok"), err = p.get("err");
+  const el = document.getElementById("consMsg");
+  if(!el) return;
+  if(ok){ el.textContent = ok + "。指令已提交上游。"; el.style.color = "#15803d"; }
+  else if(err){ el.textContent = "操作失败：" + err; el.style.color = "#b91c1c"; }
+})();
+function copyText(btn, text){
+  navigator.clipboard.writeText(text).then(()=>{ btn.textContent="已复制"; setTimeout(()=>btn.textContent="复制",1200); });
+}
+</script>
+{{end}}

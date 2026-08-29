@@ -1,0 +1,44 @@
+{{define "admin"}}
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>LumeIDC 管理后台</title>
+<style>
+*{box-sizing:border-box}body{font-family:system-ui,sans-serif;margin:0;color:#1a1a2e;background:#f4f4f8}
+.wrap{display:flex;min-height:100vh}
+nav{width:180px;background:#1e1b4b;color:#e0e7ff;padding:20px 0}
+nav a{display:block;padding:10px 22px;color:#c7d2fe;text-decoration:none;font-size:.9rem}
+nav a:hover{background:#312e81;color:#fff}
+main{flex:1;padding:28px}
+h1{font-size:1.25rem;margin-top:0}
+table{width:100%;border-collapse:collapse;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+th,td{padding:10px 14px;border-bottom:1px solid #eef0f4;font-size:.88rem;text-align:left}
+th{background:#fafafc;color:#666}
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav>
+<div style="padding:0 22px 18px;font-weight:700;color:#fff">LumeIDC</div>
+<a href="/admin">概览</a>
+<a href="/admin/types">分类管理</a>
+<a href="/admin/products">产品管理</a>
+<a href="/admin/servers">上游服务器</a>
+<a href="/admin/services">服务管理</a>
+<a href="/admin/users">用户</a>
+<a href="/admin/orders">订单</a>
+<a href="/admin/refunds">退款记录</a>
+<a href="/admin/coupons">优惠码</a>
+<a href="/admin/announcements">公告</a>
+<a href="/admin/gateway">支付网关</a>
+<a href="/admin/settings">通知设置</a>
+<a href="/admin/totp">两步验证</a>
+<a href="/admin/logs">操作日志</a>
+<a href="/admin/password" style="margin-top:18px;border-top:1px solid #312e81;padding-top:14px">修改密码</a>
+</nav>
+<main>{{template "page" .}}</main>
+</div>
+</body>
+</html>
+{{end}}

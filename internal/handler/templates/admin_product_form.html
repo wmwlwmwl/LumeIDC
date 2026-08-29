@@ -1,0 +1,347 @@
+{{define "page"}}
+<h1>{{if .Product}}编辑产品{{else}}新增产品{{end}}</h1>
+<form method="post" action="{{if .Product}}/admin/products/{{.Product.ID}}/save{{else}}/admin/products/save{{end}}" style="max-width:560px;background:#fff;padding:20px;border-radius:8px">
+<input type="hidden" name="_csrf" value="{{.CSRF}}">
+<input type="hidden" name="id" value="{{if .Product}}{{.Product.ID}}{{end}}">
+<label style="display:block;margin:10px 0 4px;font-weight:600;font-size:.88rem">产品名称</label>
+<input name="name" value="{{if .Product}}{{.Product.Name}}{{end}}" required style="width:100%;padding:8px;box-sizing:border-box;border:1px solid #ccc;border-radius:6px">
+<label style="display:block;margin:10px 0 4px;font-weight:600;font-size:.88rem">所属分类</label>
+<select name="type_id" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px">
+<option value="">未分类</option>
+{{$cur := ""}}{{if .Product}}{{$cur = printf "%v" .Product.TypeID.Int64}}{{end}}
+{{range .Types}}<option value="{{.ID}}" {{if eq $cur (printf "%v" .ID)}}selected{{end}}>{{.Name}}</option>{{end}}
+</select>
+<label style="display:block;margin:10px 0 4px;font-weight:600;font-size:.88rem">描述</label>
+<textarea name="description" rows="3" style="width:100%;box-sizing:border-box;border:1px solid #ccc;border-radius:6px">{{if .Product}}{{.Product.Description}}{{end}}</textarea>
+
+<label style="display:block;margin:16px 0 4px;font-weight:600;font-size:.9rem">上游自动开通</label>
+<select name="server_id" id="serverSel" onchange="toggleUpstream()" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px">
+<option value="">不自动开通（仅本地服务）</option>
+{{$sid := ""}}{{if .Product}}{{$sid = printf "%v" .Product.ServerID.Int64}}{{end}}
+{{range .ServersList}}<option value="{{.ID}}" {{if eq $sid (printf "%v" .ID)}}selected{{end}}>{{.Name}}（{{.Provider}}）</option>{{end}}
+</select>
+<div id="upstreamBox" style="display:none;margin-top:10px;background:#f7f7fb;border:1px solid #eef0f4;border-radius:6px;padding:12px">
+<label style="display:block;margin:0 0 4px;font-weight:600;font-size:.85rem">上游商品（按分组）</label>
+<select id="pidSel" onchange="onPidChange()" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px">
+<option value="">— 手动输入 PID —</option>
+</select>
+<label style="display:block;margin:10px 0 4px;font-weight:600;font-size:.85rem">上游商品 PID（选上面自动填，也可手填）</label>
+<input name="upstream_pid" id="pidInput" oninput="onPidInput()" value="{{if .Product}}{{if gt .Product.UpstreamPID 0}}{{.Product.UpstreamPID}}{{end}}{{end}}" placeholder="如 100" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px">
+<div style="display:flex;gap:8px;margin-top:8px">
+<button type="button" onclick="pullConfig()" id="pullBtn" style="padding:8px 14px;background:#15803d;color:#fff;border:0;border-radius:6px;cursor:pointer;white-space:nowrap">拉取配置项</button>
+<span id="pullMsg" class="muted" style="font-size:.78rem;align-self:center"></span>
+</div>
+<p class="muted" style="font-size:.76rem;color:#888;margin:6px 0 0">选择上游商品后，名称/价格/库存/配置项会自动带出（仍可手动修改）。保存后支付成功将自动向上游开通。</p>
+</div>
+
+<label style="display:block;margin:12px 0 4px;font-weight:600;font-size:.88rem">价格（元）</label>
+<div style="display:flex;gap:10px">
+<input name="monthly" value="{{.Monthly}}" placeholder="月付" style="flex:1;min-width:0;padding:8px;border:1px solid #ccc;border-radius:6px">
+<input name="quarterly" value="{{.Quarterly}}" placeholder="季付" style="flex:1;min-width:0;padding:8px;border:1px solid #ccc;border-radius:6px">
+<input name="yearly" value="{{.Yearly}}" placeholder="年付" style="flex:1;min-width:0;padding:8px;border:1px solid #ccc;border-radius:6px">
+</div>
+<label style="display:block;margin:12px 0 4px;font-weight:600;font-size:.88rem">利润（上游成本外毛利）</label>
+<div style="display:flex;gap:10px;align-items:center">
+<select name="profit_type" style="padding:8px;border:1px solid #ccc;border-radius:6px">
+<option value="0" {{if eq .Product.ProfitType 0}}selected{{end}}>按比例(%)</option>
+<option value="1" {{if eq .Product.ProfitType 1}}selected{{end}}>固定金额(元)</option>
+</select>
+<input name="profit_value" value="{{if gt .Product.ProfitValue 0}}{{.Product.ProfitValue}}{{end}}" placeholder="如 20 表示 20% 或 20 元" style="flex:1;min-width:0;padding:8px;border:1px solid #ccc;border-radius:6px">
+</div>
+<p class="muted" style="font-size:.76rem;color:#888;margin:6px 0 0">利润 = 售价 × 比例%（或固定金额），按下单时售价计算并落库；仅作利润统计，不影响售价。</p>
+<label style="display:block;margin:10px 0 4px;font-weight:600;font-size:.88rem">库存（-1 为不限）</label>
+<input name="stock" type="number" value="{{if .Product}}{{.Product.Stock}}{{else}}-1{{end}}" style="width:120px;padding:8px;border:1px solid #ccc;border-radius:6px">
+
+<label style="display:block;margin:12px 0 4px;font-weight:600;font-size:.9rem">配置项（购买时展示，可选）</label>
+<div id="cfgEditor" style="border:1px solid #e3e6ee;border-radius:8px;padding:12px;background:#fafbff">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+    <span class="muted" style="font-size:.8rem">共 <b id="cfgCount">0</b> 项 · 保存后生效</span>
+    <div style="display:flex;gap:8px">
+      <button type="button" onclick="toggleJson()" style="padding:6px 10px;background:#fff;color:#4f46e5;border:1px solid #c7d2fe;border-radius:6px;cursor:pointer;font-size:.8rem">高级 JSON</button>
+      <button type="button" onclick="openCfgModal(-1)" style="padding:6px 12px;background:#4f46e5;color:#fff;border:0;border-radius:6px;cursor:pointer;font-size:.82rem">+ 新增配置项</button>
+    </div>
+  </div>
+  <div id="cfgList"></div>
+  <p class="muted" style="font-size:.76rem;color:#888;margin:8px 0 0">select 型子项填加价；range 型填数量区间与单价。也可点上方“拉取配置项”从上游带入。</p>
+  <textarea name="configoption" id="configTa" style="display:none;width:100%;box-sizing:border-box;border:1px solid #ccc;border-radius:6px;font-family:monospace;font-size:.8rem" rows="10">{{.ConfigJSON}}</textarea>
+</div>
+
+<div id="cfgModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:50" onclick="if(event.target===this)closeCfgModal()">
+  <div style="max-width:540px;margin:5vh auto;background:#fff;border-radius:10px;padding:20px;max-height:86vh;overflow:auto">
+    <h3 id="cfgModalTitle" style="margin-top:0;font-size:1rem">新增配置项</h3>
+    <label style="display:block;margin:8px 0 3px;font-weight:600;font-size:.82rem">配置标识 field（如 cpu / memory / disk）</label>
+    <input id="cfgField" style="width:100%;padding:7px;border:1px solid #ccc;border-radius:6px;box-sizing:border-box">
+    <label style="display:block;margin:8px 0 3px;font-weight:600;font-size:.82rem">显示名 name</label>
+    <input id="cfgName" style="width:100%;padding:7px;border:1px solid #ccc;border-radius:6px;box-sizing:border-box">
+    <label style="display:block;margin:8px 0 3px;font-weight:600;font-size:.82rem">类型</label>
+    <select id="cfgMode" onchange="cfgModeChange()" style="width:100%;padding:7px;border:1px solid #ccc;border-radius:6px;box-sizing:border-box">
+      <option value="select">单选 select</option>
+      <option value="range">数量范围 range</option>
+    </select>
+    <label style="display:block;margin:8px 0 3px;font-weight:600;font-size:.82rem">单位 unit（如 核 / GB / Mbps，可空）</label>
+    <input id="cfgUnit" style="width:100%;padding:7px;border:1px solid #ccc;border-radius:6px;box-sizing:border-box">
+    <div id="cfgRangeBox" style="display:none">
+      <div style="display:flex;gap:8px">
+        <div style="flex:1"><label style="display:block;margin:8px 0 3px;font-weight:600;font-size:.82rem">最小值 min</label><input id="cfgMin" type="number" style="width:100%;padding:7px;border:1px solid #ccc;border-radius:6px;box-sizing:border-box"></div>
+        <div style="flex:1"><label style="display:block;margin:8px 0 3px;font-weight:600;font-size:.82rem">最大值 max</label><input id="cfgMax" type="number" style="width:100%;padding:7px;border:1px solid #ccc;border-radius:6px;box-sizing:border-box"></div>
+        <div style="flex:1"><label style="display:block;margin:8px 0 3px;font-weight:600;font-size:.82rem">步长 step</label><input id="cfgStep" type="number" style="width:100%;padding:7px;border:1px solid #ccc;border-radius:6px;box-sizing:border-box"></div>
+      </div>
+    </div>
+    <div style="margin-top:10px">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <b style="font-size:.85rem">子项 / 价格档位</b>
+        <button type="button" onclick="addSubRow()" style="padding:5px 10px;background:#15803d;color:#fff;border:0;border-radius:6px;cursor:pointer;font-size:.78rem">+ 子项</button>
+      </div>
+      <div id="cfgSubs"></div>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end">
+      <button type="button" onclick="closeCfgModal()" style="padding:8px 14px;background:#fff;color:#444;border:1px solid #ccc;border-radius:6px;cursor:pointer">取消</button>
+      <button type="button" onclick="saveCfgModal()" style="padding:8px 14px;background:#4f46e5;color:#fff;border:0;border-radius:6px;cursor:pointer">保存</button>
+    </div>
+  </div>
+</div>
+<label style="display:block;margin:10px 0 4px;font-weight:600;font-size:.88rem">前台显示</label>
+<select name="hidden" style="padding:8px;border:1px solid #ccc;border-radius:6px">
+<option value="0">显示</option>
+<option value="1" {{if and .Product .Product.Hidden}}selected{{end}}>隐藏</option>
+</select>
+<button style="margin-top:18px;width:100%;padding:11px;background:#4f46e5;color:#fff;border:0;border-radius:6px;cursor:pointer">保存</button>
+</form>
+
+<script>
+const prodID = "{{if .Product}}{{.Product.ID}}{{end}}";
+function esc(s){ return (s||"").replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function setVal(name, val){
+  const el = document.querySelector('input[name="'+name+'"]');
+  if(el && val !== undefined && val !== "") el.value = val;
+}
+function toggleUpstream(){
+  const sid = document.getElementById("serverSel").value;
+  const box = document.getElementById("upstreamBox");
+  if(!sid){ box.style.display = "none"; return; }
+  box.style.display = "block";
+  loadUpstream(sid);
+}
+async function loadUpstream(sid){
+  const sel = document.getElementById("pidSel");
+  sel.innerHTML = '<option value="">加载中…</option>';
+  try {
+    const r = await fetch(`/admin/products/upstream-options?server_id=${sid}`);
+    const j = await r.json();
+    if(j.ok !== 1){ sel.innerHTML = '<option value="">'+esc(j.msg||"目录为空")+'</option>'; return; }
+    let html = '<option value="">— 手动输入 PID —</option>';
+    for(const g of (j.groups||[])){
+      html += `<optgroup label="${esc(g.name)}">`;
+      for(const it of g.items){
+        html += `<option value="${it.pid}" data-name="${esc(it.name)}">${esc(it.name)}</option>`;
+      }
+      html += '</optgroup>';
+    }
+    sel.innerHTML = html;
+    const cur = document.getElementById("pidInput").value;
+    if(cur) sel.value = cur;
+  } catch(e){ sel.innerHTML = '<option value="">加载失败</option>'; }
+}
+async function onPidChange(){
+  const sel = document.getElementById("pidSel");
+  const pid = sel.value;
+  const sid = document.getElementById("serverSel").value;
+  if(!pid){ document.getElementById("pidInput").value = ""; return; }
+  document.getElementById("pidInput").value = pid;
+  if(sid){
+    const opt = sel.selectedOptions[0];
+    if(opt && opt.dataset.name) document.querySelector('input[name="name"]').value = opt.dataset.name;
+    // 价格/库存/描述由选中后的 pullConfig 一次性拉取，避免下拉加载时逐个请求上游。
+    await pullConfig();
+  }
+}
+function onPidInput(){
+  const sel = document.getElementById("pidSel");
+  if(document.getElementById("pidInput").value !== sel.value) sel.value = "";
+}
+async function pullConfig(){
+  const sid = document.getElementById("serverSel").value;
+  const pid = document.getElementById("pidInput").value;
+  const msg = document.getElementById("pullMsg");
+  const idEl = document.querySelector('input[name="id"]');
+  const idVal = idEl ? idEl.value : "";
+  if(!sid || !pid){ msg.textContent = "请先选择上游服务器并填写/选择 PID"; msg.style.color = "#b91c1c"; return; }
+  const btn = document.getElementById("pullBtn");
+  btn.disabled = true; msg.textContent = "拉取中…"; msg.style.color = "#888";
+  try {
+    if(idVal){
+      // 已存在产品：直接 POST 拉取并落库（配置项 + 基础价一次性写入）
+      const csrf = document.querySelector('input[name="_csrf"]').value;
+      const r = await fetch(`/admin/products/${idVal}/pull-config`, {
+        method: "POST",
+        headers: {"Content-Type": "application/x-www-form-urlencoded"},
+        body: `_csrf=${encodeURIComponent(csrf)}`
+      });
+      const j = await r.json();
+      if(j.ok === "1" || j.ok === 1){
+        if(j.json) applyPulledJSON(j.json);
+        if(j.price){
+          const f = v => (v > 0 ? (Math.round(v*100)/100).toString() : "");
+          setVal("monthly", f(j.price.monthly));
+          setVal("quarterly", f(j.price.quarterly));
+          setVal("yearly", f(j.price.yearly));
+        }
+        msg.textContent = `已拉取并保存 ${j.count} 个配置项`; msg.style.color = "#15803d";
+      } else {
+        msg.textContent = j.msg || "拉取失败"; msg.style.color = "#b91c1c";
+      }
+    } else {
+      const r = await fetch(`/admin/products/upstream-config?server_id=${sid}&pid=${pid}`);
+      const j = await r.json();
+      if(j.ok === 1){
+        applyPulledJSON(j.json);
+        // 同步刷新基础价输入框（上游基础价常被漏抓）；上游基础价为 0 时不覆盖
+        if(j.price){
+          const f = v => (v > 0 ? (Math.round(v*100)/100).toString() : "");
+          setVal("monthly", f(j.price.monthly));
+          setVal("quarterly", f(j.price.quarterly));
+          setVal("yearly", f(j.price.yearly));
+        }
+        if(j.description) setVal("description", j.description);
+        if(j.stock != null) setVal("stock", j.stock < 0 ? "-1" : j.stock);
+        msg.textContent = `已拉取 ${j.count} 个配置项`; msg.style.color = "#15803d";
+      } else {
+        msg.textContent = j.msg || "拉取失败"; msg.style.color = "#b91c1c";
+      }
+    }
+  } catch(e){ msg.textContent = "请求失败"; msg.style.color = "#b91c1c"; }
+  btn.disabled = false;
+}
+// ===== 可视化配置项编辑器（原生 JS，底层仍写 configoption JSON）=====
+let cfgOptions = [];
+let cfgEditIdx = -1;
+function cfgSync(){
+  document.getElementById("configTa").value = JSON.stringify(cfgOptions);
+  const c = document.getElementById("cfgCount");
+  if(c) c.textContent = cfgOptions.length;
+}
+function initCfgEditor(){
+  try { cfgOptions = JSON.parse(document.getElementById("configTa").value || "[]"); }
+  catch(e){ cfgOptions = []; }
+  if(!Array.isArray(cfgOptions)) cfgOptions = [];
+  cfgSync();
+  renderCfgList();
+}
+function renderCfgList(){
+  const box = document.getElementById("cfgList");
+  box.innerHTML = "";
+  if(!cfgOptions.length){
+    box.innerHTML = '<p class="muted" style="font-size:.8rem;color:#888;margin:4px 0">暂无配置项，点“+ 新增配置项”或先“拉取配置项”。</p>';
+    return;
+  }
+  cfgOptions.forEach((o, i) => {
+    const card = document.createElement("div");
+    card.style.cssText = "border:1px solid #e3e6ee;border-radius:8px;padding:10px;margin:8px 0;background:#fff";
+    const mode = o.option_mode === "range" ? "数量范围" : (o.option_mode === "select" ? "单选" : o.option_mode);
+    const meta = o.option_mode === "range"
+      ? `范围 ${o.min}~${o.max}${o.step?(" 步长"+o.step):""}${o.unit?(" "+o.unit):""}`
+      : (o.unit ? "单位 "+o.unit : "");
+    let subs = (o.sub||[]).map(s => {
+      const p = s.pricing || {};
+      const price = p.monthly!=null ? ("¥"+(+p.monthly)+"/月") : "免费";
+      return `<span style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:#f1f5f9;border-radius:5px;font-size:.76rem">${esc(s.name||s.value||"")} <b>${price}</b></span>`;
+    }).join("");
+    card.innerHTML =
+      `<div style="display:flex;justify-content:space-between;align-items:center">
+        <div><b style="font-size:.88rem">${esc(o.name||o.field||"")}</b>
+          <span class="muted" style="font-size:.74rem;color:#888"> · ${esc(o.field||"")} · ${mode}${meta?(" · "+esc(meta)):""}</span></div>
+        <div style="white-space:nowrap">
+          <button type="button" onclick="openCfgModal(${i})" style="background:none;border:0;color:#4f46e5;cursor:pointer;font-size:.82rem;padding:0 6px">编辑</button>
+          <button type="button" onclick="cfgOptions.splice(${i},1);cfgSync();renderCfgList()" style="background:none;border:0;color:#b91c1c;cursor:pointer;font-size:.82rem;padding:0 6px">删除</button>
+        </div>
+      </div>
+      <div style="margin-top:6px">${subs || '<span class="muted" style="font-size:.76rem;color:#aaa">无子项</span>'}</div>`;
+    box.appendChild(card);
+  });
+}
+function toggleJson(){
+  const ta = document.getElementById("configTa");
+  ta.style.display = ta.style.display === "none" ? "block" : "none";
+}
+function applyPulledJSON(jsonStr){
+  try { const arr = JSON.parse(jsonStr); if(Array.isArray(arr)){ cfgOptions = arr; cfgSync(); renderCfgList(); } }
+  catch(e){ document.getElementById("configTa").value = jsonStr; document.getElementById("configTa").style.display = "block"; }
+}
+function cfgModeChange(){
+  const m = document.getElementById("cfgMode").value;
+  document.getElementById("cfgRangeBox").style.display = (m === "range") ? "block" : "none";
+}
+function addSubRow(name, value, pricing){
+  const row = document.createElement("div");
+  row.className = "subrow";
+  row.style.cssText = "border:1px solid #eee;border-radius:6px;padding:8px;margin:6px 0";
+  const p = pricing || {};
+  row.innerHTML =
+    `<div style="display:flex;gap:6px">
+      <input class="s-name" placeholder="显示名" value="${esc(name||"")}" style="flex:2;min-width:0;padding:6px;border:1px solid #ccc;border-radius:5px">
+      <input class="s-value" placeholder="提交值(可空)" value="${esc(value||"")}" style="flex:1;min-width:0;padding:6px;border:1px solid #ccc;border-radius:5px">
+      <button type="button" onclick="this.closest('.subrow').remove()" style="padding:0 9px;background:#fee;color:#b91c1c;border:0;border-radius:5px;cursor:pointer">×</button>
+    </div>
+    <div style="display:flex;gap:6px;margin-top:6px">
+      <input class="s-m" placeholder="月付加价" type="number" step="0.01" value="${p.monthly!=null?p.monthly:""}" style="flex:1;min-width:0;padding:6px;border:1px solid #ccc;border-radius:5px">
+      <input class="s-q" placeholder="季付" type="number" step="0.01" value="${p.quarterly!=null?p.quarterly:""}" style="flex:1;min-width:0;padding:6px;border:1px solid #ccc;border-radius:5px">
+      <input class="s-y" placeholder="年付" type="number" step="0.01" value="${p.yearly!=null?p.yearly:""}" style="flex:1;min-width:0;padding:6px;border:1px solid #ccc;border-radius:5px">
+    </div>`;
+  document.getElementById("cfgSubs").appendChild(row);
+}
+function openCfgModal(idx){
+  cfgEditIdx = idx;
+  const o = idx >= 0 ? cfgOptions[idx] : null;
+  document.getElementById("cfgModalTitle").textContent = o ? "编辑配置项" : "新增配置项";
+  document.getElementById("cfgField").value = o ? (o.field||"") : "";
+  document.getElementById("cfgName").value = o ? (o.name||"") : "";
+  document.getElementById("cfgMode").value = o ? (o.option_mode||"select") : "select";
+  document.getElementById("cfgUnit").value = o ? (o.unit||"") : "";
+  document.getElementById("cfgMin").value = o && o.min!=null ? o.min : "";
+  document.getElementById("cfgMax").value = o && o.max!=null ? o.max : "";
+  document.getElementById("cfgStep").value = o && o.step!=null ? o.step : "";
+  cfgModeChange();
+  document.getElementById("cfgSubs").innerHTML = "";
+  ((o && o.sub) || []).forEach(s => addSubRow(s.name, s.value, s.pricing));
+  document.getElementById("cfgModal").style.display = "block";
+}
+function closeCfgModal(){ document.getElementById("cfgModal").style.display = "none"; }
+function saveCfgModal(){
+  const mode = document.getElementById("cfgMode").value;
+  const opt = {
+    field: document.getElementById("cfgField").value.trim(),
+    name: document.getElementById("cfgName").value.trim(),
+    option_mode: mode,
+    unit: document.getElementById("cfgUnit").value.trim()
+  };
+  if(!opt.field) opt.field = (opt.name || "").toLowerCase().replace(/\s+/g,"_");
+  if(mode === "range"){
+    opt.min = parseFloat(document.getElementById("cfgMin").value) || 0;
+    opt.max = parseFloat(document.getElementById("cfgMax").value) || 0;
+    opt.step = parseFloat(document.getElementById("cfgStep").value) || 1;
+  }
+  const subs = [];
+  document.querySelectorAll("#cfgSubs .subrow").forEach(row => {
+    const name = row.querySelector(".s-name").value.trim();
+    if(!name) return;
+    const pricing = {};
+    const m = parseFloat(row.querySelector(".s-m").value);
+    const q = parseFloat(row.querySelector(".s-q").value);
+    const y = parseFloat(row.querySelector(".s-y").value);
+    if(!isNaN(m)) pricing.monthly = m;
+    if(!isNaN(q)) pricing.quarterly = q;
+    if(!isNaN(y)) pricing.yearly = y;
+    const s = { name: name };
+    const val = row.querySelector(".s-value").value.trim();
+    if(val) s.value = val;
+    if(Object.keys(pricing).length) s.pricing = pricing;
+    subs.push(s);
+  });
+  if(subs.length) opt.sub = subs;
+  if(cfgEditIdx >= 0) cfgOptions[cfgEditIdx] = opt; else cfgOptions.push(opt);
+  cfgSync(); renderCfgList(); closeCfgModal();
+}
+initCfgEditor();
+toggleUpstream();
+</script>
+{{end}}

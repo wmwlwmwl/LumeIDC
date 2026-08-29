@@ -1,0 +1,23 @@
+{{define "page"}}
+<h1>两步验证（TOTP）</h1>
+{{if .Error}}<p style="color:#b91c1c">{{.Error}}</p>{{end}}
+{{if .Msg}}<p style="color:#047857">操作成功</p>{{end}}
+{{if .UpstreamBound}}
+<p>两步验证已启用。</p>
+<form method="post" action="/admin/totp">
+<input type="hidden" name="_csrf" value="{{.CSRF}}">
+<input type="hidden" name="action" value="disable">
+<button type="submit">关闭两步验证</button>
+</form>
+{{else}}
+<p>扫描下方密钥到 Google Authenticator / 1Password 等，再输入 6 位码启用：</p>
+<p><code style="font-size:1.1rem">{{.Secret}}</code></p>
+<p class="muted">{{index .ServersList "URI"}}</p>
+<form method="post" action="/admin/totp" style="display:flex;gap:8px;margin-top:10px">
+<input type="hidden" name="_csrf" value="{{.CSRF}}">
+<input name="action" value="enable" type="hidden">
+<input name="code" placeholder="6 位验证码" size="8" required>
+<button type="submit">启用</button>
+</form>
+{{end}}
+{{end}}

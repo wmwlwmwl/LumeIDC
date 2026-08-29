@@ -1,0 +1,20 @@
+{{define "page"}}
+<h1>{{if .Product}}编辑服务器{{else}}添加服务器（智简魔方财务 ZJMF）{{end}}</h1>
+<form method="post" action="{{if .Product}}/admin/servers/{{.Product.ID}}/save{{else}}/admin/servers/save{{end}}" style="max-width:520px;background:#fff;padding:20px;border-radius:8px">
+<input type="hidden" name="_csrf" value="{{.CSRF}}">
+<label style="display:block;margin:10px 0 4px;font-weight:600;font-size:.88rem">名称</label>
+<input name="name" value="{{with .Product}}{{.Name}}{{end}}" required style="width:100%;padding:8px;box-sizing:border-box;border:1px solid #ccc;border-radius:6px">
+<label style="display:block;margin:10px 0 4px;font-weight:600;font-size:.88rem">API 地址</label>
+<input name="api_url" value="{{with .Product}}{{.APIURL}}{{end}}" placeholder="https://upstream.example.com" required style="width:100%;padding:8px;box-sizing:border-box;border:1px solid #ccc;border-radius:6px">
+<label style="display:block;margin:10px 0 4px;font-weight:600;font-size:.88rem">API 用户名</label>
+<input name="api_username" value="{{with .Product}}{{.APIUsername}}{{end}}" autocomplete="off" style="width:100%;padding:8px;box-sizing:border-box;border:1px solid #ccc;border-radius:6px">
+<label style="display:block;margin:10px 0 4px;font-weight:600;font-size:.88rem">API 密钥（密码）</label>
+<input name="api_key" value="{{with .Product}}{{.APIKey}}{{end}}" autocomplete="new-password" style="width:100%;padding:8px;box-sizing:border-box;border:1px solid #ccc;border-radius:6px">
+<label style="display:block;margin:10px 0 4px;font-weight:600;font-size:.88rem">状态</label>
+<select name="disabled" style="padding:8px;border:1px solid #ccc;border-radius:6px">
+<option value="0">启用</option>
+<option value="1" {{if and .Product .Product.Disabled}}selected{{end}}>停用</option>
+</select>
+<button style="margin-top:18px;width:100%;padding:11px;background:#4f46e5;color:#fff;border:0;border-radius:6px;cursor:pointer">保存</button>
+</form>
+{{end}}

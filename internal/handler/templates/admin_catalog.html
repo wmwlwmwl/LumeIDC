@@ -1,0 +1,29 @@
+{{define "page"}}
+<div style="display:flex;align-items:center;justify-content:space-between">
+<h1>上游商品目录{{with .ServersList}} — {{.Name}}{{end}}</h1>
+<a href="/admin/servers" style="color:#4f46e5;font-size:.88rem">← 返回服务器</a>
+</div>
+{{if .Error}}<p style="color:#b91c1c">{{.Error}}</p>{{end}}
+{{if .Rows}}
+<form method="post" action="{{with .ServersList}}/admin/servers/{{.ID}}/import{{end}}">
+<input type="hidden" name="_csrf" value="{{.CSRF}}">
+<table><tr><th></th><th>PID</th><th>名称</th><th>分组</th><th>月付价</th><th>库存</th><th>状态</th></tr>
+{{range .Rows}}
+<tr>
+<td><input type="checkbox" name="import" value="{{.PID}}" {{if .Linked}}disabled{{end}}></td>
+<td>{{.PID}}</td><td>{{.A}}</td><td>{{.B}}</td><td>￥{{.C}}</td><td>{{.Stock}}</td>
+<td>{{if .Linked}}<span style="color:#15803d;font-size:.82rem">已对接</span>{{else}}<span class="muted" style="font-size:.82rem">未对接</span>{{end}}</td>
+</tr>
+{{end}}
+</table>
+<button style="margin-top:14px;padding:9px 20px;background:#15803d;color:#fff;border:0;border-radius:6px;cursor:pointer">导入勾选商品</button>
+</form>
+{{else}}
+<p class="muted">上游目录为空。</p>
+{{end}}
+{{if .Error}}{{else}}<script>
+const u = new URLSearchParams(location.search).get("done");
+if(u && u !== "0"){ document.querySelector("h1").insertAdjacentHTML("afterend",
+   `<p style="color:#15803d">已处理 ${u} 个产品（已对接的会更新价格/配置项，未对接的新建）。</p>`); }
+</script>{{end}}
+{{end}}

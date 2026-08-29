@@ -1,0 +1,47 @@
+{{define "site"}}
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>LumeIDC</title>
+<style>
+*{box-sizing:border-box}body{font-family:system-ui,sans-serif;margin:0;color:#1a1a2e;background:#f7f7fb}
+header{background:#fff;border-bottom:1px solid #e5e7eb;padding:0 20px;display:flex;align-items:center;gap:24px;height:56px}
+header a{color:#1a1a2e;text-decoration:none;font-size:.92rem}.brand{font-weight:700;color:#4f46e5!important;font-size:1.05rem}
+.right{margin-left:auto;display:flex;gap:16px}
+main{max-width:960px;margin:28px auto;padding:0 16px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:16px}
+.card{background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:18px}
+.price{font-size:1.3rem;font-weight:700;color:#4f46e5}.unit{font-size:.8rem;color:#888;font-weight:400}
+table{width:100%;border-collapse:collapse;background:#fff;border-radius:8px;overflow:hidden}
+th,td{padding:10px 14px;border-bottom:1px solid #eef0f4;font-size:.9rem;text-align:left}
+th{background:#fafafc;color:#666;font-weight:600}
+a.btn,button{display:inline-block;padding:8px 16px;background:#4f46e5;color:#fff;border:0;border-radius:6px;font-size:.88rem;cursor:pointer;text-decoration:none}
+.muted{color:#888;font-size:.85rem}
+.badge{display:inline-block;padding:3px 10px;border-radius:10px;font-size:.8rem}
+.badge-ok{background:#dcfce7;color:#15803d}
+.badge-warn{background:#fef3c7;color:#b45309}
+.badge-idle{background:#f1f5f9;color:#666}
+</style>
+</head>
+<body>
+<header>
+<a class="brand" href="/">LumeIDC</a>
+<a href="/products">产品</a>
+{{if .LoggedIn}}<a href="/services">我的服务</a>{{end}}
+<div class="right">
+{{if .LoggedIn}}
+<span style="color:#4f46e5;font-size:.85rem">￥{{.Balance}}</span>
+<a href="/user">用户中心</a>
+<a href="/notifications">站内信</a>
+<form method="post" action="/logout" style="display:inline"><button style="background:none;color:#888;border:0;padding:0;font-size:.92rem;cursor:pointer">退出</button></form>
+{{else}}
+<a href="/login">登录</a><a href="/register">注册</a>
+{{end}}
+</div>
+</header>
+<main>{{template "page" .}}</main>
+</body>
+</html>
+{{end}}

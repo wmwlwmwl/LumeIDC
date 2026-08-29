@@ -1,0 +1,13 @@
+{{define "page"}}
+<h1>财务记录</h1>
+{{if .Invoices}}
+<table><tr><th>账单号</th><th>金额</th><th>状态</th><th>时间</th><th></th></tr>
+{{range .Invoices}}
+<tr><td>{{.No}}</td><td>￥{{.Amount}}</td>
+<td>{{if eq .Status "未支付"}}<span style="color:#b45309">{{.Status}}</span>{{else}}{{.Status}}{{end}}</td>
+<td>{{.CreatedAt}}</td>
+<td>{{if eq .Status "未支付"}}<a href="/pay/{{.ID}}">去支付</a>{{end}}</td></tr>
+{{end}}
+</table>
+{{else}}<p class="muted">暂无账单记录。</p>{{end}}
+{{end}}

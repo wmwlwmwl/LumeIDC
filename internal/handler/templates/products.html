@@ -1,0 +1,34 @@
+{{define "page"}}
+<h1>产品列表</h1>
+{{if .Announcements}}
+<div style="display:flex;flex-direction:column;gap:10px;margin-bottom:18px">
+{{range .Announcements}}
+<div class="card" style="border-left:4px solid {{if .Pinned}}#4f46e5{{else}}#cbd5e1{{end}}">
+<h3 style="margin:0 0 4px;font-size:1rem">{{if .Pinned}}📌 {{end}}{{.Title}}</h3>
+{{if .Content}}<p class="muted" style="margin:0;white-space:pre-wrap">{{.Content}}</p>{{end}}
+<small class="muted">{{.CreatedAt}}</small>
+</div>
+{{end}}
+</div>
+{{end}}
+{{if .Types}}
+<div style="display:flex;gap:10px;margin-bottom:18px;flex-wrap:wrap">
+<a class="btn" href="/products" style="{{if not .GID}}background:#312e81{{end}}">全部</a>
+{{range .Types}}
+{{$active := ""}}{{if eq (printf "%d" .ID) $.GID}}{{$active = "background:#312e81"}}{{end}}
+<a class="btn" href="/products?gid={{.ID}}" style="{{$active}}">{{.Name}}</a>
+{{end}}
+</div>
+{{end}}
+{{if .Products}}
+<div class="grid">
+{{range .Products}}
+<div class="card">
+<h3>{{.Name}}</h3><p class="muted">{{.Desc}}</p>
+<p class="price">￥{{.Monthly}}<span class="unit">/月</span></p>
+<a class="btn" href="/buy/{{.ID}}">立即购买</a>
+</div>
+{{end}}
+</div>
+{{else}}<p class="muted">暂无上架产品。</p>{{end}}
+{{end}}

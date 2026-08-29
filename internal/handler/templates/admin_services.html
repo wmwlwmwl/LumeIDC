@@ -1,0 +1,40 @@
+{{define "page"}}
+<h1>服务管理</h1>
+{{if .Error}}<p style="color:#b91c1c">{{.Error}}</p>{{end}}
+<table id="svTbody"><tr><th>ID</th><th>用户</th><th>产品</th><th>状态</th><th>到期</th><th>上游</th><th>失败原因</th><th>利润</th><th>操作</th></tr>
+{{range .Rows}}
+<tr data-id="{{.ID}}" data-st="{{.C}}" data-pe="{{.ProvErr}}">
+<td>{{.ID}}</td><td>{{.A}}</td><td>{{.B}}</td><td>{{.C}}</td><td>{{.D}}</td>
+<td>{{if .Upstream}}#{{.Upstream}}{{else}}-{{end}}</td>
+<td>{{if .ProvErr}}<span style="color:#b91c1c">{{.ProvErr}}</span>{{else}}-{{end}}</td>
+<td>{{.Profit}}</td>
+<td style="white-space:nowrap">
+{{if and (eq .C "待开通") .ProvErr}}<form method="post" action="/admin/services/{{.ID}}/action" style="display:inline"><input type="hidden" name="_csrf" value="{{$.CSRF}}"><input type="hidden" name="do" value="retry"><button style="background:none;border:0;color:#15803d;cursor:pointer;padding:0;font-size:.85rem">重试开通</button></form> · {{end}}
+{{if eq .C "激活"}}<form method="post" action="/admin/services/{{.ID}}/action" style="display:inline"><input type="hidden" name="_csrf" value="{{$.CSRF}}"><input type="hidden" name="do" value="suspend"><button style="background:none;border:0;color:#b45309;cursor:pointer;padding:0;font-size:.85rem">停机</button></form> · {{end}}
+{{if eq .C "已停机"}}<form method="post" action="/admin/services/{{.ID}}/action" style="display:inline"><input type="hidden" name="_csrf" value="{{$.CSRF}}"><input type="hidden" name="do" value="unsuspend"><button style="background:none;border:0;color:#15803d;cursor:pointer;padding:0;font-size:.85rem">解除</button></form> · {{end}}
+<form method="post" action="/admin/services/{{.ID}}/action" style="display:inline" onsubmit="return confirm('确认删除该服务？')"><input type="hidden" name="_csrf" value="{{$.CSRF}}"><input type="hidden" name="do" value="terminate"><button style="background:none;border:0;color:#b91c1c;cursor:pointer;padding:0;font-size:.85rem">删除</button></form>
+</td></tr>
+{{end}}
+{{if not .Rows}}<tr><td colspan="9" style="color:#888">暂无服务。</td></tr>{{end}}
+</table>
+<script>
+// 每 10 秒轮询一次上游开通状态；仅当某行状态或失败原因变化时才整页刷新，避免无谓闪烁。
+const SV_REFRESH_MS = 10000;
+(function(){
+  function poll(){
+    fetch('/admin/services/status').then(r => r.json()).then(rows => {
+      const map = {};
+      rows.forEach(r => map[r.id] = r);
+      let changed = false;
+      document.querySelectorAll('#svTbody tr[data-id]').forEach(tr => {
+        const cur = map[tr.getAttribute('data-id')];
+        if(!cur) return;
+        if(cur.c !== tr.getAttribute('data-st') || cur.provErr !== tr.getAttribute('data-pe')) changed = true;
+      });
+      if(changed) location.reload();
+    }).catch(() => {});
+  }
+  setInterval(poll, SV_REFRESH_MS);
+})();
+</script>
+{{end}}

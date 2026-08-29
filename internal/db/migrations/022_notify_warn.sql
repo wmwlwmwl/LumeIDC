@@ -1,0 +1,1 @@
+ALTER TABLE services ADD COLUMN IF NOT EXISTS expire_warn_sent BOOLEAN NOT NULL DEFAULT false;

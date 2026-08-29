@@ -1,0 +1,32 @@
+{{define "page"}}
+<h1>用户管理</h1>
+{{if .Error}}<p style="color:#b91c1c">{{.Error}}</p>{{end}}
+<form method="post" action="/admin/users/{{index .ServersList "ID"}}/save" style="max-width:480px;background:#fff;padding:20px;border-radius:8px">
+<input type="hidden" name="_csrf" value="{{.CSRF}}">
+<table style="font-size:.9rem;background:none">
+<tr><td class="muted" width="80">邮箱</td><td>{{index .ServersList "A"}}</td></tr>
+<tr><td class="muted">姓名</td><td>{{if index .ServersList "B"}}{{index .ServersList "B"}}{{else}}-{{end}}</td></tr>
+<tr><td class="muted">当前余额</td><td>￥{{index .ServersList "C"}}</td></tr>
+</table>
+<label style="display:block;margin:14px 0 4px;font-weight:600;font-size:.88rem">账号状态</label>
+<select name="status" style="padding:7px;border:1px solid #ccc;border-radius:6px">
+<option value="1">正常</option>
+<option value="0" {{if eq (index .ServersList "D") "0"}}selected{{end}}>禁用（禁止登录）</option>
+</select>
+
+<details style="margin-top:14px">
+<summary style="cursor:pointer;color:#b91c1c;font-size:.88rem">重置密码</summary>
+<input name="new_password" type="password" minlength="8" placeholder="新密码（至少8位，留空不修改）"
+ style="width:100%;margin-top:8px;padding:8px;box-sizing:border-box;border:1px solid #ccc;border-radius:6px">
+</details>
+
+<details style="margin-top:10px">
+<summary style="cursor:pointer;color:#4f46e5;font-size:.88rem">调整余额</summary>
+<input name="balance_adjust" placeholder="+100 充值 / -50 扣减（留空不变）"
+ style="width:100%;margin-top:8px;padding:8px;box-sizing:border-box;border:1px solid #ccc;border-radius:6px">
+<p class="muted" style="font-size:.76rem;color:#888;margin:4px 0 0">正数充值，负数扣减，操作会记入余额流水。</p>
+</details>
+
+<button style="margin-top:18px;width:100%;padding:11px;background:#4f46e5;color:#fff;border:0;border-radius:6px;cursor:pointer">保存</button>
+</form>
+{{end}}

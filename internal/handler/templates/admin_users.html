@@ -1,0 +1,7 @@
+{{define "page"}}
+<h1>用户列表（最近 200）</h1>
+<table><tr><th>ID</th><th>邮箱</th><th>姓名</th><th>操作</th></tr>
+{{range .Rows}}<tr><td>{{.ID}}</td><td>{{.A}}</td><td>{{.B}}</td><td><a href="/admin/users/{{.ID}}/edit">管理</a></td></tr>{{end}}
+{{if not .Rows}}<tr><td colspan="3" style="color:#888">暂无用户。</td></tr>{{end}}
+</table>
+{{end}}

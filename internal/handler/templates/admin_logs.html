@@ -1,0 +1,10 @@
+{{define "page"}}
+<h1>操作审计日志</h1>
+<table>
+<tr><th>ID</th><th>管理员</th><th>动作</th><th>对象</th><th>详情</th><th>IP</th><th>时间</th></tr>
+{{range .Rows}}<tr>
+<td>{{.ID}}</td><td>{{.AdminID}}</td><td>{{.Action}}</td>
+<td>{{.TargetType}}#{{.TargetID}}</td><td>{{.Detail}}</td><td>{{.IP}}</td><td>{{.CreatedAt}}</td>
+</tr>{{end}}
+</table>
+{{end}}

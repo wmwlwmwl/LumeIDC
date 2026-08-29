@@ -1,0 +1,13 @@
+{{define "page"}}
+<h1>站内信</h1>
+{{if not .Rows}}<p class="muted">暂无消息</p>{{end}}
+<ul style="list-style:none;padding:0">
+{{range .Rows}}
+<li style="padding:12px 0;border-bottom:1px solid #eef0f4">
+<div style="font-weight:600">{{.title}}</div>
+<div class="muted" style="font-size:.8rem">{{.time}}</div>
+<div style="margin-top:4px">{{.body}}</div>
+</li>
+{{end}}
+</ul>
+{{end}}
