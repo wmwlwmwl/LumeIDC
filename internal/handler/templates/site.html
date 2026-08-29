@@ -35,7 +35,7 @@ a.btn,button{display:inline-block;padding:8px 16px;background:#4f46e5;color:#fff
 <span style="color:#4f46e5;font-size:.85rem">￥{{.Balance}}</span>
 <a href="/user">用户中心</a>
 <a href="/notifications">站内信</a>
-<form method="post" action="/logout" style="display:inline"><button style="background:none;color:#888;border:0;padding:0;font-size:.92rem;cursor:pointer">退出</button></form>
+<form method="post" action="/logout" style="display:inline"><input type="hidden" name="_csrf" value="{{.CSRF}}"><button style="background:none;color:#888;border:0;padding:0;font-size:.92rem;cursor:pointer">退出</button></form>
 {{else}}
 <a href="/login">登录</a><a href="/register">注册</a>
 {{end}}

@@ -197,6 +197,9 @@ function recalc(){
     `<td style="padding:3px 0">${esc(l[1])}</td>` +
     `<td style="padding:3px 0;text-align:right">${l[2]>0?"+"+l[2].toFixed(2):"0.00"}</td></tr>`
   ).join("");
+  // 利润加成（ZJMF 上游百分比语义）：比例=×(1+%)，固定金额=+金额；与服务端 CreateOrder 口径一致。
+  if(CFG.profit_type === 1){ total = total + (CFG.profit_value||0); }
+  else { total = total * (1 + (CFG.profit_value||0)/100); }
   document.getElementById("totalPrice").textContent = total.toFixed(2);
 }
 setSelectDefaults();

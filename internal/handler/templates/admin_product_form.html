@@ -43,12 +43,13 @@
 <label style="display:block;margin:12px 0 4px;font-weight:600;font-size:.88rem">利润（上游成本外毛利）</label>
 <div style="display:flex;gap:10px;align-items:center">
 <select name="profit_type" style="padding:8px;border:1px solid #ccc;border-radius:6px">
-<option value="0" {{if eq .Product.ProfitType 0}}selected{{end}}>按比例(%)</option>
-<option value="1" {{if eq .Product.ProfitType 1}}selected{{end}}>固定金额(元)</option>
+{{$pt := 0}}{{with .Product}}{{$pt = .ProfitType}}{{end}}
+<option value="0" {{if eq $pt 0}}selected{{end}}>按比例(%)</option>
+<option value="1" {{if eq $pt 1}}selected{{end}}>固定金额(元)</option>
 </select>
-<input name="profit_value" value="{{if gt .Product.ProfitValue 0}}{{.Product.ProfitValue}}{{end}}" placeholder="如 20 表示 20% 或 20 元" style="flex:1;min-width:0;padding:8px;border:1px solid #ccc;border-radius:6px">
+<input name="profit_value" value="{{with .Product}}{{.ProfitValue}}{{end}}" placeholder="如 20 表示 20% 或 20 元" style="flex:1;min-width:0;padding:8px;border:1px solid #ccc;border-radius:6px">
 </div>
-<p class="muted" style="font-size:.76rem;color:#888;margin:6px 0 0">利润 = 售价 × 比例%（或固定金额），按下单时售价计算并落库；仅作利润统计，不影响售价。</p>
+<p class="muted" style="font-size:.76rem;color:#888;margin:6px 0 0">售价加成（ZJMF 上游百分比语义）：合计 =（基础价+配置费用）×(1+比例%)，固定金额则为合计+金额；购买/下单/周期续费按加成价计费。0 表示不加成。</p>
 <label style="display:block;margin:10px 0 4px;font-weight:600;font-size:.88rem">库存（-1 为不限）</label>
 <input name="stock" type="number" value="{{if .Product}}{{.Product.Stock}}{{else}}-1{{end}}" style="width:120px;padding:8px;border:1px solid #ccc;border-radius:6px">
 

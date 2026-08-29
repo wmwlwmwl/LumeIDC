@@ -52,7 +52,6 @@
 <tr><td class="muted" width="90">计费方式</td><td>{{if .Svc.Cycle}}{{.Svc.Cycle}}{{else}} - {{end}}</td></tr>
 <tr><td class="muted">续费价格</td><td>￥{{if .Svc.Amount}}{{.Svc.Amount}}{{else}} - {{end}}</td></tr>
 <tr><td class="muted">到期时间</td><td style="color:#4f46e5;font-weight:600">{{.Svc.ExpiresAt.Format "2006-01-02 15:04"}}</td></tr>
-<tr><td class="muted">本单毛利</td><td>￥{{.Profit}}</td></tr>
 </table>
 <form method="post" action="/services/{{.Svc.ID}}/renew" style="margin-top:10px;display:flex;gap:8px;align-items:center">
 <input type="hidden" name="_csrf" value="{{.CSRF}}">

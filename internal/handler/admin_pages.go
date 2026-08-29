@@ -174,16 +174,16 @@ func (a *Admin) adminAnnouncementForm(w http.ResponseWriter, r *http.Request) {
 	if !a.require(w, r) {
 		return
 	}
-	var ed *repo.Announcement
+	data := AdminData{CSRF: csrfOf(adminSessions, w, r)}
 	if id := r.URL.Query().Get("id"); id != "" {
 		if pid, err := strconv.ParseInt(id, 10, 64); err == nil {
-			ed, _ = a.Announcements.Get(r.Context(), pid)
+			// 仅成功时赋值：把类型化 nil 指针塞进 any 会让模板 {{if .Product}} 判空失效。
+			if an, gerr := a.Announcements.Get(r.Context(), pid); gerr == nil {
+				data.Product = an
+			}
 		}
 	}
-	renderAdmin(w, "admin_announcement_form.html", AdminData{
-		Product: ed,
-		CSRF:    csrfOf(adminSessions, w, r),
-	})
+	renderAdmin(w, "admin_announcement_form.html", data)
 }
 
 // adminAnnouncementSave POST /admin/announcements/save — 保存（新增/更新）。

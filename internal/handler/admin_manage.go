@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"log"
@@ -150,7 +151,7 @@ func (m *AdminManage) ProductsList(w http.ResponseWriter, r *http.Request) {
 		mn := "-"
 		if pr, err := m.Products.Price(r.Context(), p.ID, psID); err == nil {
 			opts, _ := m.Products.GetConfigOptions(r.Context(), p.ID)
-			mn = fmt.Sprintf("%.2f", service.DisplayPrice(priceVal(pr.Monthly), opts))
+			mn = fmt.Sprintf("%.2f", service.DisplayPrice(priceVal(pr.Monthly), opts, p.ProfitType, p.ProfitValue))
 		}
 		h := "显示"
 		if p.Hidden {
@@ -175,6 +176,12 @@ func (m *AdminManage) ProductForm(w http.ResponseWriter, r *http.Request) {
 		id, _ := strconv.ParseInt(pid, 10, 64)
 		p, err := m.Products.Get(r.Context(), id)
 		if err != nil {
+			// 区分“产品不存在(404)”与“查询出错(500+日志)”，避免真实错误被吞成 404 难以排查。
+			if !errors.Is(err, repo.ErrNotFound) {
+				log.Printf("[admin] 产品查询失败 id=%d: %v", id, err)
+				http.Error(w, "查询失败", http.StatusInternalServerError)
+				return
+			}
 			http.NotFound(w, r)
 			return
 		}

@@ -18,3 +18,5 @@ server.err.log
 lumeidc.log
 lumeidc.err
 lumeidc.out
+lumeidc*.out
+lumeidc*.err

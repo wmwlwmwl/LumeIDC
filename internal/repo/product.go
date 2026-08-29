@@ -97,7 +97,7 @@ func (p *Products) Get(ctx context.Context, id int64) (*Product, error) {
 	err := p.DB.QueryRowContext(ctx,
 		productCols+` FROM products WHERE id=$1`, id).
 		Scan(&pr.ID, &pr.TypeID, &pr.ServerID, &pr.UpstreamPID, &pr.UpstreamCycle,
-			&pr.Name, &pr.Description, &pr.Stock, &pr.Hidden)
+			&pr.Name, &pr.Description, &pr.Stock, &pr.Hidden, &pr.ProfitType, &pr.ProfitValue)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}

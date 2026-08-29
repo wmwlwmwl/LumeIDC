@@ -18,6 +18,7 @@ import (
 
 //go:embed templates/site.html templates/products.html templates/service_list.html templates/buy.html
 //go:embed templates/user_home.html templates/user_invoices.html templates/user_password.html templates/service_detail.html
+//go:embed templates/user_notifications.html
 var siteFS embed.FS
 
 type Pages struct {
@@ -173,7 +174,7 @@ func (h *Pages) productListPage(w http.ResponseWriter, r *http.Request, _ string
 		m := "-"
 		if pr, err := h.Products.Price(r.Context(), p.ID, psID); err == nil {
 			opts, _ := h.Products.GetConfigOptions(r.Context(), p.ID)
-			m = fmt.Sprintf("%.2f", service.DisplayPrice(priceVal(pr.Monthly), opts))
+			m = fmt.Sprintf("%.2f", service.DisplayPrice(priceVal(pr.Monthly), opts, p.ProfitType, p.ProfitValue))
 		}
 		views = append(views, productView{ID: p.ID, Name: p.Name, Desc: p.Description, Monthly: m})
 	}
@@ -211,9 +212,16 @@ func (h *Pages) buyForm(w http.ResponseWriter, r *http.Request) {
 	if v, err := strconv.ParseFloat(pr.Yearly, 64); err == nil {
 		baseMap["yearly"] = v
 	}
-	cfgJSON, _ := json.Marshal(map[string]any{"base": baseMap, "options": opts})
+	cfgJSON, _ := json.Marshal(map[string]any{
+		"base": baseMap, "options": opts,
+		"profit_type": p.ProfitType, "profit_value": p.ProfitValue,
+	})
+	// 周期下拉展示价：配置计价型（基础价 0）用加成后起步价，普通产品直接加成基础价。
+	dispMonthly := fmt.Sprintf("%.2f", service.DisplayPrice(priceVal(pr.Monthly), opts, p.ProfitType, p.ProfitValue))
+	dispQuarterly := fmt.Sprintf("%.2f", service.DisplayPrice(priceVal(pr.Quarterly), opts, p.ProfitType, p.ProfitValue))
+	dispYearly := fmt.Sprintf("%.2f", service.DisplayPrice(priceVal(pr.Yearly), opts, p.ProfitType, p.ProfitValue))
 	render(w, r, "buy.html", map[string]any{
-		"Product": p, "Monthly": pr.Monthly, "Quarterly": pr.Quarterly, "Yearly": pr.Yearly,
+		"Product": p, "Monthly": dispMonthly, "Quarterly": dispQuarterly, "Yearly": dispYearly,
 		"ShowQuarterly": showQ, "ShowYearly": showY,
 		"CSRF": csrfOf(sessionsStore, w, r), "Options": opts,
 		"ConfigData": template.JS(cfgJSON), "LoggedIn": isLoggedIn(r),

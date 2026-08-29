@@ -74,7 +74,16 @@ func (o *Orders) CreateOrder(ctx context.Context, userID, productID, pricesetID 
 	if qerr != nil {
 		return 0, 0, "", qerr
 	}
-	finalAmount := strconv.FormatFloat(mathRound(quote.Total), 'f', 2, 64)
+	// 成本口径 = 基础价+配置费用；按产品利润设置加成出售（对齐 ZJMF 上游百分比语义）。
+	var profitType int16
+	var profitValue float64
+	if err := tx.QueryRowContext(ctx,
+		`SELECT profit_type,profit_value FROM products WHERE id=$1`, productID).Scan(&profitType, &profitValue); err != nil {
+		return 0, 0, "", err
+	}
+	cost := mathRound(quote.Total)
+	sell := mathRound(applyProfit(cost, profitType, profitValue))
+	finalAmount := strconv.FormatFloat(sell, 'f', 2, 64)
 
 	// 优惠码抵扣：在订单事务内锁定并校验，避免并发超发；提前到建单前，失败不留孤儿订单。
 	var couponID int64
@@ -89,22 +98,8 @@ func (o *Orders) CreateOrder(ctx context.Context, userID, productID, pricesetID 
 		finalAmount = subtractAmount(finalAmount, discount)
 	}
 
-	// 利润（毛利）按下单时售价计算并落库，便于对账（后续改产品利润比例不影响历史订单）。
-	var profitType int16
-	var profitValue float64
-	if err := tx.QueryRowContext(ctx,
-		`SELECT profit_type,profit_value FROM products WHERE id=$1`, productID).Scan(&profitType, &profitValue); err != nil {
-		return 0, 0, "", err
-	}
-	finalF, _ := strconv.ParseFloat(finalAmount, 64)
-	profitF := finalF * profitValue / 100
-	if profitType == 1 { // 固定金额
-		profitF = profitValue
-		if profitF > finalF {
-			profitF = finalF
-		}
-	}
-	profit := strconv.FormatFloat(mathRound(profitF), 'f', 2, 64)
+	// 毛利 = 加成额（优惠前口径），下单时落库，后续改比例不影响历史订单。
+	profit := strconv.FormatFloat(sell-cost, 'f', 2, 64)
 
 	err = tx.QueryRowContext(ctx,
 		`INSERT INTO orders(user_id,product_id,priceset_id,cycle,amount,profit) VALUES($1,$2,$3,$4,$5,$6) RETURNING id`,
@@ -148,6 +143,17 @@ func (o *Orders) CreateOrder(ctx context.Context, userID, productID, pricesetID 
 		return 0, 0, "", err
 	}
 	return orderID, invoiceID, finalAmount, nil
+}
+
+// applyProfit 利润加成（ZJMF 上游利润语义）：percent=成本×(1+比例%)，fixed=成本+固定金额。<=0 不加成。
+func applyProfit(cost float64, profitType int16, profitValue float64) float64 {
+	if profitValue <= 0 {
+		return cost
+	}
+	if profitType == 1 {
+		return cost + profitValue
+	}
+	return cost * (1 + profitValue/100)
 }
 
 func mathRound(v float64) float64 {
@@ -267,8 +273,16 @@ func (o *Orders) CreateRenewOrder(ctx context.Context, userID, serviceID int64, 
 		if err := tx.QueryRowContext(ctx, query, productID, psID).Scan(&amountRaw); err != nil {
 			return 0, 0, "", fmt.Errorf("该产品未配置%s价格", cycleCol[cycle])
 		}
-		if f, _ := strconv.ParseFloat(amountRaw, 64); f <= 0 {
+		f, _ := strconv.ParseFloat(amountRaw, 64)
+		if f <= 0 {
 			return 0, 0, "", fmt.Errorf("该产品未配置%s价格", cycleCol[cycle])
+		}
+		// 周期续费同按产品利润加成定价（月付取订单成交额，已含加成，勿重复加）。
+		var pType int16
+		var pVal float64
+		if err := tx.QueryRowContext(ctx,
+			`SELECT profit_type,profit_value FROM products WHERE id=$1`, productID).Scan(&pType, &pVal); err == nil {
+			amountRaw = strconv.FormatFloat(mathRound(applyProfit(f, pType, pVal)), 'f', 2, 64)
 		}
 	}
 

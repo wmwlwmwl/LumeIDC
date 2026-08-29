@@ -174,10 +174,10 @@ func matchSub(opt repo.ConfigOption, val string) (repo.ConfigValue, bool) {
 	return repo.ConfigValue{}, false
 }
 
-// DisplayPrice 目录展示月价：基础价 + 最低一档配置价（与下单计价口径一致）。
-// 无配置项的产品退化为仅基础价。纯展示用，绝不参与真实计价。
+// DisplayPrice 目录展示月价：（基础价 + 最低一档配置价）×(1+利润比例%) 或 +固定利润。
+// 无配置项的产品退化为仅基础价。纯展示用，绝不参与真实计价（真实计价在 CreateOrder）。
 // ponytail: 配置型产品基础价只是“裸产品价”，必须叠加最低可选配置（CPU/内存等）才是真实起步价。
-func DisplayPrice(base float64, opts []repo.ConfigOption) float64 {
+func DisplayPrice(base float64, opts []repo.ConfigOption, profitType int16, profitValue float64) float64 {
 	var cfgTotal float64
 	for _, o := range opts {
 		if o.Hidden || o.Field == "os" { // 同 CalculateQuote 口径：os 不计价
@@ -224,5 +224,5 @@ func DisplayPrice(base float64, opts []repo.ConfigOption) float64 {
 			cfgTotal += best
 		}
 	}
-	return math.Round((base+cfgTotal)*100) / 100
+	return math.Round(applyProfit(base+cfgTotal, profitType, profitValue)*100) / 100
 }

@@ -377,9 +377,6 @@ func (h *Pages) serviceDetail(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	var profit string
-	_ = h.Svc.DB.QueryRowContext(r.Context(),
-		`SELECT coalesce(profit,'0') FROM orders WHERE id=(SELECT order_id FROM services WHERE id=$1)`, id).Scan(&profit)
 	// 续费周期仅展示该产品有实际价格（>0）的选项，避免按 0 价/月价误续费。
 	psID, _ := h.Products.DefaultPricesetID(r.Context())
 	var showQ, showY bool
@@ -396,7 +393,6 @@ func (h *Pages) serviceDetail(w http.ResponseWriter, r *http.Request) {
 		"CSRF":  csrfOf(sessionsStore, w, r),
 		"ShowQ": showQ, "ShowY": showY,
 		"Flash":    flash,
-		"Profit":   profit,
 		"Overview": h.fetchOverview(r.Context(), userID, d.ID),
 	})
 }
