@@ -20,3 +20,6 @@ lumeidc.err
 lumeidc.out
 lumeidc*.out
 lumeidc*.err
+# 调试输出通配（ep*.err/out、widget*.err/out 等）
+*.err
+*.out

@@ -223,7 +223,7 @@ func (m *AdminManage) PullConfig(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "读取服务器失败", http.StatusInternalServerError)
 		return
 	}
-	prov, err := m.Providers.Get("")
+	prov, err := m.Providers.Get(sv.Provider)
 	if err != nil {
 		writeJSON(w, map[string]string{"ok": "0", "msg": err.Error()})
 		return
@@ -417,7 +417,7 @@ func (m *AdminManage) CatalogPage(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
-	prov, err := m.Providers.Get("")
+	prov, err := m.Providers.Get(sv.Provider)
 	if err != nil {
 		http.Error(w, "供应商错误", http.StatusInternalServerError)
 		return
@@ -481,7 +481,7 @@ func (m *AdminManage) UpstreamOptions(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"ok": 0, "msg": "读取服务器失败"})
 		return
 	}
-	prov, err := m.Providers.Get("")
+	prov, err := m.Providers.Get(sv.Provider)
 	if err != nil {
 		writeJSON(w, map[string]any{"ok": 0, "msg": err.Error()})
 		return
@@ -541,7 +541,7 @@ func (m *AdminManage) UpstreamConfig(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"ok": 0, "msg": "读取服务器失败"})
 		return
 	}
-	prov, err := m.Providers.Get("")
+	prov, err := m.Providers.Get(sv.Provider)
 	if err != nil {
 		writeJSON(w, map[string]any{"ok": 0, "msg": err.Error()})
 		return
@@ -610,7 +610,7 @@ func (m *AdminManage) ImportProducts(w http.ResponseWriter, r *http.Request) {
 // importUpstreamProduct 幂等导入：已按 (server_id, upstream_pid) 对接则更新价格/绑定/配置项，
 // 否则新建分类+产品+价格+绑定+配置项。
 func (m *AdminManage) importUpstreamProduct(ctx context.Context, sv *repo.Server, serverID int64, pid int) bool {
-	prov, err := m.Providers.Get("")
+	prov, err := m.Providers.Get(sv.Provider)
 	if err != nil {
 		return false
 	}

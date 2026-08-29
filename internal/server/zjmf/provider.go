@@ -2,7 +2,6 @@ package zjmf
 
 import (
 	"context"
-	cryptorand "crypto/rand"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -529,32 +528,32 @@ func configOptionMap(pc map[string]any, sel map[string]string) map[string]string
 	return out
 }
 
-func (p Provider) Provision(ctx context.Context, cfg server.Config, req server.ProvisionRequest, ck server.CheckpointStore) (int64, error) {
+func (p Provider) Provision(ctx context.Context, cfg server.Config, req server.ProvisionRequest, ck server.CheckpointStore) (server.ProvisionResult, error) {
 	cycle, ok := cycleMap[req.Cycle]
 	if !ok {
-		return 0, fmt.Errorf("不支持的计费周期: %s", req.Cycle)
+		return server.ProvisionResult{}, fmt.Errorf("不支持的计费周期: %s", req.Cycle)
 	}
 
 	// checkpoint 1: 已结算过 → 直接回查 host id，绝不重复下单
 	if v, ok, err := ck.GetCheckpoint(ckHosts); err != nil {
-		return 0, fmt.Errorf("读取开通检查点失败: %w", err)
+		return server.ProvisionResult{}, fmt.Errorf("读取开通检查点失败: %w", err)
 	} else if ok && v != "" {
 		idStr := strings.Split(v, ",")[0]
 		id, err := strconv.ParseInt(idStr, 10, 64)
 		if err == nil && id > 0 {
-			return id, nil
+			return server.ProvisionResult{UpstreamHostID: id}, nil
 		}
 	}
 
 	// 步骤1: 清空购物车（幂等保护）
 	if err := postForm(ctx, cfg, "/cart/clear", url.Values{}, &map[string]any{}); err != nil {
-		return 0, fmt.Errorf("清空购物车失败: %w", err)
+		return server.ProvisionResult{}, fmt.Errorf("清空购物车失败: %w", err)
 	}
 	// 步骤2: 取商品配置（currencyid 等）
 	var pc map[string]any
 	if err := getJSON(ctx, cfg,
 		"/cart/get_product_config?pid="+strconv.FormatInt(req.UpstreamPID, 10), &pc); err != nil {
-		return 0, fmt.Errorf("读取商品配置失败: %w", err)
+		return server.ProvisionResult{}, fmt.Errorf("读取商品配置失败: %w", err)
 	}
 	currencyID := extractCurrency(pc)
 	if currencyID == "" {
@@ -583,18 +582,18 @@ func (p Provider) Provision(ctx context.Context, cfg server.Config, req server.P
 		form.Set("configoption["+k+"]", v)
 	}
 	if err := postForm(ctx, cfg, "/cart/add_to_shop", form, &map[string]any{}); err != nil {
-		return 0, fmt.Errorf("加入购物车失败: %w", err)
+		return server.ProvisionResult{}, fmt.Errorf("加入购物车失败: %w", err)
 	}
 	// 步骤4: 结算 → 上游账单号（部分版本结算时已返回 hostid，另一些则留待付款后创建）
 	settleBody, settle, serr := postFormSettle(ctx, cfg, "/cart/settle",
 		url.Values{"pos[0]": {pidString(req.UpstreamPID)}, "checkout": {"1"}})
 	if serr != nil {
-		return 0, fmt.Errorf("结算失败: %w", serr)
+		return server.ProvisionResult{}, fmt.Errorf("结算失败: %w", serr)
 	}
 	invoiceID := string(settle.Data.InvoiceID)
 	if invoiceID == "" {
 		log.Printf("[zjmf] pid=%d settle 原始响应: %.500s", req.UpstreamPID, settleBody)
-		return 0, fmt.Errorf("结算未返回账单号，上游响应: %.200s", settleBody)
+		return server.ProvisionResult{}, fmt.Errorf("结算未返回账单号，上游响应: %.200s", settleBody)
 	}
 	hostID := int64(0)
 	if len(settle.Data.HostIDs) > 0 {
@@ -602,7 +601,7 @@ func (p Provider) Provision(ctx context.Context, cfg server.Config, req server.P
 	}
 	if err := ck.SetCheckpoint(ckInvoice, invoiceID); err != nil {
 		// settle 成功但 checkpoint 未落库：标记人工复核，避免重试重复创建账单
-		return 0, &server.ManualReviewError{
+		return server.ProvisionResult{}, &server.ManualReviewError{
 			Msg:               fmt.Sprintf("保存上游账单检查点失败（settle 已成功，invoice=%s）: %v", invoiceID, err),
 			UpstreamInvoiceID: invoiceID,
 			UpstreamHostID:    hostID,
@@ -610,7 +609,7 @@ func (p Provider) Provision(ctx context.Context, cfg server.Config, req server.P
 	}
 	if hostID > 0 {
 		if err := ck.SetCheckpoint(ckHosts, strconv.FormatInt(hostID, 10)); err != nil {
-			return 0, fmt.Errorf("保存上游主机检查点失败: %w", err)
+			return server.ProvisionResult{}, fmt.Errorf("保存上游主机检查点失败: %w", err)
 		}
 	}
 
@@ -624,77 +623,25 @@ func (p Provider) Provision(ctx context.Context, cfg server.Config, req server.P
 	}
 	if err := postForm(ctx, cfg, "/apply_credit", payForm, &payResp); err != nil {
 		if hostID > 0 {
-			return hostID, fmt.Errorf("host %d 已开通但上游账单支付失败（请检查上游余额）: %w", hostID, err)
+			return server.ProvisionResult{UpstreamHostID: hostID}, fmt.Errorf("host %d 已开通但上游账单支付失败（请检查上游余额）: %w", hostID, err)
 		}
-		return 0, fmt.Errorf("上游账单支付失败（请检查上游余额）: %w", err)
+		return server.ProvisionResult{}, fmt.Errorf("上游账单支付失败（请检查上游余额）: %w", err)
 	}
 	if hostID == 0 && len(payResp.Data.HostIDs) > 0 {
 		hostID = payResp.Data.HostIDs[0]
 		if err := ck.SetCheckpoint(ckHosts, strconv.FormatInt(hostID, 10)); err != nil {
-			return 0, fmt.Errorf("保存上游主机检查点失败: %w", err)
+			return server.ProvisionResult{}, fmt.Errorf("保存上游主机检查点失败: %w", err)
 		}
 	}
 	if hostID == 0 {
 		log.Printf("[zjmf] pid=%d settle 响应: %.500s", req.UpstreamPID, settleBody)
-		return 0, fmt.Errorf("结算与支付均未返回 host id，上游响应: %.200s", settleBody)
+		return server.ProvisionResult{}, fmt.Errorf("结算与支付均未返回 host id，上游响应: %.200s", settleBody)
 	}
-	return hostID, nil
+	return server.ProvisionResult{UpstreamHostID: hostID}, nil
 }
 
-// hostPasswordChars 魔方云主机密码允许字符集（大写+小写+数字+常见特殊符号）。
-const hostPasswordChars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789~!@#$&*()_-+="
-
-// hostPasswordAllowed 上游魔方云模块完整允许的特殊符号（校验用户输入用）。
-const hostPasswordAllowed = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789~!@#$&*()_-+=|{}[;:<>?,./"
-
-// validHostPassword 校验是否符合上游魔方云规则：≥6位、不以 "/" 开头、
-// 仅含允许字符，且必须包含大写、小写与数字。
-func validHostPassword(s string) bool {
-	if len(s) < 6 || strings.HasPrefix(s, "/") {
-		return false
-	}
-	upper, lower, digit := false, false, false
-	for _, c := range s {
-		if !strings.ContainsRune(hostPasswordAllowed, c) {
-			return false
-		}
-		switch {
-		case c >= 'A' && c <= 'Z':
-			upper = true
-		case c >= 'a' && c <= 'z':
-			lower = true
-		case c >= '0' && c <= '9':
-			digit = true
-		}
-	}
-	return upper && lower && digit
-}
-
-// randomHostPassword 生成合规主机密码：长度12、必含大写+小写+数字、不以 "/" 开头。
-func randomHostPassword() string {
-	for {
-		var b []byte
-		upper, lower, digit := false, false, false
-		for i := 0; i < 12; i++ {
-			var rb [1]byte
-			if _, err := cryptorand.Read(rb[:]); err != nil {
-				return "A1b2c3d4e5f6" // 兜底：保证合规（理论上不会失败）
-			}
-			c := hostPasswordChars[int(rb[0])%len(hostPasswordChars)]
-			switch {
-			case c >= 'A' && c <= 'Z':
-				upper = true
-			case c >= 'a' && c <= 'z':
-				lower = true
-			case c >= '0' && c <= '9':
-				digit = true
-			}
-			b = append(b, c)
-		}
-		if upper && lower && digit && b[0] != '/' {
-			return string(b)
-		}
-	}
-}
+// 密码策略统一走 server 包（生成+校验），与其它上游共用。
+func validHostPassword(s string) bool  { return server.ValidHostPassword(s) }
+func randomHostPassword() string      { return server.RandomHostPassword() }
 
 // UpstreamPIDString helper on request — 见下方扩展方法说明。

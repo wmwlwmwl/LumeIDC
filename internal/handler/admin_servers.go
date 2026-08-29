@@ -2,6 +2,8 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
+	"html/template"
 	"net/http"
 	"strconv"
 	"strings"
@@ -58,7 +60,12 @@ func (s *AdminServers) Form(w http.ResponseWriter, r *http.Request) {
 	if !s.require(w, r) {
 		return
 	}
-	data := AdminData{CSRF: csrfOf(adminSessions, w, r)}
+	data := AdminData{CSRF: csrfOf(adminSessions, w, r), Providers: s.Providers.List()}
+	// 凭据字段按 provider 动态渲染：{"fields": {code: [字段...]}, "values": {列: 当前值}}
+	payload := map[string]any{
+		"fields": s.Providers.CredentialFieldSets(),
+		"values": map[string]string{},
+	}
 	if idStr := r.PathValue("id"); idStr != "" {
 		id, _ := strconv.ParseInt(idStr, 10, 64)
 		sv, err := s.Servers.Get(r.Context(), id)
@@ -67,6 +74,12 @@ func (s *AdminServers) Form(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		data.Product = sv
+		payload["values"] = map[string]string{
+			"api_url": sv.APIURL, "api_username": sv.APIUsername, "api_key": sv.APIKey,
+		}
+	}
+	if b, err := json.Marshal(payload); err == nil {
+		data.ProviderFieldsJSON = template.JS(b)
 	}
 	renderAdmin(w, "admin_server_form.html", data)
 }
@@ -81,14 +94,41 @@ func (s *AdminServers) Save(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/admin/servers?err=名称与 API 地址必填", http.StatusSeeOther)
 		return
 	}
+	// provider 取表单值并按注册表白名单校验；编辑未提交 provider 时保留原值，防止误覆盖。
+	// id 取自路由 /admin/servers/{id}/save；新增走 /admin/servers/save 时为空。
+	idStr := r.PathValue("id")
+	provider := strings.TrimSpace(r.PostFormValue("provider"))
+	if provider == "" {
+		if idStr != "" {
+			if id, err := strconv.ParseInt(idStr, 10, 64); err == nil {
+				if old, gerr := s.Servers.Get(r.Context(), id); gerr == nil {
+					provider = old.Provider
+				}
+			}
+		}
+	}
+	if provider == "" {
+		provider = "zjmf"
+	}
+	valid := false
+	for _, p := range s.Providers.List() {
+		if p.Code == provider {
+			valid = true
+			break
+		}
+	}
+	if !valid {
+		http.Redirect(w, r, "/admin/servers?err=不支持的上游类型: "+provider, http.StatusSeeOther)
+		return
+	}
 	sv := &repo.Server{
-		Name: name, Provider: "zjmf",
+		Name: name, Provider: provider,
 		APIURL:      apiURL,
 		APIUsername: strings.TrimSpace(r.PostFormValue("api_username")),
 		APIKey:      strings.TrimSpace(r.PostFormValue("api_key")),
 		Disabled:    r.PostFormValue("disabled") == "1",
 	}
-	if idStr := r.PostFormValue("id"); idStr == "" {
+	if idStr == "" {
 		if _, err := s.Servers.Create(r.Context(), sv); err != nil {
 			http.Redirect(w, r, "/admin/servers?err="+err.Error(), http.StatusSeeOther)
 			return

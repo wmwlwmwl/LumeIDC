@@ -27,6 +27,7 @@
 </select>
 <label style="display:block;margin:10px 0 4px;font-weight:600;font-size:.85rem">上游商品 PID（选上面自动填，也可手填）</label>
 <input name="upstream_pid" id="pidInput" oninput="onPidInput()" value="{{if .Product}}{{if gt .Product.UpstreamPID 0}}{{.Product.UpstreamPID}}{{end}}{{end}}" placeholder="如 100" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px">
+<p class="muted" style="font-size:.76rem;color:#888;margin:6px 0 0">ZJMF：填上游商品 ID。EasyPanel：填 EP 面板产品 ID（配额由 EP 产品定义）；<b>留空 = 弹性模式</b>，配额在下方配置项定义（field 用 web_quota/db_quota/templete 等，直传 add_vh）。</p>
 <div style="display:flex;gap:8px;margin-top:8px">
 <button type="button" onclick="pullConfig()" id="pullBtn" style="padding:8px 14px;background:#15803d;color:#fff;border:0;border-radius:6px;cursor:pointer;white-space:nowrap">拉取配置项</button>
 <span id="pullMsg" class="muted" style="font-size:.78rem;align-self:center"></span>

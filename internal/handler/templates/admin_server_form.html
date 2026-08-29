@@ -1,15 +1,17 @@
 {{define "page"}}
-<h1>{{if .Product}}编辑服务器{{else}}添加服务器（智简魔方财务 ZJMF）{{end}}</h1>
+<h1>{{if .Product}}编辑服务器{{else}}添加服务器{{end}}</h1>
 <form method="post" action="{{if .Product}}/admin/servers/{{.Product.ID}}/save{{else}}/admin/servers/save{{end}}" style="max-width:520px;background:#fff;padding:20px;border-radius:8px">
 <input type="hidden" name="_csrf" value="{{.CSRF}}">
 <label style="display:block;margin:10px 0 4px;font-weight:600;font-size:.88rem">名称</label>
 <input name="name" value="{{with .Product}}{{.Name}}{{end}}" required style="width:100%;padding:8px;box-sizing:border-box;border:1px solid #ccc;border-radius:6px">
-<label style="display:block;margin:10px 0 4px;font-weight:600;font-size:.88rem">API 地址</label>
-<input name="api_url" value="{{with .Product}}{{.APIURL}}{{end}}" placeholder="https://upstream.example.com" required style="width:100%;padding:8px;box-sizing:border-box;border:1px solid #ccc;border-radius:6px">
-<label style="display:block;margin:10px 0 4px;font-weight:600;font-size:.88rem">API 用户名</label>
-<input name="api_username" value="{{with .Product}}{{.APIUsername}}{{end}}" autocomplete="off" style="width:100%;padding:8px;box-sizing:border-box;border:1px solid #ccc;border-radius:6px">
-<label style="display:block;margin:10px 0 4px;font-weight:600;font-size:.88rem">API 密钥（密码）</label>
-<input name="api_key" value="{{with .Product}}{{.APIKey}}{{end}}" autocomplete="new-password" style="width:100%;padding:8px;box-sizing:border-box;border:1px solid #ccc;border-radius:6px">
+<label style="display:block;margin:10px 0 4px;font-weight:600;font-size:.88rem">上游类型</label>
+<select name="provider" id="providerSel" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px" onchange="renderCredFields()">
+{{$cur := "zjmf"}}{{with .Product}}{{$cur = .Provider}}{{end}}
+{{range .Providers}}
+<option value="{{.Code}}" {{if eq .Code $cur}}selected{{end}}>{{.Name}}</option>
+{{end}}
+</select>
+<div id="credFields"></div>
 <label style="display:block;margin:10px 0 4px;font-weight:600;font-size:.88rem">状态</label>
 <select name="disabled" style="padding:8px;border:1px solid #ccc;border-radius:6px">
 <option value="0">启用</option>
@@ -17,4 +19,25 @@
 </select>
 <button style="margin-top:18px;width:100%;padding:11px;background:#4f46e5;color:#fff;border:0;border-radius:6px;cursor:pointer">保存</button>
 </form>
+<script>
+// 凭据字段由各上游 provider 声明（PROV.fields），选择类型时切换渲染；编辑时回填已有值。
+const PROV = {{.ProviderFieldsJSON}};
+function escAttr(s){return String(s||"").replace(/&/g,"&amp;").replace(/"/g,"&quot;");}
+function renderCredFields(){
+  const sel = document.getElementById("providerSel");
+  const code = sel ? sel.value : "zjmf";
+  const fields = (PROV.fields && PROV.fields[code]) || [];
+  document.getElementById("credFields").innerHTML = fields.map(f=>{
+    const val = (PROV.values && PROV.values[f.name]) || "";
+    const type = f.secret ? "password" : "text";
+    const req = f.required ? " required" : "";
+    const ph = f.placeholder ? ' placeholder="'+escAttr(f.placeholder)+'"' : "";
+    const auto = f.secret ? ' autocomplete="new-password"' : ' autocomplete="off"';
+    return '<label style="display:block;margin:10px 0 4px;font-weight:600;font-size:.88rem">'+f.label+'</label>'+
+      '<input name="'+f.name+'" value="'+escAttr(val)+'" type="'+type+'"'+ph+req+auto+
+      ' style="width:100%;padding:8px;box-sizing:border-box;border:1px solid #ccc;border-radius:6px">';
+  }).join("");
+}
+renderCredFields();
+</script>
 {{end}}

@@ -4,8 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"html/template"
+	"log"
 	"net/url"
 
+	"lumeidc/internal/crypto"
 	"lumeidc/internal/repo"
 	"lumeidc/internal/server"
 )
@@ -16,26 +19,28 @@ type Console struct {
 	Servers   *repo.Servers
 	Products  *repo.Products
 	Providers *server.Registry
+	Crypt     *crypto.Cryptor // services.password_crypt 解密（详情页密码展示），可为 nil
 }
 
-// resolve 校验归属并返回 provider+cfg+hostID。无上游绑定返回 errNoUpstream。
-func (c *Console) resolve(ctx context.Context, userID, serviceID int64) (server.ConsoleProvider, server.Config, int64, error) {
+// resolveBase 校验归属并返回 provider+cfg+hostID（不做能力断言）。
+// 无上游绑定返回 errNoUpstream。
+func (c *Console) resolveBase(ctx context.Context, userID, serviceID int64) (server.Provider, server.Config, int64, error) {
 	var serverID sql.NullInt64
 	var hostID int64
-	var upstreamPID int64
 	var providerCode string
 	err := c.DB.QueryRowContext(ctx,
 		`SELECT sv.upstream_host_id, coalesce(sv.server_id,p.server_id),
-		        coalesce(nullif(sv.upstream_pid,0),p.upstream_pid),
 		        coalesce(nullif(sv.upstream_provider,''),srv.provider,'')
 		 FROM services sv JOIN products p ON p.id=sv.product_id
 		 LEFT JOIN servers srv ON srv.id=coalesce(sv.server_id,p.server_id)
 		 WHERE sv.id=$1 AND sv.user_id=$2 AND sv.status IN (1,2)`,
-		serviceID, userID).Scan(&hostID, &serverID, &upstreamPID, &providerCode)
+		serviceID, userID).Scan(&hostID, &serverID, &providerCode)
 	if err != nil {
 		return nil, server.Config{}, 0, fmt.Errorf("服务不存在或不可操作")
 	}
-	if !serverID.Valid || upstreamPID == 0 || hostID == 0 {
+	// 有上游的判定：绑定了服务器且已开通（hostID>0）。upstream_pid=0 是合法的弹性模式
+	//（如 EasyPanel 详细参数直传），不能仅凭 pid=0 判为本地服务；本地服务 hostID 恒为 0。
+	if !serverID.Valid || hostID == 0 {
 		return nil, server.Config{}, 0, errNoUpstream
 	}
 	prov, err := c.Providers.Get(providerCode)
@@ -46,11 +51,20 @@ func (c *Console) resolve(ctx context.Context, userID, serviceID int64) (server.
 	if err != nil {
 		return nil, server.Config{}, 0, fmt.Errorf("读取服务器失败: %w", err)
 	}
+	return prov, upstreamConfig(sv), hostID, nil
+}
+
+// resolve 在 resolveBase 之上断言完整控制台能力（电源/重装/救援等）。
+func (c *Console) resolve(ctx context.Context, userID, serviceID int64) (server.ConsoleProvider, server.Config, int64, error) {
+	prov, cfg, hostID, err := c.resolveBase(ctx, userID, serviceID)
+	if err != nil {
+		return nil, server.Config{}, 0, err
+	}
 	cp, ok := prov.(server.ConsoleProvider)
 	if !ok {
 		return nil, server.Config{}, 0, server.ErrNotSupported
 	}
-	return cp, upstreamConfig(sv), hostID, nil
+	return cp, cfg, hostID, nil
 }
 
 // Power 电源操作。
@@ -63,12 +77,80 @@ func (c *Console) Power(ctx context.Context, userID, serviceID int64, action str
 }
 
 // ResetPassword 重置实例密码；返回最终应用的密码（为空/不合规时上游生成）。
+// 成功后同步加密落库 services.password_crypt（详情页展示与面板直登用）。
 func (c *Console) ResetPassword(ctx context.Context, userID, serviceID int64, password string) (string, error) {
-	prov, cfg, hostID, err := c.resolve(ctx, userID, serviceID)
+	prov, cfg, hostID, err := c.resolveBase(ctx, userID, serviceID)
 	if err != nil {
 		return "", err
 	}
-	return prov.ResetPassword(ctx, cfg, hostID, password)
+	pr, ok := prov.(server.PasswordResetter)
+	if !ok {
+		return "", server.ErrNotSupported
+	}
+	applied, err := pr.ResetPassword(ctx, cfg, hostID, password)
+	if err != nil {
+		return "", err
+	}
+	c.savePassword(ctx, serviceID, applied)
+	return applied, nil
+}
+
+// savePassword 加密写入实例密码（失败仅记日志，不阻断操作）。
+func (c *Console) savePassword(ctx context.Context, serviceID int64, password string) {
+	if password == "" || c.Crypt == nil {
+		return
+	}
+	enc, err := c.Crypt.Encrypt(password)
+	if err != nil {
+		log.Printf("[console] service %d 密码加密失败: %v", serviceID, err)
+		return
+	}
+	if _, err := c.DB.ExecContext(ctx,
+		`UPDATE services SET password_crypt=$2 WHERE id=$1`, serviceID, enc); err != nil {
+		log.Printf("[console] service %d 密码落库失败: %v", serviceID, err)
+	}
+}
+
+// ProviderWidget 渲染供应商自带详情页区块（DetailWidgetProvider 插槽）。
+// 未实现该能力的供应商返回零值（详情页回落到全局面板）。csrf 为全局控制台路由表单令牌。
+func (c *Console) ProviderWidget(ctx context.Context, userID, serviceID int64, csrf, statusText string, overview server.HostOverview) (template.HTML, error) {
+	prov, cfg, hostID, err := c.resolveBase(ctx, userID, serviceID)
+	if err != nil {
+		return "", err
+	}
+	wp, ok := prov.(server.DetailWidgetProvider)
+	if !ok {
+		return "", nil
+	}
+	// 实例密码：上游查不回时用 password_crypt 解密
+	var pw string
+	var enc string
+	if c.Crypt != nil {
+		if qerr := c.DB.QueryRowContext(ctx,
+			`SELECT password_crypt FROM services WHERE id=$1`, serviceID).Scan(&enc); qerr == nil {
+			if dec, derr := c.Crypt.Decrypt(enc); derr == nil {
+				pw = dec
+			}
+		}
+	}
+	return wp.DetailWidget(ctx, cfg, hostID, server.WidgetData{
+		ServiceID: serviceID, CSRF: csrf, Password: pw, StatusText: statusText, Overview: overview,
+	})
+}
+
+// fillPassword 上游未回传密码时（如 EasyPanel getVh 查不回），用 password_crypt 解密填充。
+func (c *Console) fillPassword(ctx context.Context, serviceID int64, d *server.HostDetail) {
+	if d.Password != "" || c.Crypt == nil {
+		return
+	}
+	var enc string
+	if err := c.DB.QueryRowContext(ctx,
+		`SELECT password_crypt FROM services WHERE id=$1`, serviceID).Scan(&enc); err != nil {
+		return
+	}
+	if pw, err := c.Crypt.Decrypt(enc); err == nil {
+		d.Password = pw
+	}
 }
 
 // Rescue 进入救援模式（system: "1"=Windows, "2"=Linux）。
@@ -173,7 +255,7 @@ func (c *Console) Usage(ctx context.Context, userID, serviceID int64) (server.Us
 
 // HostDetail 实时拉取实例登录与系统信息（供详情页展示，不落库）。
 func (c *Console) HostDetail(ctx context.Context, userID, serviceID int64) (server.HostDetail, error) {
-	prov, cfg, hostID, err := c.resolve(ctx, userID, serviceID)
+	prov, cfg, hostID, err := c.resolveBase(ctx, userID, serviceID)
 	if err != nil {
 		return server.HostDetail{}, err
 	}
@@ -181,12 +263,17 @@ func (c *Console) HostDetail(ctx context.Context, userID, serviceID int64) (serv
 	if !ok {
 		return server.HostDetail{}, server.ErrNotSupported
 	}
-	return hdf.HostDetail(ctx, cfg, hostID)
+	d, err := hdf.HostDetail(ctx, cfg, hostID)
+	if err != nil {
+		return server.HostDetail{}, err
+	}
+	c.fillPassword(ctx, serviceID, &d)
+	return d, nil
 }
 
 // Overview 一次性拉取详情页概况：登录/系统信息 + 模块清单（对 /host/header 仅一次请求）。
 func (c *Console) Overview(ctx context.Context, userID, serviceID int64) (server.HostOverview, error) {
-	prov, cfg, hostID, err := c.resolve(ctx, userID, serviceID)
+	prov, cfg, hostID, err := c.resolveBase(ctx, userID, serviceID)
 	if err != nil {
 		return server.HostOverview{}, err
 	}
@@ -194,7 +281,12 @@ func (c *Console) Overview(ctx context.Context, userID, serviceID int64) (server
 	if !ok {
 		return server.HostOverview{}, server.ErrNotSupported
 	}
-	return of.HostOverview(ctx, cfg, hostID)
+	ov, err := of.HostOverview(ctx, cfg, hostID)
+	if err != nil {
+		return server.HostOverview{}, err
+	}
+	c.fillPassword(ctx, serviceID, &ov.Detail)
+	return ov, nil
 }
 
 // Chart 拉取监控图表时序（上游不支持时返回 ErrNotSupported）。

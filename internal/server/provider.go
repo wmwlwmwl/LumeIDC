@@ -33,13 +33,20 @@ type Provider interface {
 	TestConnection(ctx context.Context, cfg Config) error
 	// Catalog 拉取上游商品目录（含价格与库存）。
 	Catalog(ctx context.Context, cfg Config) ([]UpstreamProduct, error)
-	// Provision 开通服务，返回上游 host id。必须幂等：可凭 checkpoint 续跑。
-	Provision(ctx context.Context, cfg Config, req ProvisionRequest, checkpoint CheckpointStore) (int64, error)
+	// Provision 开通服务，返回开通结果。必须幂等：可凭 checkpoint 续跑。
+	Provision(ctx context.Context, cfg Config, req ProvisionRequest, checkpoint CheckpointStore) (ProvisionResult, error)
 	Renew(ctx context.Context, cfg Config, upstreamHostID int64, cycle string) error
 	Suspend(ctx context.Context, cfg Config, upstreamHostID int64) error
 	Unsuspend(ctx context.Context, cfg Config, upstreamHostID int64) error
 	Terminate(ctx context.Context, cfg Config, upstreamHostID int64) error
 	Status(ctx context.Context, cfg Config, upstreamHostID int64) (ServiceStatus, error)
+}
+
+// PIDOptionalProvider 可选：上游产品 ID 可省略的供应商（弹性配置模式，
+// 配额等参数由订单配置项直传，如 EasyPanel add_vh 详细参数模式）。
+// 未实现该接口或返回 false 时，upstream_pid=0 的产品视为纯本地服务，不走上游开通。
+type PIDOptionalProvider interface {
+	PIDOptional() bool
 }
 
 // ConfigOptionsFetcher 可选拉取配置项能力的供应商（类型断言使用）。
@@ -94,6 +101,14 @@ func (u UpstreamProduct) DisplayPrice() float64 {
 	return u.DisplayMonthly
 }
 
+// ProvisionResult 开通结果。
+type ProvisionResult struct {
+	UpstreamHostID int64
+	// Password 开通时应用到实例的密码（供应商生成或透传用户所填）。
+	// 非空时由调用方加密落库 services.password_crypt；空表示密码可随时从上游查回（如 zjmf）。
+	Password string
+}
+
 // ProvisionRequest 开通请求。
 type ProvisionRequest struct {
 	UpstreamPID int64             `json:"upstream_pid"`
@@ -101,6 +116,8 @@ type ProvisionRequest struct {
 	Hostname    string            `json:"hostname"`
 	Password    string            `json:"password"`
 	ConfigOpts  map[string]string `json:"config_opts,omitempty"` // field -> 值/子项
+	// ServiceID 本地服务 ID。供应商可用它派生上游唯一标识（如 EasyPanel 站点名 u{id}）。
+	ServiceID int64 `json:"service_id,omitempty"`
 }
 
 // ServiceStatus 上游实例状态。
@@ -119,6 +136,9 @@ type HostDetail struct {
 	Status    string // 实例状态（实时，如 运行中/硬重启中）
 	OSName    string // 系统名称，如 Ubuntu
 	OSVersion string // 系统版本，如 Ubuntu-20.04.1-x64
+	// PanelURL 主机面板登录地址（如 EasyPanel 用户面板）。非空时详情页显示"登录主机面板"，
+	// POST username+passwd 自动登录；Password 为空时由调用方用 password_crypt 解密填充。
+	PanelURL string
 	// 以下字段取自 /host/header 的 host_data / config_options，详情页「实例信息」面板展示用。
 	AdditionalIPs []string // 附加 IP
 	BWLimit        string   // 带宽限额

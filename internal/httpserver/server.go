@@ -3,17 +3,20 @@ package httpserver
 import (
 	"context"
 	"database/sql"
+	"log"
 	"net/http"
 	"os"
 
 	"lumeidc/internal/config"
 	"lumeidc/internal/cron"
+	"lumeidc/internal/crypto"
 	"lumeidc/internal/db"
 	"lumeidc/internal/gateway"
 	"lumeidc/internal/handler"
 	"lumeidc/internal/middleware"
 	"lumeidc/internal/repo"
 	"lumeidc/internal/server"
+	"lumeidc/internal/server/easypanel"
 	"lumeidc/internal/server/zjmf"
 	"lumeidc/internal/service"
 
@@ -55,9 +58,15 @@ func Build(cfg *config.Config) (*App, error) {
 	}
 	handler.SetAdminStore(store)
 	handler.SetPageStore(store)
-	// 供应商注册表：集中分发，各服务不再直接构造 zjmf.Provider{}
+	// 供应商注册表：集中分发。新上游在此注册（详见 docs/provider.md）。
 	providers := server.NewRegistry()
 	providers.Register(zjmf.Provider{})
+	providers.Register(easypanel.Provider{})
+	// 实例密码加密器（services.password_crypt），密钥与 session 同源
+	cryptor, cerr := crypto.New(cfg.SecretKey)
+	if cerr != nil {
+		log.Fatalf("初始化密码加密器失败: %v", cerr)
+	}
 	users := &repo.Users{DB: database}
 	products := &repo.Products{DB: database}
 	serversRepo := &repo.Servers{DB: database}
@@ -81,6 +90,7 @@ func Build(cfg *config.Config) (*App, error) {
 		Providers:    providers,
 		PeriodGrants: &repo.PeriodGrants{DB: database},
 		Notifier:     notifier,
+		Crypt:        cryptor,
 	}
 	pay := &handler.Pay{
 		Orders:   &service.Orders{DB: database, Products: products, Coupons: &repo.Coupons{DB: database}},
@@ -98,7 +108,7 @@ func Build(cfg *config.Config) (*App, error) {
 		Orders:      &service.Orders{DB: database, Products: products, Coupons: &repo.Coupons{DB: database}},
 		UsersRepo:   users,
 		ServersRepo: serversRepo,
-		Console:     &service.Console{DB: database, Servers: serversRepo, Products: products, Providers: providers},
+		Console:     &service.Console{DB: database, Servers: serversRepo, Products: products, Providers: providers, Crypt: cryptor},
 		Balance:     balanceRepo,
 		Notifier:    notifier,
 		Announcements: &repo.Announcements{DB: database},

@@ -51,7 +51,8 @@ func (lc *Lifecycle) loadService(ctx context.Context, serviceID int64) (*service
 }
 
 func (lc *Lifecycle) providerFor(ctx context.Context, s *serviceRef) (server.Provider, server.Config, error) {
-	if !s.ServerID.Valid || s.UpstreamPID == 0 || s.UpstreamHost == 0 {
+	// 同 console.resolve：hostID>0 即有上游；upstream_pid=0 为合法弹性模式（EasyPanel）。
+	if !s.ServerID.Valid || s.UpstreamHost == 0 {
 		return nil, server.Config{}, errNoUpstream
 	}
 	prov, err := lc.Providers.Get(s.UpstreamProvider)

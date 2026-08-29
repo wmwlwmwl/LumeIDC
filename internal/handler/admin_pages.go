@@ -12,6 +12,7 @@ import (
 
 	"lumeidc/internal/middleware"
 	"lumeidc/internal/repo"
+	"lumeidc/internal/server"
 )
 
 //go:embed templates/admin.html templates/admin_*.html
@@ -32,6 +33,9 @@ type AdminData struct {
 	UpstreamBound bool
 	Secret        string
 	TotalProfit   string
+	Providers     []server.ProviderInfo // 上游供应商清单（服务器表单下拉）
+	// ProviderFieldsJSON 服务器表单动态凭据字段：{"fields":{code:[...]}, "values":{api_url:...}}。
+	ProviderFieldsJSON template.JS
 }
 
 func renderAdmin(w http.ResponseWriter, page string, data AdminData) {
@@ -40,16 +44,8 @@ func renderAdmin(w http.ResponseWriter, page string, data AdminData) {
 		http.Error(w, err.Error(), 500)
 		return
 	}
-	m := map[string]any{"CSRF": data.CSRF, "Error": data.Error, "Msg": data.Msg,
-		"Product": data.Product, "Types": data.Types,
-		"Monthly": data.Monthly, "Quarterly": data.Quarterly, "Yearly": data.Yearly,
-		"ConfigJSON": data.ConfigJSON, "ServersList": data.ServersList,
-		"UpstreamBound": data.UpstreamBound}
-	if data.Rows != nil {
-		m["Rows"] = data.Rows
-	}
-	// 模板执行错误必须记录：否则 range 内字段错误会导致响应静默截断，极难排查
-	if err := tpl.ExecuteTemplate(w, "admin", m); err != nil {
+	// 直接传结构体：此前手动拼 map 曾漏字段（Providers/Secret/TotalProfit 静默丢失），勿再回退。
+	if err := tpl.ExecuteTemplate(w, "admin", data); err != nil {
 		log.Printf("[template] %s: %v", page, err)
 	}
 }

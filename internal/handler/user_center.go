@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
+	"html/template"
 	"io"
 	"log"
 	"net/http"
@@ -54,8 +55,8 @@ func (h *Pages) userHome(w http.ResponseWriter, r *http.Request) {
 	}
 	bal, _ := h.Balance.Get(r.Context(), userID)
 	render(w, r, "user_home.html", map[string]any{
-		"Stats":        h.stats(r, userID),
-		"Balance":      bal,
+		"Stats":         h.stats(r, userID),
+		"Balance":       bal,
 		"Announcements": h.listAnnouncements(r.Context())})
 }
 
@@ -388,12 +389,24 @@ func (h *Pages) serviceDetail(w http.ResponseWriter, r *http.Request) {
 	if sess := middleware.FromSession(r.Context()); sess != nil {
 		flash = sess.ConsumeFlash()
 	}
+	csrf := csrfOf(sessionsStore, w, r)
+	overview := h.fetchOverview(r.Context(), userID, d.ID)
+	// 供应商专属详情区块（插槽注入）；无该能力的供应商为空，回落全局面板。
+	wctx, wcancel := context.WithTimeout(r.Context(), 8*time.Second)
+	var providerWidget template.HTML
+	if h.Console != nil {
+		if wg, werr := h.Console.ProviderWidget(wctx, userID, d.ID, csrf, d.StatusText, overview); werr == nil {
+			providerWidget = wg
+		}
+	}
+	wcancel()
 	render(w, r, "service_detail.html", map[string]any{
 		"Svc":   d,
-		"CSRF":  csrfOf(sessionsStore, w, r),
+		"CSRF":  csrf,
 		"ShowQ": showQ, "ShowY": showY,
-		"Flash":    flash,
-		"Overview": h.fetchOverview(r.Context(), userID, d.ID),
+		"Flash":          flash,
+		"Overview":       overview,
+		"ProviderWidget": providerWidget,
 	})
 }
 

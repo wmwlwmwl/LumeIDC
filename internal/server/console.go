@@ -18,6 +18,11 @@ type ConsoleProvider interface {
 	Usage(ctx context.Context, cfg Config, upstreamHostID int64) (UsageInfo, error)
 }
 
+// PasswordResetter 可选：重置实例密码能力（单独声明，虚拟主机类上游无需整套控制台）。
+type PasswordResetter interface {
+	ResetPassword(ctx context.Context, cfg Config, upstreamHostID int64, password string) (string, error)
+}
+
 // RescueProvider 可选：救援模式增强能力（临时密码/状态查询/退出）。
 type RescueProvider interface {
 	// RescueWithPass 带临时密码进入救援模式，返回最终应用的密码。

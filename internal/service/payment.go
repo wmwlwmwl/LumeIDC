@@ -9,6 +9,7 @@ import (
 	"log"
 	"time"
 
+	"lumeidc/internal/crypto"
 	"lumeidc/internal/repo"
 	"lumeidc/internal/server"
 )
@@ -27,6 +28,7 @@ type Payment struct {
 	Providers    *server.Registry
 	PeriodGrants *repo.PeriodGrants
 	Notifier     *Notifier
+	Crypt        *crypto.Cryptor // 实例密码加密落库（services.password_crypt），可为 nil
 }
 
 // MarkPaidByBalance 用余额支付账单。余额不足返回错误，账单保持未支付。
@@ -341,7 +343,19 @@ func (p *Payment) provision(ctx context.Context, serviceID, _ int64, cycle strin
 		Scan(&serverID, &providerCode, &upstreamPID); err != nil {
 		return p.failProvision(ctx, serviceID, err)
 	}
-	if !serverID.Valid || upstreamPID == 0 {
+	// 本地服务判定：未绑定服务器；或绑定了服务器但无上游产品 ID 且该供应商不支持弹性模式
+	// （PID 可选，如 EasyPanel 详细参数直传）。zjmf 等要求 PID 的供应商行为不变。
+	needUpstream := serverID.Valid
+	if needUpstream && upstreamPID == 0 {
+		if prov0, gerr := p.Providers.Get(providerCode); gerr == nil {
+			if po, ok := prov0.(server.PIDOptionalProvider); !ok || !po.PIDOptional() {
+				needUpstream = false
+			}
+		} else {
+			needUpstream = false // 未知供应商：按本地服务兜底（不阻断开通）
+		}
+	}
+	if !needUpstream {
 		if _, err := p.DB.ExecContext(ctx, `UPDATE services SET status=1,provision_error='' WHERE id=$1 AND status=0`, serviceID); err != nil {
 			return err
 		}
@@ -361,22 +375,33 @@ func (p *Payment) provision(ctx context.Context, serviceID, _ int64, cycle strin
 		return p.failProvision(ctx, serviceID, fmt.Errorf("锁定上游账户失败: %w", err))
 	}
 	defer unlock()
-	hostID, err := prov.Provision(ctx, cfg, server.ProvisionRequest{
+	res, err := prov.Provision(ctx, cfg, server.ProvisionRequest{
 		UpstreamPID: upstreamPID,
 		Cycle:       cycle,
 		// 订单配置选择回传上游，确保按所选配置开通（如 NAT 转发=10 时上游真正开通 10 个，
 		// 否则上游一直用默认档）。此前漏传会导致选择被忽略。
 		ConfigOpts: p.orderConfigOpts(ctx, serviceID),
+		// ServiceID 供上游派生唯一标识（如 EasyPanel 站点名 u{id}）。
+		ServiceID: serviceID,
 	}, &serviceCheckpoint{repo: p.Provisions, serviceID: serviceID, ctx: ctx})
 	if err != nil {
 		return p.failProvision(ctx, serviceID, err)
 	}
-	if hostID > 0 {
+	if res.UpstreamHostID > 0 {
 		if _, err := p.DB.ExecContext(ctx,
-			`UPDATE services SET upstream_host_id=$2 WHERE id=$1 AND status=0`, serviceID, hostID); err != nil {
+			`UPDATE services SET upstream_host_id=$2 WHERE id=$1 AND status=0`, serviceID, res.UpstreamHostID); err != nil {
 			return err
 		}
 		p.clearProvisionError(ctx, serviceID)
+	}
+	// 供应商回传了实例密码（如 EasyPanel）：加密落库供详情页展示与面板直登。
+	if res.Password != "" && p.Crypt != nil {
+		if enc, cerr := p.Crypt.Encrypt(res.Password); cerr == nil {
+			if _, uerr := p.DB.ExecContext(ctx,
+				`UPDATE services SET password_crypt=$2 WHERE id=$1`, serviceID, enc); uerr != nil {
+				log.Printf("[provision] service %d 密码落库失败: %v", serviceID, uerr)
+			}
+		}
 	}
 	return nil
 }
