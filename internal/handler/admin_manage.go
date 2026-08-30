@@ -1155,15 +1155,6 @@ func (m *AdminManage) OrderRefund(w http.ResponseWriter, r *http.Request) {
 	amount := strings.TrimSpace(r.PostFormValue("amount"))
 	reason := strings.TrimSpace(r.PostFormValue("reason"))
 	method := r.PostFormValue("method")
-	// 外部支付（非余额）只能线下/手动标记已退款，禁止误退余额。
-	var invMethod string
-	_ = m.Payment.DB.QueryRowContext(r.Context(),
-		`SELECT method FROM invoices WHERE order_id=$1 LIMIT 1`, id).Scan(&invMethod)
-	if invMethod != "balance" {
-		method = "gateway"
-	} else if method != "gateway" {
-		method = "balance"
-	}
 	var aid int64
 	if s := middleware.FromSession(r.Context()); s != nil {
 		aid = s.UserID

@@ -1206,12 +1206,17 @@ func (h *Pages) serviceModuleSubmit(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"ok": 0, "msg": "模块不可用"})
 		return
 	}
-	if sum, err := h.Console.ModuleSummary(r.Context(), userID, serviceID); err != nil || !moduleKeyInSummary(sum, key) {
+	sum, err := h.Console.ModuleSummary(r.Context(), userID, serviceID)
+	if err != nil || !moduleKeyInSummary(sum, key) {
 		writeJSON(w, map[string]any{"ok": 0, "msg": "模块不可用"})
 		return
 	}
 	if err := r.ParseForm(); err != nil {
 		writeJSON(w, map[string]any{"ok": 0, "msg": "表单解析失败"})
+		return
+	}
+	if fn := r.PostFormValue("func"); fn != "" && !moduleFunctionInSummary(sum, fn) {
+		writeJSON(w, map[string]any{"ok": 0, "msg": "操作不可用"})
 		return
 	}
 	raw, err := h.Console.ModuleAction(r.Context(), userID, serviceID, r.PostForm)
@@ -1225,6 +1230,14 @@ func (h *Pages) serviceModuleSubmit(w http.ResponseWriter, r *http.Request) {
 func moduleKeyInSummary(sum server.ModuleSummary, key string) bool {
 	for _, a := range sum.Areas {
 		if a.Key == key {
+			return true
+		}
+	}
+	return false
+}
+func moduleFunctionInSummary(sum server.ModuleSummary, fn string) bool {
+	for _, b := range sum.Buttons {
+		if b.Function == fn {
 			return true
 		}
 	}

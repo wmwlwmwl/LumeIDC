@@ -12,9 +12,9 @@ import (
 )
 
 type Admin struct {
-	Admins       *repo.Admins
-	DB           *sql.DB
-	Lockout      *repo.LoginAttempts
+	Admins        *repo.Admins
+	DB            *sql.DB
+	Lockout       *repo.LoginAttempts
 	Announcements *repo.Announcements
 }
 
@@ -105,7 +105,7 @@ func (a *Admin) passwordForm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	renderAdmin(w, "admin_password.html", AdminData{
-		CSRF: csrfOf(adminSessions, w, r),
+		CSRF:  csrfOf(adminSessions, w, r),
 		Error: r.URL.Query().Get("err"),
 		Msg:   r.URL.Query().Get("ok"),
 	})
@@ -134,7 +134,10 @@ func (a *Admin) passwordSubmit(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/admin/password?err="+url.QueryEscape(msg), http.StatusSeeOther)
 		return
 	}
-	http.Redirect(w, r, "/admin/password?ok="+url.QueryEscape("密码已修改"), http.StatusSeeOther)
+	if adminSessions != nil {
+		adminSessions.RevokeUser(sess.UserID)
+	}
+	http.Redirect(w, r, "/admin/login?ok="+url.QueryEscape("密码已修改，请重新登录"), http.StatusSeeOther)
 }
 
 // totpSetup GET /admin/totp — 两步验证设置页（生成/展示密钥，确认后启用）。
