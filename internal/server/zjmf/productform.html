@@ -1,0 +1,113 @@
+<div id="pidSelRow">
+<label style="display:block;margin:0 0 4px;font-weight:600;font-size:.85rem">上游商品（按分组）</label>
+<select id="pidSel" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px">
+<option value="">— 手动输入 PID —</option>
+</select>
+</div>
+<div style="display:flex;gap:8px;margin-top:8px" id="pullRow">
+<button type="button" id="pullBtn" style="padding:8px 14px;background:#15803d;color:#fff;border:0;border-radius:6px;cursor:pointer;white-space:nowrap">拉取配置项</button>
+<span id="pullMsg" class="muted" style="font-size:.78rem;align-self:center"></span>
+</div>
+<p class="muted" id="pullNote" style="font-size:.76rem;color:#888;margin:6px 0 0">选择上游商品后，名称/价格/库存/配置项会自动带出（仍可手动修改）。保存后支付成功将自动向上游开通。</p>
+<script>
+(function(){
+  let loadedSid = "";
+  function loadUpstream(sid){
+    const sel = document.getElementById("pidSel");
+    if(!sid || (loadedSid === sid && sel.options.length > 1)) return; // 同服务器目录缓存
+    loadedSid = sid;
+    sel.innerHTML = '<option value="">加载中…</option>';
+    fetch(`/admin/products/upstream-options?server_id=${sid}`).then(r => r.json()).then(j => {
+      if(j.ok !== 1){ sel.innerHTML = '<option value="">'+esc(j.msg||"目录为空")+'</option>'; return; }
+      let html = '<option value="">— 手动输入 PID —</option>';
+      for(const g of (j.groups||[])){
+        html += `<optgroup label="${esc(g.name)}">`;
+        for(const it of g.items){
+          html += `<option value="${it.pid}" data-name="${esc(it.name)}">${esc(it.name)}</option>`;
+        }
+        html += '</optgroup>';
+      }
+      sel.innerHTML = html;
+      const cur = document.getElementById("pidInput").value;
+      if(cur) sel.value = cur;
+    }).catch(() => { sel.innerHTML = '<option value="">加载失败</option>'; });
+  }
+  async function onPidChange(){
+    const sel = document.getElementById("pidSel");
+    const pid = sel.value;
+    if(!pid){ document.getElementById("pidInput").value = ""; return; }
+    document.getElementById("pidInput").value = pid;
+    const opt = sel.selectedOptions[0];
+    if(opt && opt.dataset.name) document.querySelector('input[name="name"]').value = opt.dataset.name;
+    // 价格/库存/描述由选中后的 pullConfig 一次性拉取，避免下拉加载时逐个请求上游。
+    await pullConfig();
+  }
+  function onPidInput(){
+    const sel = document.getElementById("pidSel");
+    if(document.getElementById("pidInput").value !== sel.value) sel.value = "";
+  }
+  async function pullConfig(){
+    const sid = document.getElementById("serverSel").value;
+    const pid = document.getElementById("pidInput").value;
+    const msg = document.getElementById("pullMsg");
+    const idEl = document.querySelector('input[name="id"]');
+    const idVal = idEl ? idEl.value : "";
+    if(!sid || !pid){ msg.textContent = "请先选择上游服务器并填写/选择 PID"; msg.style.color = "#b91c1c"; return; }
+    const btn = document.getElementById("pullBtn");
+    btn.disabled = true; msg.textContent = "拉取中…"; msg.style.color = "#888";
+    try {
+      if(idVal){
+        // 已存在产品：直接 POST 拉取并落库（配置项 + 基础价一次性写入）
+        const csrf = document.querySelector('input[name="_csrf"]').value;
+        const r = await fetch(`/admin/products/${idVal}/pull-config`, {
+          method: "POST",
+          headers: {"Content-Type": "application/x-www-form-urlencoded"},
+          body: `_csrf=${encodeURIComponent(csrf)}`
+        });
+        const j = await r.json();
+        if(j.ok === "1" || j.ok === 1){
+          if(j.json) applyPulledJSON(j.json);
+          if(j.price){
+            const f = v => (v > 0 ? (Math.round(v*100)/100).toString() : "");
+            setVal("monthly", f(j.price.monthly));
+            setVal("quarterly", f(j.price.quarterly));
+            setVal("yearly", f(j.price.yearly));
+          }
+          msg.textContent = `已拉取并保存 ${j.count} 个配置项`; msg.style.color = "#15803d";
+        } else {
+          msg.textContent = j.msg || "拉取失败"; msg.style.color = "#b91c1c";
+        }
+      } else {
+        const r = await fetch(`/admin/products/upstream-config?server_id=${sid}&pid=${pid}`);
+        const j = await r.json();
+        if(j.ok === 1){
+          applyPulledJSON(j.json);
+          // 同步刷新基础价输入框（上游基础价常被漏抓）；上游基础价为 0 时不覆盖
+          if(j.price){
+            const f = v => (v > 0 ? (Math.round(v*100)/100).toString() : "");
+            setVal("monthly", f(j.price.monthly));
+            setVal("quarterly", f(j.price.quarterly));
+            setVal("yearly", f(j.price.yearly));
+          }
+          if(j.description) setVal("description", j.description);
+          if(j.stock != null) setVal("stock", j.stock < 0 ? "-1" : j.stock);
+          msg.textContent = `已拉取 ${j.count} 个配置项`; msg.style.color = "#15803d";
+        } else {
+          msg.textContent = j.msg || "拉取失败"; msg.style.color = "#b91c1c";
+        }
+      }
+    } catch(e){ msg.textContent = "请求失败"; msg.style.color = "#b91c1c"; }
+    btn.disabled = false;
+  }
+  function init(){
+    const sel = document.getElementById("pidSel");
+    if(!sel.dataset.bound){
+      sel.addEventListener("change", onPidChange);
+      document.getElementById("pidInput").addEventListener("input", onPidInput);
+      sel.dataset.bound = "1";
+    }
+    loadUpstream(document.getElementById("serverSel").value);
+  }
+  if(window.provFormRegister) provFormRegister("zjmf", [], init);
+})();
+</script>

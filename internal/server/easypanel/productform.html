@@ -1,0 +1,33 @@
+<label style="display:block;margin:10px 0 4px;font-weight:600;font-size:.85rem">站点类型</label>
+<select id="epSiteType" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px">
+<option value="vh">虚拟主机</option>
+<option value="cdn">CDN 站点</option>
+</select>
+<p class="muted" style="font-size:.76rem;color:#888;margin:6px 0 0">CDN 站点 = 隐藏配置项 cdn=1 随订单下发（购买页不可见、不计价）；仅弹性模式（PID 留空）生效。</p>
+<script>
+(function(){
+  // cfgOptions/cfgSync/renderCfgList 是共享表单主脚本的全局绑定（let/function），
+  // 此处仅在回调内引用（调用时主脚本已执行，无 TDZ 问题）。
+  function apply(){
+    const cdn = document.getElementById("epSiteType").value === "cdn";
+    const i = cfgOptions.findIndex(o => o.field === "cdn");
+    if(cdn){
+      const opt = {field:"cdn", name:"站点类型", option_mode:"select", hidden:true, sub:[{name:"CDN站点", value:"1"}]};
+      if(i >= 0) cfgOptions[i] = opt; else cfgOptions.push(opt);
+    } else if(i >= 0){
+      cfgOptions.splice(i, 1);
+    }
+    cfgSync(); renderCfgList();
+  }
+  // 幂等 init：页面加载与每次选中该供应商时由共享表单调用；从 cfgOptions 回显状态
+  function init(){
+    const sel = document.getElementById("epSiteType");
+    if(!sel) return;
+    if(!sel.dataset.bound){ sel.addEventListener("change", apply); sel.dataset.bound = "1"; }
+    const o = cfgOptions.find(c => c.field === "cdn");
+    const v = o && o.sub && o.sub[0] ? String(o.sub[0].value || o.sub[0].name) : "";
+    sel.value = v === "1" ? "cdn" : "vh";
+  }
+  if(window.provFormRegister) provFormRegister("easypanel", ["cdn"], init);
+})();
+</script>
