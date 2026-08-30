@@ -124,6 +124,16 @@ func (s *Store) Start(w http.ResponseWriter) *Session {
 	return sess
 }
 
+// RevokeUser 删除指定用户的全部会话。
+func (s *Store) RevokeUser(userID int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, sess := range s.sess {
+		if sess.UserID == userID {
+			delete(s.sess, id)
+		}
+	}
+}
 func (s *Store) Destroy(r *http.Request, w http.ResponseWriter) {
 	if c, err := r.Cookie(cookieName); err == nil {
 		id := strings.SplitN(c.Value, ".", 2)[0]

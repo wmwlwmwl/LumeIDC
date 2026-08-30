@@ -1118,6 +1118,9 @@ func (m *AdminManage) UserSave(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	// 重置密码（可选填写）
+	if adminSessions != nil {
+		adminSessions.RevokeUser(id)
+	}
 	if pw := r.PostFormValue("new_password"); pw != "" {
 		if len(pw) < 8 {
 			http.Redirect(w, r, "/admin/users/"+itoa(id)+"/edit?err=密码至少8位", http.StatusSeeOther)

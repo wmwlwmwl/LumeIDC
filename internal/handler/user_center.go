@@ -158,6 +158,9 @@ func (h *Pages) passwordSubmit(w http.ResponseWriter, r *http.Request) {
 		render(w, r, "user_password.html", map[string]any{"CSRF": csrfOf(sessionsStore, w, r), "Error": err.Error()})
 		return
 	}
+	if sessionsStore != nil {
+		sessionsStore.RevokeUser(userID)
+	}
 	render(w, r, "user_password.html", map[string]any{"CSRF": csrfOf(sessionsStore, w, r), "OK": true})
 }
 
