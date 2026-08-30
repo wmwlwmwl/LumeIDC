@@ -70,7 +70,7 @@ func (h *Auth) registerSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// 邮箱验证：配置了 SMTP 则发验证邮件并等待验证；否则直接放行，保证无邮件能力时仍可注册。
-	if h.Notifier != nil {
+	if h.Notifier != nil && h.Notifier.EmailEnabled(r.Context()) {
 		tok := genToken()
 		if e := h.Users.SetVerifyToken(r.Context(), id, tok); e == nil {
 			link := "https://" + r.Host + "/verify?token=" + tok

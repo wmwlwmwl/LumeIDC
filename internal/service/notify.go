@@ -65,7 +65,12 @@ func (n *Notifier) Notify(ctx context.Context, userID int64, title, body string)
 	}
 }
 
-// SendMail 发送纯文本邮件；未配置 SMTP 时返回错误（调用方可据此决定是否放行）。
+// EmailEnabled 返回是否配置了可用 SMTP。
+func (n *Notifier) EmailEnabled(ctx context.Context) bool {
+	return n != nil && n.loadSMTP(ctx).Enabled && n.loadSMTP(ctx).Host != ""
+}
+
+// SendMail 发送纯文本邮件。
 func (n *Notifier) SendMail(ctx context.Context, to, subject, body string) error {
 	return n.sendEmail(ctx, to, subject, body)
 }
