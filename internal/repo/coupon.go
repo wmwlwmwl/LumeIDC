@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -116,13 +117,21 @@ func (c *Coupons) Create(ctx context.Context, code, typ string, value, minAmount
 	if code == "" {
 		return errors.New("优惠码不能为空")
 	}
-	if typ != "fixed" {
-		typ = "percent"
+	if !math.IsNaN(value) && !math.IsInf(value, 0) && value >= 0 && !math.IsNaN(minAmount) && !math.IsInf(minAmount, 0) && minAmount >= 0 && usageLimit >= 0 {
+		if typ == "percent" && value <= 100 {
+			_, err := c.DB.ExecContext(ctx,
+				`INSERT INTO coupons(code,type,value,min_amount,usage_limit,expires_at,active) VALUES($1,$2,$3,$4,$5,$6,true)`,
+				code, typ, value, minAmount, usageLimit, expires)
+			return err
+		}
+		if typ == "fixed" {
+			_, err := c.DB.ExecContext(ctx,
+				`INSERT INTO coupons(code,type,value,min_amount,usage_limit,expires_at,active) VALUES($1,$2,$3,$4,$5,$6,true)`,
+				code, typ, value, minAmount, usageLimit, expires)
+			return err
+		}
 	}
-	_, err := c.DB.ExecContext(ctx,
-		`INSERT INTO coupons(code,type,value,min_amount,usage_limit,expires_at,active) VALUES($1,$2,$3,$4,$5,$6,true)`,
-		code, typ, value, minAmount, usageLimit, expires)
-	return err
+	return errors.New("优惠码参数无效")
 }
 
 func strconvParse(s string) (float64, bool) {
