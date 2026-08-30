@@ -132,10 +132,12 @@ func (g *Gateways) BindAttempt(ctx context.Context, invoiceID int64, code, amoun
 	return id, nil
 }
 
-func (g *Gateways) MarkAttemptFailed(ctx context.Context, invoiceID int64, code string) error {
-	_, err := g.DB.ExecContext(ctx, `UPDATE payment_attempts SET status=2 WHERE invoice_id=$1 AND gateway_code=$2 AND status=0`, invoiceID, code)
+// MarkAttemptFailedByID 支付链接生成失败时关闭本次尝试，避免留下待支付脏记录。
+func (g *Gateways) MarkAttemptFailedByID(ctx context.Context, id int64) error {
+	_, err := g.DB.ExecContext(ctx, `UPDATE payment_attempts SET status=2 WHERE id=$1 AND status=0`, id)
 	return err
 }
+
 func (g *Gateways) InvoiceGateway(ctx context.Context, invoiceNo string) (string, error) {
 	var code string
 	err := g.DB.QueryRowContext(ctx, `SELECT gateway FROM invoices WHERE no=$1`, invoiceNo).Scan(&code)

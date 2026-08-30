@@ -942,7 +942,12 @@ func moduleAssetPrefix(serviceID int64, origin string) string {
 }
 
 // proxyClient 资源代理专用客户端，固定超时避免慢上游耗尽 goroutine（DoS）。
-var proxyClient = &http.Client{Timeout: 15 * time.Second}
+var proxyClient = &http.Client{
+	Timeout: 15 * time.Second,
+	CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		return http.ErrUseLastResponse
+	},
+}
 
 // privateHostname 命中内网/保留地址段，禁止代理，避免 SSRF 打元数据或内网。
 func isPrivateHostname(host string) bool {
@@ -1124,11 +1129,16 @@ document.querySelectorAll('form').forEach(function(f){var sec=f.closest('section
 // serviceModuleAssets GET /services/{id}/module-assets/{host64}/{path...} — 代理上游面板静态资源。
 // token 为 base64(origin)，文本类资源把原始 origin 改写回本站前缀，避免后续请求再泄露上游域名。
 func (h *Pages) serviceModuleAssets(w http.ResponseWriter, r *http.Request) {
-	_, ok := middleware.RequireUser(w, r)
+	userID, ok := middleware.RequireUser(w, r)
 	if !ok {
 		return
 	}
 	serviceID, _ := strconv.ParseInt(r.PathValue("serviceID"), 10, 64)
+	var owned bool
+	if err := h.Svc.DB.QueryRowContext(r.Context(), `SELECT EXISTS(SELECT 1 FROM services WHERE id=$1 AND user_id=$2 AND status IN (1,2))`, serviceID, userID).Scan(&owned); err != nil || !owned {
+		http.NotFound(w, r)
+		return
+	}
 	token := r.PathValue("host64")
 	assetPath := r.PathValue("path")
 	if token == "" || assetPath == "" || strings.Contains(assetPath, "..") {

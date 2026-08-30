@@ -259,6 +259,15 @@ func (o *Orders) CreateRenewOrder(ctx context.Context, userID, serviceID int64, 
 	}
 	defer tx.Rollback()
 
+	// 锁定服务，串行化同一服务的续费建单，避免并发产生多张未支付账单。
+	var serviceStatus int16
+	if err := tx.QueryRowContext(ctx, `SELECT status FROM services WHERE id=$1 AND user_id=$2 FOR UPDATE`, serviceID, userID).Scan(&serviceStatus); err != nil {
+		return 0, 0, "", fmt.Errorf("服务不存在或不可续费")
+	}
+	if serviceStatus != 1 && serviceStatus != 2 {
+		return 0, 0, "", fmt.Errorf("服务不存在或不可续费")
+	}
+
 	// 防重复续费：若同一服务已存在未支付续费账单，直接复用，避免多次支付导致重复延期。
 	var existOrderID, existInvoiceID int64
 	var existAmount string

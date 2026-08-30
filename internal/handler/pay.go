@@ -175,13 +175,15 @@ func (h *Pay) start(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "支付网关不可用", http.StatusBadRequest)
 		return
 	}
-	if _, err := h.GwRepo.BindAttempt(r.Context(), id, code, amount); err != nil {
+	attemptID, err := h.GwRepo.BindAttempt(r.Context(), id, code, amount)
+	if err != nil {
 		http.Error(w, "创建支付记录失败", 500)
 		return
 	}
 	u, err := impl.PayURL(r.Context(), gateway.PayRequest{InvoiceNo: no, Amount: amount, Title: "LumeIDC 账单 " + no,
 		NotifyURL: h.BaseURL + "/pay/notify/" + url.PathEscape(code), ReturnURL: h.BaseURL + "/pay/" + strconv.FormatInt(id, 10), Config: inst.Config})
 	if err != nil {
+		_ = h.GwRepo.MarkAttemptFailedByID(r.Context(), attemptID)
 		http.Error(w, "生成支付链接失败", http.StatusBadGateway)
 		return
 	}

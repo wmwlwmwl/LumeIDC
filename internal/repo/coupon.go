@@ -25,21 +25,22 @@ type Coupon struct {
 }
 
 var (
-	ErrCouponInvalid  = errors.New("优惠码无效或已失效")
-	ErrCouponMin      = errors.New("订单金额未达优惠码最低消费")
+	ErrCouponInvalid   = errors.New("优惠码无效或已失效")
+	ErrCouponMin       = errors.New("订单金额未达优惠码最低消费")
 	ErrCouponExhausted = errors.New("优惠码已被领完")
-	ErrCouponUsed     = errors.New("该优惠码您已使用过")
+	ErrCouponUsed      = errors.New("该优惠码您已使用过")
 )
 
 // Validate 在事务内锁定并校验优惠码，返回优惠金额（已封顶到订单金额）。
 // 调用方需负责写入 coupon_usages 并递增 used_count。
 func (c *Coupons) Validate(ctx context.Context, tx *sql.Tx, code string, userID int64, orderAmount string) (couponID int64, discount string, err error) {
 	var cp Coupon
+	var starts time.Time
 	var expires sql.NullTime
 	err = tx.QueryRowContext(ctx,
-		`SELECT id,type,value,min_amount,expires_at,usage_limit,used_count,active
-		 FROM coupons WHERE code=$1 FOR UPDATE`, code).
-		Scan(&cp.ID, &cp.Type, &cp.Value, &cp.MinAmount, &expires, &cp.UsageLimit, &cp.UsedCount, &cp.Active)
+		`SELECT id,type,value,min_amount,starts_at,expires_at,usage_limit,used_count,active
+		 FROM coupons WHERE code=$1 AND starts_at<=now() FOR UPDATE`, code).
+		Scan(&cp.ID, &cp.Type, &cp.Value, &cp.MinAmount, &starts, &expires, &cp.UsageLimit, &cp.UsedCount, &cp.Active)
 	if errors.Is(err, sql.ErrNoRows) || !cp.Active {
 		return 0, "", ErrCouponInvalid
 	}
