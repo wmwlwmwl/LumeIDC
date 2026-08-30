@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"time"
 
+	"lumeidc/internal/money"
 	"lumeidc/internal/repo"
 )
 
@@ -156,11 +157,11 @@ func (o *Orders) CreateOrder(ctx context.Context, userID, productID, pricesetID 
 
 // CreateRechargeInvoice 创建用户余额充值账单；充值账单不绑定产品订单。
 func (o *Orders) CreateRechargeInvoice(ctx context.Context, userID int64, amount string) (int64, error) {
-	v, err := strconv.ParseFloat(amount, 64)
-	if err != nil || v <= 0 || v > 9999999999 {
+	canonical, _, err := money.ParsePositive(amount, 999999999999)
+	if err != nil {
 		return 0, fmt.Errorf("充值金额无效")
 	}
-	amount = strconv.FormatFloat(v, 'f', 2, 64)
+	amount = canonical
 	no, err := genInvoiceNo()
 	if err != nil {
 		return 0, err
@@ -263,8 +264,8 @@ func (o *Orders) CreateRenewOrder(ctx context.Context, userID, serviceID int64, 
 	var existAmount string
 	err = tx.QueryRowContext(ctx,
 		`SELECT o.id, i.id, i.amount FROM invoices i JOIN orders o ON o.id=i.order_id
-		 WHERE o.service_id=$1 AND o.user_id=$2 AND i.status=0
-		 ORDER BY i.id DESC LIMIT 1`, serviceID, userID).
+		 WHERE o.service_id=$1 AND o.user_id=$2 AND i.status=0 AND o.cycle=$3
+		 ORDER BY i.id DESC LIMIT 1`, serviceID, userID, cycle).
 		Scan(&existOrderID, &existInvoiceID, &existAmount)
 	if err == nil {
 		return existOrderID, existInvoiceID, existAmount, nil

@@ -3,6 +3,7 @@ package repo
 import (
 	"context"
 	"database/sql"
+	"errors"
 )
 
 type Gateways struct{ DB *sql.DB }
@@ -101,11 +102,29 @@ func (g *Gateways) BindAttempt(ctx context.Context, invoiceID int64, code, amoun
 	}
 	defer tx.Rollback()
 	var id int64
+	var status int16
+	if err := tx.QueryRowContext(ctx, `SELECT id,status FROM invoices WHERE id=$1 FOR UPDATE`, invoiceID).Scan(&id, &status); err != nil {
+		return 0, err
+	}
+	if status != 0 {
+		return 0, errors.New("账单不可支付")
+	}
+	var pending bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM payment_attempts WHERE invoice_id=$1 AND status=0)`, invoiceID).Scan(&pending); err != nil {
+		return 0, err
+	}
+	if pending {
+		return 0, errors.New("账单已有支付进行中")
+	}
 	if err := tx.QueryRowContext(ctx, `INSERT INTO payment_attempts(invoice_id,gateway_code,amount) VALUES($1,$2,$3) RETURNING id`, invoiceID, code, amount).Scan(&id); err != nil {
 		return 0, err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE invoices SET gateway=$2 WHERE id=$1 AND status=0`, invoiceID, code); err != nil {
+	res, err := tx.ExecContext(ctx, `UPDATE invoices SET gateway=$2 WHERE id=$1 AND status=0`, invoiceID, code)
+	if err != nil {
 		return 0, err
+	}
+	if n, err := res.RowsAffected(); err != nil || n != 1 {
+		return 0, errors.New("账单状态已变更")
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, err
@@ -113,6 +132,10 @@ func (g *Gateways) BindAttempt(ctx context.Context, invoiceID int64, code, amoun
 	return id, nil
 }
 
+func (g *Gateways) MarkAttemptFailed(ctx context.Context, invoiceID int64, code string) error {
+	_, err := g.DB.ExecContext(ctx, `UPDATE payment_attempts SET status=2 WHERE invoice_id=$1 AND gateway_code=$2 AND status=0`, invoiceID, code)
+	return err
+}
 func (g *Gateways) InvoiceGateway(ctx context.Context, invoiceNo string) (string, error) {
 	var code string
 	err := g.DB.QueryRowContext(ctx, `SELECT gateway FROM invoices WHERE no=$1`, invoiceNo).Scan(&code)

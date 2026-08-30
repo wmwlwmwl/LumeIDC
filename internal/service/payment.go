@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"lumeidc/internal/crypto"
+	"lumeidc/internal/money"
 	"lumeidc/internal/repo"
 	"lumeidc/internal/server"
 )
@@ -147,7 +148,7 @@ func (p *Payment) MarkPaidByBalance(ctx context.Context, invoiceNo string, userI
 	}
 	if p.Jobs == nil {
 		if renewServiceID.Valid && renewServiceID.Int64 > 0 {
-			p.renewAsync(svcID, cycle)
+			p.renewAsync(svcID, cycle, orderID)
 		} else if newService {
 			p.provisionAsync(svcID, productID, cycle)
 		}
@@ -156,9 +157,8 @@ func (p *Payment) MarkPaidByBalance(ctx context.Context, invoiceNo string, userI
 }
 
 func validPositiveAmount(ctx context.Context, tx *sql.Tx, amount string) (bool, error) {
-	var ok bool
-	err := tx.QueryRowContext(ctx, `SELECT $1::numeric > 0`, amount).Scan(&ok)
-	return ok, err
+	_, _, err := money.ParsePositive(amount, 999999999999)
+	return err == nil, nil
 }
 
 func (p *Payment) reserveStock(ctx context.Context, tx *sql.Tx, productID, orderID int64) error {
@@ -312,6 +312,14 @@ func (p *Payment) MarkPaid(ctx context.Context, invoiceNo, tradeNo, gatewayCode 
 	if renewServiceID.Valid && renewServiceID.Int64 > 0 {
 		isRenew = true
 		svcID = renewServiceID.Int64
+		var svcStatus int16
+		var transition string
+		if err := tx.QueryRowContext(ctx, `SELECT status,coalesce(transition_state,'') FROM services WHERE id=$1 FOR UPDATE`, svcID).Scan(&svcStatus, &transition); err != nil {
+			return err
+		}
+		if (svcStatus != 1 && svcStatus != 2) || transition != "" {
+			return fmt.Errorf("服务当前状态不可续费")
+		}
 		// 检查是否已授权，防止重复续费
 		if p.PeriodGrants != nil {
 			if err := p.PeriodGrants.Grant(ctx, tx, svcID, invID, cycle); err != nil {
@@ -320,7 +328,7 @@ func (p *Payment) MarkPaid(ctx context.Context, invoiceNo, tradeNo, gatewayCode 
 		}
 		// 续费：从当前到期时间（或现在，取较晚者）延长一个周期
 		if _, err := tx.ExecContext(ctx,
-			`UPDATE services SET status=1, expires_at=GREATEST(expires_at,now()) + $2::interval, expire_warn_sent=false WHERE id=$1`,
+			`UPDATE services SET expires_at=GREATEST(expires_at,now()) + $2::interval, expire_warn_sent=false WHERE id=$1 AND status IN (1,2) AND coalesce(transition_state,'')=''`,
 			svcID, interval); err != nil {
 			return err
 		}
@@ -359,7 +367,7 @@ func (p *Payment) MarkPaid(ctx context.Context, invoiceNo, tradeNo, gatewayCode 
 	}
 	if p.Jobs == nil {
 		if isRenew {
-			p.renewAsync(svcID, cycle)
+			p.renewAsync(svcID, cycle, orderID)
 		} else {
 			p.provisionAsync(svcID, productID, cycle)
 		}
@@ -382,12 +390,12 @@ func (p *Payment) provisionAsync(serviceID, productID int64, cycle string) {
 }
 
 // renewAsync 异步触发上游续费，失败仅记日志（账单已核销，后台可重试）。
-func (p *Payment) renewAsync(serviceID int64, cycle string) {
+func (p *Payment) renewAsync(serviceID int64, cycle string, orderID int64) {
 	go func() {
 		rctx, cancel := context.WithTimeout(context.Background(), opRenewTimeout)
 		defer cancel()
 		lc := &Lifecycle{DB: p.DB, Servers: p.Servers, Products: p.Products}
-		if rerr := lc.Renew(rctx, serviceID, cycle); rerr != nil {
+		if rerr := lc.Renew(rctx, serviceID, cycle, orderID); rerr != nil {
 			log.Printf("[renew] service %d 上游续费失败: %v", serviceID, rerr)
 		}
 	}()
@@ -533,6 +541,11 @@ func (p *Payment) Refund(ctx context.Context, adminID, orderID int64, amount, re
 	if amount == "" {
 		return fmt.Errorf("退款金额不能为空")
 	}
+	canonical, _, err := money.ParsePositive(amount, 999999999999)
+	if err != nil {
+		return fmt.Errorf("退款金额无效")
+	}
+	amount = canonical
 	tx, err := p.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -540,7 +553,7 @@ func (p *Payment) Refund(ctx context.Context, adminID, orderID int64, amount, re
 	defer tx.Rollback()
 	var userID int64
 	var orderAmount string
-	if err := tx.QueryRowContext(ctx, `SELECT user_id, amount FROM orders WHERE id=$1`, orderID).
+	if err := tx.QueryRowContext(ctx, `SELECT user_id, amount FROM orders WHERE id=$1 FOR UPDATE`, orderID).
 		Scan(&userID, &orderAmount); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("订单不存在")
@@ -548,15 +561,24 @@ func (p *Payment) Refund(ctx context.Context, adminID, orderID int64, amount, re
 		return err
 	}
 	var invStatus int16
-	if err := tx.QueryRowContext(ctx, `SELECT status FROM invoices WHERE order_id=$1`, orderID).Scan(&invStatus); err != nil {
+	var invGateway string
+	if err := tx.QueryRowContext(ctx, `SELECT status,gateway FROM invoices WHERE order_id=$1 FOR UPDATE`, orderID).Scan(&invStatus, &invGateway); err != nil {
 		return err
 	}
 	if invStatus != 1 {
 		return fmt.Errorf("订单未支付，不可退款")
 	}
+	if method != "balance" && method != "gateway" {
+		return fmt.Errorf("退款方式无效")
+	}
+	if invGateway == "balance" {
+		method = "balance"
+	} else {
+		method = "gateway"
+	}
 	var refunded string
 	if err := tx.QueryRowContext(ctx,
-		`SELECT COALESCE(SUM(amount::numeric),0)::text FROM refunds WHERE order_id=$1`, orderID).Scan(&refunded); err != nil {
+		`SELECT COALESCE(SUM(amount::numeric),0)::text FROM refunds WHERE order_id=$1 AND status='done'`, orderID).Scan(&refunded); err != nil {
 		return err
 	}
 	var ok bool

@@ -80,7 +80,7 @@ const opTimeout = 60 * time.Second
 
 // Renew 向上游续费。
 // 使用 checkpoint 记录续费结果，避免重试时重复创建续费单。
-func (lc *Lifecycle) Renew(ctx context.Context, serviceID int64, cycle string) error {
+func (lc *Lifecycle) Renew(ctx context.Context, serviceID int64, cycle string, orderID int64) error {
 	s, err := lc.loadService(ctx, serviceID)
 	if err != nil {
 		return err
@@ -92,8 +92,10 @@ func (lc *Lifecycle) Renew(ctx context.Context, serviceID int64, cycle string) e
 	if err != nil {
 		return err
 	}
-	// 检查是否已有续费 checkpoint（避免重试重复创建）
-	checkpointKey := fmt.Sprintf("renew_%s", cycle)
+	checkpointKey := fmt.Sprintf("renew_order_%d", orderID)
+	if orderID <= 0 {
+		return fmt.Errorf("续费任务缺少订单号")
+	}
 	if existing, ok, _ := lc.getCheckpoint(ctx, serviceID, checkpointKey); ok && existing != "" {
 		log.Printf("[lifecycle] service %d 已有续费 checkpoint，跳过: %s", serviceID, existing)
 		return nil

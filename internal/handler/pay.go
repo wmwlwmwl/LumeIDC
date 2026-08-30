@@ -175,14 +175,14 @@ func (h *Pay) start(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "支付网关不可用", http.StatusBadRequest)
 		return
 	}
+	if _, err := h.GwRepo.BindAttempt(r.Context(), id, code, amount); err != nil {
+		http.Error(w, "创建支付记录失败", 500)
+		return
+	}
 	u, err := impl.PayURL(r.Context(), gateway.PayRequest{InvoiceNo: no, Amount: amount, Title: "LumeIDC 账单 " + no,
 		NotifyURL: h.BaseURL + "/pay/notify/" + url.PathEscape(code), ReturnURL: h.BaseURL + "/pay/" + strconv.FormatInt(id, 10), Config: inst.Config})
 	if err != nil {
 		http.Error(w, "生成支付链接失败", http.StatusBadGateway)
-		return
-	}
-	if _, err := h.GwRepo.BindAttempt(r.Context(), id, code, amount); err != nil {
-		http.Error(w, "创建支付记录失败", 500)
 		return
 	}
 	http.Redirect(w, r, u, http.StatusSeeOther)
@@ -280,21 +280,28 @@ func (h *Pay) mockPayPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	no := r.PathValue("no")
-	var amount string
+	var invoiceID int64
+	var amount, code string
 	var status int16
 	if err := h.Payment.DB.QueryRowContext(r.Context(),
-		`SELECT amount,status FROM invoices WHERE no=$1`, no).Scan(&amount, &status); err != nil {
+		`SELECT id,amount::text,status,gateway FROM invoices WHERE no=$1 AND user_id=$2`, no, userID).
+		Scan(&invoiceID, &amount, &status, &code); err != nil || status != 0 || code == "" {
 		http.NotFound(w, r)
 		return
 	}
-	if !h.ownsInvoice(r, userID, no) {
+	inst, err := h.GwRepo.Get(r.Context(), code)
+	impl, exists := h.Gateways[inst.Driver]
+	if err != nil || !inst.Enabled || !exists || inst.Driver != "mock" {
 		http.NotFound(w, r)
 		return
 	}
-	if status == 1 {
-		http.Redirect(w, r, "/services", http.StatusSeeOther)
+	var pending bool
+	if err := h.Payment.DB.QueryRowContext(r.Context(),
+		`SELECT EXISTS(SELECT 1 FROM payment_attempts WHERE invoice_id=$1 AND gateway_code=$2 AND status=0 AND amount=$3::numeric)`, invoiceID, code, amount).Scan(&pending); err != nil || !pending {
+		http.NotFound(w, r)
 		return
 	}
+	_ = impl
 	csrf := csrfOf(sessionsStore, w, r)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	fmt.Fprintf(w, `<!doctype html><html><head><meta charset="utf-8"><title>模拟支付</title></head>
@@ -316,11 +323,27 @@ func (h *Pay) mockConfirm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	no := r.PathValue("no")
-	if !h.ownsInvoice(r, userID, no) {
+	var invoiceID int64
+	var code, amount string
+	var status int16
+	if err := h.Payment.DB.QueryRowContext(r.Context(),
+		`SELECT id,gateway,amount::text,status FROM invoices WHERE no=$1 AND user_id=$2 FOR SHARE`, no, userID).
+		Scan(&invoiceID, &code, &amount, &status); err != nil || status != 0 || code == "" {
 		http.NotFound(w, r)
 		return
 	}
-	if err := h.Payment.MarkPaid(r.Context(), no, "MOCK-"+strconv.FormatInt(time.Now().UnixNano(), 10), "mock"); err != nil && err != service.ErrAlreadyPaid {
+	inst, err := h.GwRepo.Get(r.Context(), code)
+	if err != nil || !inst.Enabled || inst.Driver != "mock" {
+		http.NotFound(w, r)
+		return
+	}
+	var pending bool
+	if err := h.Payment.DB.QueryRowContext(r.Context(),
+		`SELECT EXISTS(SELECT 1 FROM payment_attempts WHERE invoice_id=$1 AND gateway_code=$2 AND status=0 AND amount=$3::numeric)`, invoiceID, code, amount).Scan(&pending); err != nil || !pending {
+		http.NotFound(w, r)
+		return
+	}
+	if err := h.Payment.MarkPaid(r.Context(), no, "MOCK-"+strconv.FormatInt(time.Now().UnixNano(), 10), code); err != nil && err != service.ErrAlreadyPaid {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}

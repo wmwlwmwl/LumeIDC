@@ -21,7 +21,7 @@ func main() {
 		mux := http.NewServeMux()
 		inst := &handler.Installer{ConfigPath: "config.yaml"}
 		inst.Register(mux)
-		addr := listenAddr()
+		addr := installListenAddr()
 		srv := &http.Server{Addr: addr, Handler: mux}
 		go func() {
 			sig := make(chan os.Signal, 1)
@@ -56,6 +56,13 @@ func main() {
 		log.Fatal(err)
 	}
 	log.Println("LumeIDC 已关闭")
+}
+
+func installListenAddr() string {
+	if a := os.Getenv("INSTALL_LISTEN"); a != "" {
+		return a
+	}
+	return "127.0.0.1:8080"
 }
 
 func listenAddr() string {

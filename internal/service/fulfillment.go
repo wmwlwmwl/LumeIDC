@@ -38,7 +38,7 @@ func (f *Fulfillment) ProcessOne(ctx context.Context) (bool, error) {
 			}
 			lc = &Lifecycle{DB: f.Payment.DB, Servers: f.Payment.Servers, Products: f.Payment.Products, Providers: f.Payment.Providers}
 		}
-		err = lc.Renew(opCtx, job.ServiceID, job.Cycle)
+		err = lc.Renew(opCtx, job.ServiceID, job.Cycle, job.OrderID.Int64)
 	default:
 		err = fmt.Errorf("未知履约任务类型: %s", job.Kind)
 	}

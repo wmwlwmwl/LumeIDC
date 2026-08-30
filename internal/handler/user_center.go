@@ -465,6 +465,10 @@ func (h *Pages) consoleAction(w http.ResponseWriter, r *http.Request) {
 	if action == "" {
 		action = r.URL.Query().Get("do") // VNC 用 GET 链接
 	}
+	if r.Method == http.MethodGet && action != "vnc" {
+		http.Error(w, "该操作必须使用 POST", http.StatusMethodNotAllowed)
+		return
+	}
 
 	// VNC 是 GET 语义，改为本站服务端反向代理：页面内嵌 noVNC、静态资源与 wss 隧道均走本站，隐藏上游域名。
 	if action == "vnc" {

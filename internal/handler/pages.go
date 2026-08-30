@@ -54,6 +54,7 @@ func (h *Pages) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /services/{serviceID}/renew", h.serviceRenew)
 	mux.HandleFunc("POST /services/{serviceID}/cancel", h.serviceCancel)
 	mux.HandleFunc("POST /services/{serviceID}/console", h.consoleAction)
+	// VNC 页面使用 GET；其他控制台动作由 handler 拒绝 GET。
 	mux.HandleFunc("GET /services/{serviceID}/console", h.consoleAction)
 	mux.HandleFunc("GET /services/{serviceID}/chart", h.serviceChart)
 	mux.HandleFunc("GET /services/{serviceID}/usage", h.serviceUsage)
