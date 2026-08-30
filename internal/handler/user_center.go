@@ -592,7 +592,7 @@ func (h *Pages) vncConsole(w http.ResponseWriter, r *http.Request, userID, servi
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	fmt.Fprintf(w, `<!doctype html><html lang="zh"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>VNC 控制台</title>
+<title>VNC 控制台</title><link rel="stylesheet" href="/assets/css/lume.css">
 <style>body{margin:0;font-family:system-ui,-apple-system,sans-serif;background:#111;color:#eee;height:100vh;display:flex;flex-direction:column}
 #top{display:flex;align-items:center;gap:10px;padding:8px 14px;background:#1f2937;border-bottom:1px solid #374151;flex-wrap:wrap}
 #top a{color:#818cf8;text-decoration:none;font-size:.85rem}
@@ -600,7 +600,7 @@ func (h *Pages) vncConsole(w http.ResponseWriter, r *http.Request, userID, servi
 #top button{background:#374151;color:#eee;border:1px solid #4b5563;border-radius:6px;padding:4px 12px;cursor:pointer;font-size:.8rem}
 #screen{flex:1;overflow:hidden;background:#000}</style>
 </head><body>
-<div id="top"><a href="/services/%d">← 返回实例</a><strong>VNC 控制台</strong><span id="status">连接中…</span>
+<div id="top" class="vnc-toolbar"><a href="/services/%d">← 返回实例</a><strong>VNC 控制台</strong><span id="status">连接中…</span>
 <button onclick="location.reload()">重新连接</button>
 <button onclick="sendCAD()">Ctrl+Alt+Del</button>
 <button onclick="pasteText()">粘贴文本</button>
@@ -1061,16 +1061,16 @@ func (h *Pages) serviceModulePage(w http.ResponseWriter, r *http.Request) {
 
 // moduleOverviewShell 组装概览页：标签导航 + 各方块内容 + 提交拦截脚本（本地 POST + CSRF）。
 // 上游方块（快照/安全组/设置等）依赖宿主页的 jQuery/Bootstrap/SweetAlert2 与自定义 ajax()，
-// 此处统一补齐：公共库走 CDN，ajax() 拦截改写上游绝对地址为本站模块端点，避免跨域与无凭据。
+// 此处统一补齐：公共库从应用内嵌资源加载，ajax() 拦截改写上游绝对地址为本站模块端点，避免跨域与无凭据。
 // ponytail: 多方块直接堆叠 DOM，若上游方块间存在同名 id/全局变量可能互相干扰；必要时改 iframe 隔离。
 func moduleOverviewShell(serviceID int64, csrf string, blocks []moduleBlock) string {
 	var sb strings.Builder
 	sid := strconv.FormatInt(serviceID, 10)
 	sb.WriteString("<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">")
-	sb.WriteString(`<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@4.6.2/dist/css/bootstrap.min.css">`)
-	sb.WriteString(`<script src="https://cdn.jsdelivr.net/npm/jquery@3.6.4/dist/jquery.min.js"></script>`)
-	sb.WriteString(`<script src="https://cdn.jsdelivr.net/npm/bootstrap@4.6.2/dist/js/bootstrap.bundle.min.js"></script>`)
-	sb.WriteString(`<script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>`)
+	sb.WriteString(`<link rel="stylesheet" href="/assets/vendor/legacy-module/bootstrap-4.6.2.min.css">`)
+	sb.WriteString(`<script src="/assets/vendor/legacy-module/jquery-3.6.4.min.js"></script>`)
+	sb.WriteString(`<script src="/assets/vendor/legacy-module/bootstrap-4.6.2.bundle.min.js"></script>`)
+	sb.WriteString(`<script src="/assets/vendor/legacy-module/sweetalert2-11.all.min.js"></script>`)
 	sb.WriteString("<style>body{margin:0;font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;color:#1a1a1a;background:#fff}#tabs{position:sticky;top:0;background:#fff;border-bottom:1px solid #e2e8f0;padding:8px 12px;display:flex;gap:6px;flex-wrap:wrap;z-index:1050}#tabs .tab{cursor:pointer;padding:6px 14px;border:1px solid #cbd5e1;border-radius:999px;background:#fff;color:#334155;font:inherit}#tabs .tab.on{background:#0e7490;color:#fff;border-color:#0e7490}.block{display:none;padding:16px}.block.on{display:block}button,input,select,textarea{font:inherit}.modal{z-index:2000}body.swal2-shown>. swal2-container{z-index:2100!important}</style></head><body>")
 	if len(blocks) > 1 {
 		sb.WriteString("<div id=\"tabs\">")

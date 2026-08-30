@@ -1,9 +1,9 @@
 {{define "page"}}
-<h1>分类管理</h1>
-{{if .Error}}<p style="color:#b91c1c">{{.Error}}</p>{{end}}
-{{if .Msg}}<p style="color:#15803d">{{.Msg}}</p>{{end}}
-<p class="muted" style="font-size:.82rem">支持两级分类（对齐魔方财务）：前台选择一级分类展示本级产品与二级入口，选择二级分类展示该分类产品；建议把产品挂在二级分类下。</p>
-<table>
+<h1 class="h3 mb-4">分类管理</h1>
+{{if .Error}}<div class="ui-alert ui-alert-error" role="alert">{{.Error}}</div>{{end}}
+{{if .Msg}}<div class="ui-alert ui-alert-success" role="status">{{.Msg}}</div>{{end}}
+<p class="ui-muted">支持两级分类（对齐魔方财务）：前台选择一级分类展示本级产品与二级入口，选择二级分类展示该分类产品；建议把产品挂在二级分类下。</p>
+<div class="ui-table-wrap" aria-label="分类列表"><table>
 <tr><th>ID</th><th>名称</th><th>描述</th><th>排序</th><th>产品数</th><th>状态</th><th>操作</th></tr>
 {{range .Rows}}
 {{$row := .}}
@@ -89,15 +89,15 @@
 </td></tr>
 {{end}}
 {{end}}
-</table>
-<div style="margin-top:24px;background:#fff;padding:18px;border-radius:8px;max-width:360px">
+</table></div>
+<div class="ui-card ui-form mt-4" style="max-width:400px">
 <h3 style="margin-top:0">新增分类</h3>
 <form method="post" action="/admin/types/save">
 <input type="hidden" name="_csrf" value="{{$.CSRF}}">
-<input name="name" placeholder="名称" required style="width:100%;padding:8px;margin-bottom:8px;box-sizing:border-box">
-<input name="description" placeholder="描述" style="width:100%;padding:8px;margin-bottom:8px;box-sizing:border-box">
+<input name="name" placeholder="名称" required class="form-control mb-2">
+<input name="description" placeholder="描述" class="form-control mb-2">
 <label style="display:block;font-size:.8rem;color:#666;margin-bottom:4px">父分类</label>
-<select name="parent_id" style="width:100%;padding:8px;margin-bottom:8px;box-sizing:border-box">
+<select name="parent_id" class="form-control mb-2">
 <option value="0">无（一级分类）</option>
 {{range .Rows}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
 </select>

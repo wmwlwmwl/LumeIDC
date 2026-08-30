@@ -1,24 +1,24 @@
 {{define "page"}}
-<h1>用户中心</h1>
+<h1 class="h3 mb-4">用户中心</h1>
 {{if .Announcements}}
-<div style="display:flex;flex-direction:column;gap:10px;margin-bottom:18px">
+<div class="ui-stack mb-4">
 {{range .Announcements}}
-<div class="card" style="border-left:4px solid {{if .Pinned}}#4f46e5{{else}}#cbd5e1{{end}}">
-<h3 style="margin:0 0 4px;font-size:1rem">{{if .Pinned}}📌 {{end}}{{.Title}}</h3>
-{{if .Content}}<p class="muted" style="margin:0;white-space:pre-wrap">{{.Content}}</p>{{end}}
-<small class="muted">{{.CreatedAt}}</small>
-</div>
+<article class="ui-card" style="border-left:4px solid {{if .Pinned}}#4f46e5{{else}}#cbd5e1{{end}}">
+<h2 class="h6 mb-1">{{if .Pinned}}📌 {{end}}{{.Title}}</h2>
+{{if .Content}}<p class="ui-muted mb-1" style="white-space:pre-wrap">{{.Content}}</p>{{end}}
+<small class="ui-muted">{{.CreatedAt}}</small>
+</article>
 {{end}}
 </div>
 {{end}}
-<div class="grid">
-<div class="card"><div class="price">{{.Stats.ServiceCount}}</div><p class="muted">我的服务（激活 {{.Stats.ActiveCount}}）</p><a href="/services">查看 →</a></div>
-<div class="card"><div class="price">{{.Stats.PaidTotal}}</div><p class="muted">累计消费（元）</p></div>
-<div class="card"><div class="price">{{.Balance}}</div><p class="muted">账户余额（元）</p></div>
-<div class="card"><div class="price">{{.Stats.UnpaidCount}}</div><p class="muted">待支付账单</p><a href="/user/invoices">查看 →</a></div>
+<div class="ui-grid">
+<div class="ui-card"><div class="ui-price">{{.Stats.ServiceCount}}</div><p class="ui-muted">我的服务（激活 {{.Stats.ActiveCount}}）</p><a href="/services">查看 →</a></div>
+<div class="ui-card"><div class="ui-price">{{.Stats.PaidTotal}}</div><p class="ui-muted">累计消费（元）</p></div>
+<div class="ui-card"><div class="ui-price">{{.Balance}}</div><p class="ui-muted">账户余额（元）</p></div>
+<div class="ui-card"><div class="ui-price">{{.Stats.UnpaidCount}}</div><p class="ui-muted">待支付账单</p><a href="/user/invoices">查看 →</a></div>
 </div>
-<div style="margin-top:20px" class="card">
-<h3>账户</h3>
-<p><a href="/user/recharge">余额充值</a> · <a href="/user/password">修改密码</a> · <a href="/user/invoices">财务记录</a></p>
+<div class="ui-card mt-4">
+<h2 class="h6">账户</h2>
+<p class="mb-0"><a href="/user/recharge">余额充值</a><span class="text-secondary mx-2">·</span><a href="/user/password">修改密码</a><span class="text-secondary mx-2">·</span><a href="/user/invoices">财务记录</a></p>
 </div>
 {{end}}

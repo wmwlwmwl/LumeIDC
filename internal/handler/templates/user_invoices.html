@@ -1,13 +1,14 @@
 {{define "page"}}
-<h1>财务记录</h1>
+<h1 class="h3 mb-4">财务记录</h1>
 {{if .Invoices}}
-<table><tr><th>类型</th><th>账单号</th><th>金额</th><th>状态</th><th>时间</th><th></th></tr>
+<div class="ui-table-wrap" aria-label="财务记录">
+<table><thead><tr><th scope="col">类型</th><th scope="col">账单号</th><th scope="col">金额</th><th scope="col">状态</th><th scope="col">时间</th><th scope="col">操作</th></tr></thead><tbody>
 {{range .Invoices}}
 <tr><td>{{if eq .Kind "recharge"}}余额充值{{else}}产品订单{{end}}</td><td>{{.No}}</td><td>￥{{.Amount}}</td>
-<td>{{if eq .Status "未支付"}}<span style="color:#b45309">{{.Status}}</span>{{else}}{{.Status}}{{end}}</td>
+<td>{{if eq .Status "未支付"}}<span class="badge badge-warn">{{.Status}}</span>{{else}}{{.Status}}{{end}}</td>
 <td>{{.CreatedAt}}</td>
-<td>{{if eq .Status "未支付"}}<a href="/pay/{{.ID}}">去支付</a>{{end}}</td></tr>
+<td>{{if eq .Status "未支付"}}<a href="/pay/{{.ID}}">去支付</a>{{else}}—{{end}}</td></tr>
 {{end}}
-</table>
-{{else}}<p class="muted">暂无账单记录。</p>{{end}}
+</tbody></table></div>
+{{else}}<div class="ui-card text-center py-5"><p class="ui-muted mb-0">暂无账单记录。</p></div>{{end}}
 {{end}}

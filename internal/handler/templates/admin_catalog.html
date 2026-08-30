@@ -1,46 +1,18 @@
 {{define "page"}}
-<div style="display:flex;align-items:center;justify-content:space-between">
-<h1>上游商品目录{{with .ServersList}} — {{.Name}}{{end}}</h1>
-<a href="/admin/servers" style="color:#4f46e5;font-size:.88rem">← 返回服务器</a>
-</div>
-{{if .Error}}<p style="color:#b91c1c">{{.Error}}</p>{{end}}
+<div class="d-flex align-items-center justify-content-between gap-3 flex-wrap mb-4"><h1 class="h3 mb-0">上游商品目录{{with .ServersList}} — {{.Name}}{{end}}</h1><a href="/admin/servers">← 返回服务器</a></div>
+{{if .Error}}<div class="ui-alert ui-alert-error" role="alert">{{.Error}}</div>{{end}}
 {{if .Rows}}
 <form method="post" action="{{with .ServersList}}/admin/servers/{{.ID}}/import{{end}}">
 <input type="hidden" name="_csrf" value="{{.CSRF}}">
-<div style="margin-bottom:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-<span style="font-size:.88rem;font-weight:600">导入分类：</span>
-<select name="parent_id" style="padding:6px;border:1px solid #ccc;border-radius:6px;font-size:.85rem">
-<option value="">请选择目标一级分类</option>
-{{range .Types}}<option value="{{.ID}}">上游分组建为「{{.Name}}」下的二级分类</option>{{end}}
-</select>
-<span class="muted" style="font-size:.78rem">建议先在分类管理建好一级分类，此处选择后每个上游分组会挂为该分类下的二级（对齐魔方财务导入模式）</span>
-</div>
-<div style="margin-bottom:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-<span style="font-size:.88rem;font-weight:600">导入利润：</span>
-<select name="profit_type" style="padding:6px;border:1px solid #ccc;border-radius:6px;font-size:.85rem">
-<option value="0" {{if not (eq (printf "%d" .ServerProfitType) "1")}}selected{{end}}>百分比（%）</option>
-<option value="1" {{if eq (printf "%d" .ServerProfitType) "1"}}selected{{end}}>固定金额</option>
-</select>
-<input name="profit_value" type="number" step="0.01" min="0" value="{{.ServerProfitValue}}" placeholder="如 30 或 5" style="width:120px;padding:6px;border:1px solid #ccc;border-radius:6px;font-size:.85rem">
-<span class="muted" style="font-size:.78rem">默认取服务器利润设置，已有产品不覆盖</span>
-</div>
-<table><tr><th></th><th>PID</th><th>名称</th><th>分组</th><th>月付价</th><th>库存</th><th>状态</th></tr>
-{{range .Rows}}
-<tr>
-<td><input type="checkbox" name="import" value="{{.PID}}" {{if .Linked}}disabled{{end}}></td>
-<td>{{.PID}}</td><td>{{.A}}</td><td>{{.B}}</td><td>￥{{.C}}</td><td>{{.Stock}}</td>
-<td>{{if .Linked}}<span style="color:#15803d;font-size:.82rem">已对接</span>{{else}}<span class="muted" style="font-size:.82rem">未对接</span>{{end}}</td>
-</tr>
-{{end}}
-</table>
-<button style="margin-top:14px;padding:9px 20px;background:#15803d;color:#fff;border:0;border-radius:6px;cursor:pointer">导入勾选商品</button>
+<div class="ui-card mb-3"><div class="ui-actions"><strong>导入分类：</strong><label class="visually-hidden" for="catalog-parent">目标一级分类</label><select class="form-select w-auto" id="catalog-parent" name="parent_id"><option value="">请选择目标一级分类</option>{{range .Types}}<option value="{{.ID}}">上游分组建为「{{.Name}}」下的二级分类</option>{{end}}</select><span class="ui-muted small">建议先在分类管理建好一级分类。</span></div>
+<div class="ui-actions mt-3"><strong>导入利润：</strong><label class="visually-hidden" for="catalog-profit-type">利润类型</label><select class="form-select w-auto" id="catalog-profit-type" name="profit_type"><option value="0" {{if not (eq (printf "%d" .ServerProfitType) "1")}}selected{{end}}>百分比（%）</option><option value="1" {{if eq (printf "%d" .ServerProfitType) "1"}}selected{{end}}>固定金额</option></select><label class="visually-hidden" for="catalog-profit-value">利润值</label><input class="form-control" id="catalog-profit-value" name="profit_value" type="number" step="0.01" min="0" value="{{.ServerProfitValue}}" placeholder="如 30 或 5" style="max-width:140px"><span class="ui-muted small">默认取服务器利润设置，已有产品不覆盖</span></div></div>
+<div class="ui-table-wrap" aria-label="上游商品"><table><thead><tr><th scope="col"><span class="visually-hidden">选择</span></th><th scope="col">PID</th><th scope="col">名称</th><th scope="col">分组</th><th scope="col">月付价</th><th scope="col">库存</th><th scope="col">状态</th></tr></thead><tbody>
+{{range .Rows}}<tr><td><input type="checkbox" name="import" value="{{.PID}}" {{if .Linked}}disabled{{end}} aria-label="选择 {{.A}}"></td><td>{{.PID}}</td><td>{{.A}}</td><td>{{.B}}</td><td>￥{{.C}}</td><td>{{.Stock}}</td><td>{{if .Linked}}<span class="badge badge-ok">已对接</span>{{else}}<span class="badge badge-idle">未对接</span>{{end}}</td></tr>{{end}}
+</tbody></table></div><button class="ui-btn mt-3" type="submit">导入勾选商品</button>
 </form>
-{{else}}
-<p class="muted">上游目录为空。</p>
-{{end}}
+{{else}}<div class="ui-card text-center py-5"><p class="ui-muted mb-0">上游目录为空。</p></div>{{end}}
 {{if .Error}}{{else}}<script>
 const u = new URLSearchParams(location.search).get("done");
-if(u && u !== "0"){ document.querySelector("h1").insertAdjacentHTML("afterend",
-   `<p style="color:#15803d">已处理 ${u} 个产品（已对接的会更新价格/配置项，未对接的新建）。</p>`); }
+if(u && u !== "0"){ document.querySelector("h1").insertAdjacentHTML("afterend", `<div class="ui-alert ui-alert-success" role="status">已处理 ${u} 个产品（已对接的会更新价格/配置项，未对接的新建）。</div>`); }
 </script>{{end}}
 {{end}}

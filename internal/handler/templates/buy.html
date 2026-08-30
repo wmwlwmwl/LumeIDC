@@ -1,13 +1,13 @@
 {{define "page"}}
-<h1>{{.Product.Name}}</h1>
-<p class="muted">{{.Product.Description}}</p>
-<div style="display:flex;gap:18px;align-items:flex-start;flex-wrap:wrap">
-<form method="post" action="/order" id="buyForm" class="card" style="flex:2;min-width:300px;padding:20px">
+<h1 class="h3 mb-2">{{.Product.Name}}</h1>
+<p class="ui-muted mb-4">{{.Product.Description}}</p>
+<div class="d-flex gap-3 align-items-start flex-wrap">
+<form method="post" action="/order" id="buyForm" class="ui-card flex-grow-1" style="flex-basis:480px">
 <input type="hidden" name="_csrf" value="{{.CSRF}}">
 <input type="hidden" name="product_id" value="{{.Product.ID}}">
 
-<label style="display:block;margin:10px 0 4px;font-weight:600;font-size:.9rem">计费周期</label>
-<select name="cycle" id="cycleSel" style="width:100%;padding:9px;border:1px solid #ccc;border-radius:6px" onchange="recalc()">
+<label class="form-label fw-semibold mt-3">计费周期</label>
+<select name="cycle" id="cycleSel" class="form-select" onchange="recalc()">
 <option value="monthly">月付 ￥{{.Monthly}}</option>
 {{if .ShowQuarterly}}<option value="quarterly">季付 ￥{{.Quarterly}}</option>{{end}}
 {{if .ShowYearly}}<option value="yearly">年付 ￥{{.Yearly}}</option>{{end}}
@@ -15,7 +15,7 @@
 
 {{range .Options}}
 {{if .Hidden}}<input type="hidden" name="cfg_{{.Field}}" value="{{if eq .Mode "range"}}{{.Min}}{{else}}{{if .Subs}}{{with index .Subs 0}}{{if .Value}}{{.Value}}{{else}}{{.Name}}{{end}}{{end}}{{end}}{{end}}">{{else}}
-<label style="display:block;margin:14px 0 4px;font-weight:600;font-size:.9rem">{{.Name}}{{if .Unit}}（{{.Unit}}）{{end}}</label>
+<label class="form-label fw-semibold mt-3">{{.Name}}{{if .Unit}}（{{.Unit}}）{{end}}</label>
 {{if eq .Mode "range"}}
 <div style="display:flex;align-items:center;gap:8px">
 <button type="button" onclick="stepVal('cfg_{{.Field}}', -1)" style="width:38px;height:38px;display:flex;align-items:center;justify-content:center;font-size:1.3rem;font-weight:700;background:#eef2ff;color:#4f46e5;border:1px solid #c7d2fe;border-radius:8px;cursor:pointer">−</button>
@@ -26,7 +26,7 @@
 </div>
 <p class="muted" style="margin:4px 0 0;font-size:.75rem">范围 {{.Min}}~{{.Max}}{{if .Unit}} {{.Unit}}{{end}}</p>
 {{else}}
-<select name="cfg_{{.Field}}" id="cfg_{{.Field}}" style="width:100%;padding:9px;border:1px solid #ccc;border-radius:6px" onchange="recalc()">
+<select name="cfg_{{.Field}}" id="cfg_{{.Field}}" class="form-select" onchange="recalc()">
 {{$f := .Field}}
 {{range .Subs}}
 <option value="{{if .Value}}{{.Value}}{{else}}{{.Name}}{{end}}" {{if and $.Options (index .Pricing "monthly")}}data-m="{{$f}}|{{.Name}}|{{index .Pricing "monthly"}}"{{end}}>{{.Name}}</option>
@@ -36,11 +36,11 @@
 {{end}}
 {{end}}
 
-<label style="display:block;margin:14px 0 4px;font-weight:600;font-size:.9rem">优惠码（可选）</label>
-<input name="coupon" placeholder="如有优惠码请填写" style="width:100%;padding:9px;border:1px solid #ccc;border-radius:6px">
+<label class="form-label fw-semibold mt-3">优惠码（可选）</label>
+<input class="form-control" name="coupon" placeholder="如有优惠码请填写">
 </form>
 
-<div class="card" style="flex:1;min-width:260px;padding:20px;background:#fff">
+<div class="ui-card flex-grow-1" style="flex-basis:300px">
 <h3 style="margin-top:0;font-size:1rem">配置费用</h3>
 <p class="muted" id="stockMsg">当前库存充足，可直接提交账单。</p>
 <table style="font-size:.85rem"><tbody id="cfgLines"></tbody></table>

@@ -1,21 +1,21 @@
 {{define "page"}}
-<h1>通知与邮件配置</h1>
-{{if .Error}}<p style="color:#b91c1c">{{.Error}}</p>{{end}}
-{{if .Msg}}<p style="color:#047857">已保存</p>{{end}}
-<form method="post" action="/admin/settings" style="display:flex;gap:10px;flex-direction:column;max-width:420px">
+<h1 class="h3 mb-4">通知与邮件配置</h1>
+{{if .Error}}<div class="ui-alert ui-alert-error" role="alert">{{.Error}}</div>{{end}}
+{{if .Msg}}<div class="ui-alert ui-alert-success" role="status">已保存</div>{{end}}
+<form method="post" action="/admin/settings" class="ui-card ui-form">
 <input type="hidden" name="_csrf" value="{{.CSRF}}">
-<label>SMTP 主机</label>
-<input name="smtp_host" value="{{index .ServersList "smtp_host"}}">
-<label>SMTP 端口</label>
-<input name="smtp_port" value="{{index .ServersList "smtp_port"}}" placeholder="587">
-<label>用户名</label>
-<input name="smtp_user" value="{{index .ServersList "smtp_user"}}">
-<label>密码</label>
-<input type="password" name="smtp_pass" value="{{index .ServersList "smtp_pass"}}">
-<label>发件人</label>
-<input name="smtp_from" value="{{index .ServersList "smtp_from"}}" placeholder="noreply@example.com">
-<label><input type="checkbox" name="notify_email_enabled" value="1" {{if eq (index .ServersList "notify_email_enabled") "1"}}checked{{end}}> 启用邮件通知</label>
-<button type="submit" style="width:120px">保存</button>
+<label for="smtp-host">SMTP 主机</label>
+<input class="form-control" id="smtp-host" name="smtp_host" value="{{index .ServersList "smtp_host"}}">
+<label class="mt-3" for="smtp-port">SMTP 端口</label>
+<input class="form-control" id="smtp-port" name="smtp_port" value="{{index .ServersList "smtp_port"}}" placeholder="587">
+<label class="mt-3" for="smtp-user">用户名</label>
+<input class="form-control" id="smtp-user" name="smtp_user" value="{{index .ServersList "smtp_user"}}">
+<label class="mt-3" for="smtp-pass">密码</label>
+<input class="form-control" id="smtp-pass" type="password" name="smtp_pass" value="{{index .ServersList "smtp_pass"}}" autocomplete="new-password">
+<label class="mt-3" for="smtp-from">发件人</label>
+<input class="form-control" id="smtp-from" name="smtp_from" value="{{index .ServersList "smtp_from"}}" placeholder="noreply@example.com">
+<label class="form-check-label mt-3"><input class="form-check-input" type="checkbox" name="notify_email_enabled" value="1" {{if eq (index .ServersList "notify_email_enabled") "1"}}checked{{end}}> 启用邮件通知</label>
+<button class="ui-btn mt-4" type="submit">保存</button>
 </form>
-<p class="muted">未启用邮件时，通知仅以站内信形式下发。</p>
+<p class="ui-muted mt-3">未启用邮件时，通知仅以站内信形式下发。</p>
 {{end}}

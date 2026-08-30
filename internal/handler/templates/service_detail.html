@@ -1,57 +1,60 @@
 {{define "page"}}
-<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-<h1 style="margin:0">{{.Svc.Name}}</h1>
+<div class="d-flex align-items-center gap-3 flex-wrap mb-4">
+<h1 class="h3 mb-0">{{.Svc.Name}}</h1>
 <span class="badge {{if eq .Svc.StatusText "激活"}}badge-ok{{else if eq .Svc.StatusText "已停机"}}badge-warn{{else}}badge-idle{{end}}">{{.Svc.StatusText}}</span>
-<a href="/services" style="margin-left:auto;font-size:.85rem;color:#4f46e5">← 返回列表</a>
+<a href="/services" class="ms-auto">← 返回列表</a>
 </div>
 
 {{if eq .Svc.StatusText "待开通"}}
-<div class="card" style="margin-top:16px;background:#eff6ff;border:1px solid #bfdbfe">
-<p style="margin:0;color:#1d4ed8;font-size:.9rem;font-weight:600">正在开通…</p>
-<p class="muted" style="margin:6px 0 0;font-size:.82rem">通常几秒内完成，本页每 3 秒自动刷新；若长时间未完成请联系管理员。</p>
+<div class="ui-alert ui-alert-info" role="status">
+<strong>正在开通…</strong>
+<div class="ui-muted mt-1">通常几秒内完成，本页每 3 秒自动刷新；若长时间未完成请联系管理员。</div>
 </div>
 <script>setTimeout(function(){location.reload()},3000)</script>
 {{end}}
 
 {{if .Flash}}
-<div class="card" style="margin-top:16px;background:#f0fdf4;border:1px solid #bbf7d0">
-<p style="margin:0;color:#15803d;font-size:.9rem;font-weight:600">操作成功</p>
-<p style="margin:6px 0 0;font-size:.88rem;word-break:break-all">{{.Flash}}</p>
-<p class="muted" style="margin:6px 0 0;font-size:.72rem">提示：此消息仅显示一次，请妥善保存。</p>
+<div class="ui-alert ui-alert-success" role="status">
+<strong>操作成功</strong>
+<div class="mt-1 text-break">{{.Flash}}</div>
+<div class="ui-muted mt-1 small">提示：此消息仅显示一次，请妥善保存。</div>
 </div>
 {{end}}
 
-<div class="card" style="margin-top:16px">
-<h3 style="margin-top:0;font-size:1rem">付费信息</h3>
-<table style="font-size:.88rem">
-<tr><td class="muted" width="90">计费方式</td><td>{{if .Svc.Cycle}}{{.Svc.Cycle}}{{else}} - {{end}}</td></tr>
-<tr><td class="muted">续费价格</td><td>￥{{if .Svc.Amount}}{{.Svc.Amount}}{{else}} - {{end}}</td></tr>
-<tr><td class="muted">到期时间</td><td style="color:#4f46e5;font-weight:600">{{.Svc.ExpiresAt.Format "2006-01-02 15:04"}}</td></tr>
-</table>
-<form method="post" action="/services/{{.Svc.ID}}/renew" style="margin-top:10px;display:flex;gap:8px;align-items:center">
+<div class="ui-card mb-3">
+<h2 class="h6">付费信息</h2>
+<div class="ui-table-wrap shadow-none">
+<table class="table mb-0"><tbody>
+<tr><th scope="row" class="ui-muted fw-normal">计费方式</th><td>{{if .Svc.Cycle}}{{.Svc.Cycle}}{{else}} - {{end}}</td></tr>
+<tr><th scope="row" class="ui-muted fw-normal">续费价格</th><td>￥{{if .Svc.Amount}}{{.Svc.Amount}}{{else}} - {{end}}</td></tr>
+<tr><th scope="row" class="ui-muted fw-normal">到期时间</th><td class="text-primary fw-semibold">{{.Svc.ExpiresAt.Format "2006-01-02 15:04"}}</td></tr>
+</tbody></table></div>
+<form method="post" action="/services/{{.Svc.ID}}/renew" class="ui-actions mt-3">
 <input type="hidden" name="_csrf" value="{{.CSRF}}">
-<select name="cycle" style="padding:6px;border:1px solid #ccc;border-radius:6px">
+<label class="visually-hidden" for="detail-cycle">续费周期</label>
+<select name="cycle" id="detail-cycle" class="form-select w-auto">
 <option value="monthly">月付</option>{{if .ShowQ}}<option value="quarterly">季付</option>{{end}}{{if .ShowY}}<option value="yearly">年付</option>{{end}}
 </select>
-<button style="padding:6px 14px;background:#4f46e5;color:#fff;border:0;border-radius:6px;cursor:pointer">续费</button>
+<button class="ui-btn" type="submit">续费</button>
 </form>
 </div>
 
 {{if .ProviderWidget}}{{.ProviderWidget}}{{end}}
 
 {{if .Svc.Configs}}
-<div class="card" style="margin-top:16px">
-<h3 style="margin-top:0;font-size:1rem">配置信息</h3>
-<table style="font-size:.88rem"><tbody>
+<div class="ui-card mb-3">
+<h2 class="h6">配置信息</h2>
+<div class="ui-table-wrap shadow-none">
+<table class="table mb-0"><tbody>
 {{range .Svc.Configs}}
-<tr><td class="muted" width="120">{{.Name}}</td><td>{{.Value}}</td>
-<td style="text-align:right;color:#888">{{if gt .Price 0.0}}+￥{{.Price}}/月{{end}}</td></tr>
+<tr><th scope="row" class="ui-muted fw-normal">{{.Name}}</th><td>{{.Value}}</td>
+<td class="text-end text-secondary">{{if gt .Price 0.0}}+￥{{.Price}}/月{{end}}</td></tr>
 {{end}}
-</tbody></table>
+</tbody></table></div>
 </div>
 {{end}}
 
 {{if and .Svc.UpstreamHost (not .ProviderWidget)}}
-<p class="card muted" style="margin-top:16px">该上游暂未提供独立详情面板。</p>
+<p class="ui-card ui-muted">该上游暂未提供独立详情面板。</p>
 {{end}}
 {{end}}

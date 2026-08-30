@@ -3,24 +3,17 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <title>LumeIDC 管理后台</title>
-<style>
-*{box-sizing:border-box}body{font-family:system-ui,sans-serif;margin:0;color:#1a1a2e;background:#f4f4f8}
-.wrap{display:flex;min-height:100vh}
-nav{width:180px;background:#1e1b4b;color:#e0e7ff;padding:20px 0}
-nav a{display:block;padding:10px 22px;color:#c7d2fe;text-decoration:none;font-size:.9rem}
-nav a:hover{background:#312e81;color:#fff}
-main{flex:1;padding:28px}
-h1{font-size:1.25rem;margin-top:0}
-table{width:100%;border-collapse:collapse;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.06)}
-th,td{padding:10px 14px;border-bottom:1px solid #eef0f4;font-size:.88rem;text-align:left}
-th{background:#fafafc;color:#666}
-</style>
+<link rel="stylesheet" href="/assets/vendor/bootstrap-5.3.3/css/bootstrap.min.css">
+<link rel="stylesheet" href="/assets/css/lume.css">
+<script src="/assets/js/lume.js" defer></script>
 </head>
 <body>
-<div class="wrap">
-<nav>
-<div style="padding:0 22px 18px;font-weight:700;color:#fff">LumeIDC</div>
+<a class="ui-skip" href="#admin-main-content">跳到主要内容</a>
+<div class="admin-shell" data-admin-shell>
+<nav class="admin-nav" id="admin-nav" aria-label="后台导航">
+<div class="admin-brand">LumeIDC</div>
 <a href="/admin">概览</a>
 <a href="/admin/types">分类管理</a>
 <a href="/admin/products">产品管理</a>
@@ -37,7 +30,10 @@ th{background:#fafafc;color:#666}
 <a href="/admin/logs">操作日志</a>
 <a href="/admin/password" style="margin-top:18px;border-top:1px solid #312e81;padding-top:14px">修改密码</a>
 </nav>
-<main>{{template "page" .}}</main>
+<main class="admin-main" id="admin-main-content">
+<button class="admin-menu-toggle" type="button" data-admin-menu aria-controls="admin-nav" aria-expanded="false">后台菜单</button>
+<div class="admin-content">{{template "page" .}}</div>
+</main>
 </div>
 </body>
 </html>

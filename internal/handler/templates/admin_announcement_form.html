@@ -1,19 +1,19 @@
 {{define "page"}}
-<h1>{{if .Product}}编辑公告{{else}}新建公告{{end}}</h1>
-<form method="post" action="/admin/announcements/save" style="max-width:640px">
+<h1 class="h3 mb-4">{{if .Product}}编辑公告{{else}}新建公告{{end}}</h1>
+<form method="post" action="/admin/announcements/save" class="ui-card ui-form" style="max-width:720px">
 <input type="hidden" name="_csrf" value="{{.CSRF}}">
 <input type="hidden" name="id" value="{{if .Product}}{{.Product.ID}}{{end}}">
-<label style="display:block;margin:12px 0 4px;font-weight:600;font-size:.88rem">标题</label>
-<input name="title" value="{{if .Product}}{{.Product.Title}}{{end}}" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px" placeholder="公告标题">
-<label style="display:block;margin:12px 0 4px;font-weight:600;font-size:.88rem">内容</label>
-<textarea name="content" rows="8" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px" placeholder="支持换行">{{if .Product}}{{.Product.Content}}{{end}}</textarea>
-<div style="margin-top:12px;display:flex;gap:18px">
-<label><input type="checkbox" name="pinned" {{if and .Product .Product.Pinned}}checked{{end}}> 置顶（显示在列表顶部）</label>
-<label><input type="checkbox" name="hidden" {{if and .Product .Product.Hidden}}checked{{end}}> 隐藏（不展示在前台）</label>
+<label for="announcement-title">标题</label>
+<input class="form-control" id="announcement-title" name="title" value="{{if .Product}}{{.Product.Title}}{{end}}" placeholder="公告标题">
+<label class="mt-3" for="announcement-content">内容</label>
+<textarea class="form-control" id="announcement-content" name="content" rows="8" placeholder="支持换行">{{if .Product}}{{.Product.Content}}{{end}}</textarea>
+<div class="ui-actions mt-3">
+<label class="form-check-label"><input class="form-check-input" type="checkbox" name="pinned" {{if and .Product .Product.Pinned}}checked{{end}}> 置顶（显示在列表顶部）</label>
+<label class="form-check-label"><input class="form-check-input" type="checkbox" name="hidden" {{if and .Product .Product.Hidden}}checked{{end}}> 隐藏（不展示在前台）</label>
 </div>
-<div style="margin-top:16px">
-<button type="submit" style="padding:8px 18px;background:#4f46e5;color:#fff;border:0;border-radius:6px;cursor:pointer">保存</button>
-<a class="btn" href="/admin/announcements" style="margin-left:8px">返回</a>
+<div class="ui-actions mt-4">
+<button class="ui-btn" type="submit">保存</button>
+<a class="ui-btn ui-btn-secondary" href="/admin/announcements">返回</a>
 </div>
 </form>
 {{end}}

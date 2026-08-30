@@ -1,25 +1,30 @@
 {{define "page"}}
-<h1>我的服务</h1>
+<div class="d-flex align-items-center gap-3 flex-wrap mb-4">
+<h1 class="h3 mb-0">我的服务</h1>
+<a class="ui-btn ui-btn-secondary ms-auto" href="/products">购买服务</a>
+</div>
 {{if .Services}}
-<table><tr><th>ID</th><th>名称</th><th>状态</th><th>到期时间</th><th>操作</th></tr>
+<div class="ui-table-wrap" aria-label="我的服务列表">
+<table><thead><tr><th scope="col">ID</th><th scope="col">名称</th><th scope="col">状态</th><th scope="col">到期时间</th><th scope="col">操作</th></tr></thead><tbody>
 {{range .Services}}
 <tr>
-<td>{{.ID}}</td><td><a href="/services/{{.ID}}" style="color:#4f46e5;text-decoration:none">{{.Name}}</a></td>
+<td>{{.ID}}</td><td><a href="/services/{{.ID}}">{{.Name}}</a></td>
 <td><span class="badge {{if eq .StatusText "激活"}}badge-ok{{else if eq .StatusText "已停机"}}badge-warn{{else}}badge-idle{{end}}">{{.StatusText}}</span></td>
-<td{{if .ExpiringSoon}} style="color:#b91c1c;font-weight:600"{{end}}>{{.ExpiresAt.Format "2006-01-02"}}</td>
-<td style="white-space:nowrap">
-<a class="btn" href="/services/{{.ID}}" style="background:#f1f5f9;color:#333;border:1px solid #e5e7eb;padding:4px 12px;font-size:.82rem">管理</a>
+<td{{if .ExpiringSoon}} class="text-danger fw-semibold"{{end}}>{{.ExpiresAt.Format "2006-01-02"}}</td>
+<td class="text-nowrap">
+<a class="ui-btn ui-btn-secondary py-1 px-2" href="/services/{{.ID}}">管理</a>
 {{if ne .StatusText "待开通"}}
-<form method="post" action="/services/{{.ID}}/renew" style="display:inline;margin-left:6px">
+<form method="post" action="/services/{{.ID}}/renew" class="d-inline-flex align-items-center gap-1 ms-1">
 <input type="hidden" name="_csrf" value="{{$.CSRF}}">
-<select name="cycle" style="padding:4px;border:1px solid #ccc;border-radius:4px;font-size:.82rem">
+<label class="visually-hidden" for="renew-cycle-{{.ID}}">续费周期</label>
+<select name="cycle" id="renew-cycle-{{.ID}}" class="form-select form-select-sm w-auto">
 <option value="monthly">月付</option>{{if .ShowQ}}<option value="quarterly">季付</option>{{end}}{{if .ShowY}}<option value="yearly">年付</option>{{end}}
 </select>
-<button style="padding:4px 10px;background:#4f46e5;color:#fff;border:0;border-radius:4px;cursor:pointer;font-size:.82rem">续费</button>
+<button class="ui-btn py-1 px-2" type="submit">续费</button>
 </form>
 {{end}}
 </td></tr>
 {{end}}
-</table>
-{{else}}<p class="muted">还没有服务，去 <a href="/products">购买一个</a> 吧。</p>{{end}}
+</tbody></table></div>
+{{else}}<div class="ui-card text-center py-5"><p class="ui-muted mb-3">还没有服务，去购买一个吧。</p><a class="ui-btn" href="/products">浏览产品</a></div>{{end}}
 {{end}}

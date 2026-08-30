@@ -1,4 +1,4 @@
-<div class="card" style="margin-top:16px">
+<div class="card provider-widget provider-zjmf" style="margin-top:16px">
 <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
 <h3 style="margin:0;font-size:1rem">实例管理</h3>
 <span id="zjmfPowerDot" class="badge badge-idle">{{.StatusText}}</span>
@@ -124,6 +124,6 @@ document.querySelectorAll('.zjtab').forEach(b=>b.onclick=()=>{document.querySele
 document.querySelectorAll('.zjrange').forEach(b=>b.onclick=()=>{document.querySelectorAll('.zjrange').forEach(x=>x.classList.remove('active'));b.classList.add('active');loadChart();});
 const query=new URLSearchParams(location.search),message=document.getElementById('zjmfConsMsg');if(query.get('ok')){message.textContent=query.get('ok')+'。指令已提交上游。';message.style.color='#15803d';}else if(query.get('err')){message.textContent='操作失败：'+query.get('err');message.style.color='#b91c1c';}
 loadPower();loadRescueState();setInterval(loadPower,10000);setInterval(loadRescueState,30000);
-const echartsScript=document.createElement('script');echartsScript.src='https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js';echartsScript.onload=loadChart;document.head.appendChild(echartsScript);
+const echartsScript=document.createElement('script');echartsScript.src='/assets/vendor/echarts-5.5.1/echarts.min.js';echartsScript.onload=loadChart;document.head.appendChild(echartsScript);
 })();
 </script>

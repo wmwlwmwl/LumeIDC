@@ -4,45 +4,43 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>LumeIDC</title>
-<style>
-body{font-family:system-ui,sans-serif;max-width:420px;margin:56px auto;padding:0 16px;color:#1a1a2e}
-h1{font-size:1.3rem}label{display:block;margin:12px 0 4px;font-weight:600;font-size:.9rem}
-input{width:100%;padding:9px;border:1px solid #ccc;border-radius:6px;box-sizing:border-box;font-size:1rem}
-button{margin-top:18px;width:100%;padding:11px;background:#4f46e5;color:#fff;border:0;border-radius:6px;font-size:1rem;cursor:pointer}
-.error{background:#fee2e2;color:#b91c1c;padding:10px;border-radius:6px;margin-top:14px;font-size:.9rem}
-.alt{margin-top:16px;font-size:.88rem;text-align:center}.alt a{color:#4f46e5}
-</style>
+<link rel="stylesheet" href="/assets/vendor/bootstrap-5.3.3/css/bootstrap.min.css">
+<link rel="stylesheet" href="/assets/css/lume.css">
 </head>
 <body>
-<h1>LumeIDC</h1>
-{{if .Error}}<div class="error">{{.Error}}</div>{{end}}
-{{if .IsAdmin}}<h2>管理员登录</h2>
+<a class="ui-skip" href="#auth-main">跳到主要内容</a>
+<main class="site-main" id="auth-main">
+<div class="ui-card ui-form mx-auto" style="max-width:440px">
+<h1 class="h3 mb-4">LumeIDC</h1>
+{{if .Error}}<div class="ui-alert ui-alert-error" role="alert">{{.Error}}</div>{{end}}
+{{if .IsAdmin}}<h2 class="h5">管理员登录</h2>
 <form method="post" action="/admin/login">
 <input type="hidden" name="_csrf" value="{{.CSRF}}">
-<label>用户名</label><input name="email" required autocomplete="username">
-<label>密码</label><input name="password" type="password" required autocomplete="current-password">
-<label>两步验证码（如已启用）</label><input name="totp" inputmode="numeric" autocomplete="one-time-code">
-<button>登录</button>
+<label for="auth-email">用户名</label><input class="form-control" id="auth-email" name="email" required autocomplete="username">
+<label class="mt-3" for="auth-password">密码</label><input class="form-control" id="auth-password" name="password" type="password" required autocomplete="current-password">
+<label class="mt-3" for="auth-totp">两步验证码（如已启用）</label><input class="form-control" id="auth-totp" name="totp" inputmode="numeric" autocomplete="one-time-code">
+<button class="ui-btn w-100 mt-4" type="submit">登录</button>
 </form>
-{{else if .IsRegister}}<h2>注册</h2>
+{{else if .IsRegister}}<h2 class="h5">注册</h2>
 <form method="post" action="/register">
 <input type="hidden" name="_csrf" value="{{.CSRF}}">
-<label>邮箱</label><input name="email" type="email" required>
-<label>姓名</label><input name="name">
-<label>密码</label><input name="password" type="password" minlength="8" required>
-<button>注册</button>
+<label for="auth-email">邮箱</label><input class="form-control" id="auth-email" name="email" type="email" required>
+<label class="mt-3" for="auth-name">姓名</label><input class="form-control" id="auth-name" name="name">
+<label class="mt-3" for="auth-password">密码</label><input class="form-control" id="auth-password" name="password" type="password" minlength="8" required autocomplete="new-password">
+<button class="ui-btn w-100 mt-4" type="submit">注册</button>
 </form>
-<p class="alt">已有账号？<a href="/login">登录</a></p>
-{{else}}<h2>登录</h2>
+<p class="text-center mt-3 mb-0">已有账号？<a href="/login">登录</a></p>
+{{else}}<h2 class="h5">登录</h2>
 <form method="post" action="/login">
-<input type="hidden" name="_csrf" value="{{.CSRF}}">
-<input type="hidden" name="next" value="{{.Next}}">
-<label>邮箱</label><input name="email" type="email" required>
-<label>密码</label><input name="password" type="password" required>
-<button>登录</button>
+<input type="hidden" name="_csrf" value="{{.CSRF}}"><input type="hidden" name="next" value="{{.Next}}">
+<label for="auth-email">邮箱</label><input class="form-control" id="auth-email" name="email" type="email" required autocomplete="username">
+<label class="mt-3" for="auth-password">密码</label><input class="form-control" id="auth-password" name="password" type="password" required autocomplete="current-password">
+<button class="ui-btn w-100 mt-4" type="submit">登录</button>
 </form>
-<p class="alt">没有账号？<a href="/register">注册</a></p>
-<p class="alt"><a href="/admin/login">管理员登录</a></p>
+<p class="text-center mt-3 mb-1">没有账号？<a href="/register">注册</a></p>
+<p class="text-center mb-0"><a href="/admin/login">管理员登录</a></p>
 {{end}}
+</div>
+</main>
 </body>
 </html>

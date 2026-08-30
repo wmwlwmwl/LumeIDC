@@ -1,9 +1,5 @@
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><title>安装失败</title></head>
-<body style="font-family:system-ui;max-width:480px;margin:64px auto">
-<h1>安装失败</h1>
-<p style="color:#b91c1c">{{.Message}}</p>
-<p><a href="/install">返回重试</a></p>
-</body>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>安装失败</title><link rel="stylesheet" href="/assets/vendor/bootstrap-5.3.3/css/bootstrap.min.css"><link rel="stylesheet" href="/assets/css/lume.css"></head>
+<body><main class="site-main"><div class="ui-card mx-auto text-center" style="max-width:520px"><div class="display-6 text-danger mb-3">!</div><h1 class="h3">安装失败</h1><div class="ui-alert ui-alert-error text-start" role="alert">{{.Message}}</div><a class="ui-btn" href="/install">返回重试</a></div></main></body>
 </html>

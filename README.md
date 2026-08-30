@@ -63,6 +63,19 @@ internal/cron         定时任务（到期停机/删除）
 db/migrations         SQL 迁移文件
 ```
 
+## UI 资源
+
+前端是 Go 服务端渲染模板，统一 UI 资源位于 `internal/handler/assets`，并通过 `embed.FS` 编译进单二进制。项目使用本地 Bootstrap 5.3.3 和自有 `ui-*` 样式层，不需要 npm、Node.js 或运行时 CDN；上游模块需要的 Bootstrap 4、jQuery、SweetAlert2，以及 ZJMF 图表用的 ECharts 也已随源码本地化。第三方资源版本与许可证见 `THIRD_PARTY_NOTICES.md`。
+
+修改 UI 后直接按常规方式构建即可：
+
+```
+go test ./...
+go build -o lumeidc ./cmd/lumeidc
+```
+
+不要把业务表单的 `action`、字段名、`_csrf` 隐藏字段、脚本依赖的 DOM ID 或供应商插槽改掉；这些是页面与后端的功能契约。
+
 ## License
 
 MIT

@@ -1,48 +1,25 @@
 {{define "page"}}
-<h1>支付网关</h1>
-{{if .Error}}<p style="color:#b91c1c">{{.Error}}</p>{{end}}
-{{if .Msg}}<p style="color:#15803d">{{.Msg}}</p>{{end}}
-<p class="muted" style="font-size:.82rem">支持多个网关实例。相同支付插件可以配置多个地址；排序数字越小越优先。回调地址：<code>/pay/notify/网关编码</code></p>
-<table>
-<tr><th>编码</th><th>插件</th><th>名称</th><th>地址</th><th>排序</th><th>状态</th><th>操作</th></tr>
+<h1 class="h3 mb-4">支付网关</h1>
+{{if .Error}}<div class="ui-alert ui-alert-error" role="alert">{{.Error}}</div>{{end}}
+{{if .Msg}}<div class="ui-alert ui-alert-success" role="status">{{.Msg}}</div>{{end}}
+<p class="ui-muted">支持多个网关实例。相同支付插件可以配置多个地址；排序数字越小越优先。回调地址：<code>/pay/notify/网关编码</code></p>
+<div class="ui-table-wrap" aria-label="支付网关列表"><table><thead><tr><th scope="col">编码</th><th scope="col">插件</th><th scope="col">名称</th><th scope="col">地址</th><th scope="col">排序</th><th scope="col">状态</th><th scope="col">操作</th></tr></thead><tbody>
 {{range .Rows}}
-<tr>
-<td>{{.Code}}</td><td>{{.Driver}}</td><td>{{.Name}}</td><td>{{.APIURL}}</td><td>{{.Sort}}</td>
-<td>{{if .Enabled}}启用{{else}}停用{{end}}</td>
-<td>
-<details style="display:inline"><summary style="cursor:pointer;color:#4f46e5;display:inline">编辑</summary>
-<form method="post" action="/admin/gateway/save" style="margin-top:8px;background:#fff;padding:12px;border:1px solid #e5e7eb;border-radius:6px;width:300px">
+<tr><td>{{.Code}}</td><td>{{.Driver}}</td><td>{{.Name}}</td><td>{{.APIURL}}</td><td>{{.Sort}}</td><td>{{if .Enabled}}<span class="badge badge-ok">启用</span>{{else}}<span class="badge badge-idle">停用</span>{{end}}</td>
+<td class="text-nowrap"><details class="d-inline-block"><summary class="text-primary">编辑</summary>
+<form method="post" action="/admin/gateway/save" class="ui-card mt-2 p-3" style="width:320px">
 <input type="hidden" name="_csrf" value="{{$.CSRF}}"><input type="hidden" name="code" value="{{.Code}}">
-<label style="display:block;font-size:.8rem;margin-bottom:3px">插件类型</label>
-<select name="driver" style="width:100%;padding:6px;margin-bottom:6px"><option value="epay" {{if eq .Driver "epay"}}selected{{end}}>易支付</option><option value="mock" {{if eq .Driver "mock"}}selected{{end}}>模拟支付</option></select>
-<input name="name" value="{{.Name}}" placeholder="显示名称" required style="width:100%;padding:6px;margin-bottom:6px;box-sizing:border-box">
-<input name="api_url" value="{{.APIURL}}" placeholder="API 地址" style="width:100%;padding:6px;margin-bottom:6px;box-sizing:border-box">
-<input name="pid" value="{{.PID}}" placeholder="商户 PID" style="width:100%;padding:6px;margin-bottom:6px;box-sizing:border-box">
-<input name="key" type="password" placeholder="密钥（留空保持不变）" style="width:100%;padding:6px;margin-bottom:6px;box-sizing:border-box">
-<input name="channel" value="{{.Channel}}" placeholder="支付渠道，如 alipay/wxpay" style="width:100%;padding:6px;margin-bottom:6px;box-sizing:border-box">
-<input name="sort" type="number" value="{{.Sort}}" style="width:80px;padding:6px;margin-bottom:6px">
-<label style="display:block;font-size:.8rem;margin-bottom:6px"><input type="checkbox" name="enabled" value="1" {{if .Enabled}}checked{{end}}> 启用</label>
-<button style="padding:6px 14px;background:#4f46e5;color:#fff;border:0;border-radius:4px;cursor:pointer">保存</button>
+<label for="driver-{{.Code}}">插件类型</label><select class="form-select form-select-sm mb-2" id="driver-{{.Code}}" name="driver"><option value="epay" {{if eq .Driver "epay"}}selected{{end}}>易支付</option><option value="mock" {{if eq .Driver "mock"}}selected{{end}}>模拟支付</option></select>
+<label class="visually-hidden" for="name-{{.Code}}">显示名称</label><input class="form-control form-control-sm mb-2" id="name-{{.Code}}" name="name" value="{{.Name}}" placeholder="显示名称" required>
+<input class="form-control form-control-sm mb-2" name="api_url" value="{{.APIURL}}" placeholder="API 地址"><input class="form-control form-control-sm mb-2" name="pid" value="{{.PID}}" placeholder="商户 PID"><input class="form-control form-control-sm mb-2" name="key" type="password" placeholder="密钥（留空保持不变）" autocomplete="new-password"><input class="form-control form-control-sm mb-2" name="channel" value="{{.Channel}}" placeholder="支付渠道，如 alipay/wxpay"><input class="form-control form-control-sm mb-2" name="sort" type="number" value="{{.Sort}}">
+<label class="form-check-label mb-2"><input class="form-check-input" type="checkbox" name="enabled" value="1" {{if .Enabled}}checked{{end}}> 启用</label><br><button class="ui-btn py-1 px-3" type="submit">保存</button>
 </form></details> ·
-<form method="post" action="/admin/gateway/{{.Code}}/delete" style="display:inline"><input type="hidden" name="_csrf" value="{{$.CSRF}}"><button style="background:none;border:0;color:#b91c1c;cursor:pointer;padding:0;font-size:.88rem">删除</button></form>
-</td></tr>
+<form method="post" action="/admin/gateway/{{.Code}}/delete" class="d-inline"><input type="hidden" name="_csrf" value="{{$.CSRF}}"><button class="ui-btn-ghost p-0 text-danger" type="submit">删除</button></form></td></tr>
 {{end}}
-</table>
-<div style="margin-top:24px;background:#fff;padding:18px;border-radius:8px;max-width:380px">
-<h3 style="margin-top:0">新增网关实例</h3>
-<form method="post" action="/admin/gateway/save">
-<input type="hidden" name="_csrf" value="{{.CSRF}}">
-<label style="display:block;font-size:.8rem;margin-bottom:3px">插件类型</label>
-<select name="driver" style="width:100%;padding:8px;margin-bottom:8px"><option value="epay">易支付</option><option value="mock">模拟支付（测试）</option></select>
-<input name="code" placeholder="实例编码，如 epay_main" required pattern="[A-Za-z0-9_.-]+" style="width:100%;padding:8px;margin-bottom:8px;box-sizing:border-box">
-<input name="name" placeholder="显示名称，如 易支付主通道" required style="width:100%;padding:8px;margin-bottom:8px;box-sizing:border-box">
-<input name="api_url" placeholder="API 地址" style="width:100%;padding:8px;margin-bottom:8px;box-sizing:border-box">
-<input name="pid" placeholder="商户 PID" style="width:100%;padding:8px;margin-bottom:8px;box-sizing:border-box">
-<input name="key" type="password" placeholder="商户密钥" style="width:100%;padding:8px;margin-bottom:8px;box-sizing:border-box">
-<input name="channel" value="alipay" placeholder="支付渠道" style="width:100%;padding:8px;margin-bottom:8px;box-sizing:border-box">
-<input name="sort" type="number" value="0" style="width:90px;padding:8px;margin-bottom:8px">
-<label style="display:block;font-size:.8rem;margin-bottom:8px"><input type="checkbox" name="enabled" value="1" checked> 启用</label>
-<button style="padding:8px 20px;background:#4f46e5;color:#fff;border:0;border-radius:6px;cursor:pointer">添加</button>
-</form>
-</div>
+</tbody></table></div>
+<div class="ui-card ui-form mt-4" style="max-width:420px"><h2 class="h5">新增网关实例</h2><form method="post" action="/admin/gateway/save">
+<input type="hidden" name="_csrf" value="{{.CSRF}}"><label for="new-driver">插件类型</label><select class="form-select" id="new-driver" name="driver"><option value="epay">易支付</option><option value="mock">模拟支付（测试）</option></select>
+<label class="mt-3" for="new-code">实例编码</label><input class="form-control" id="new-code" name="code" placeholder="如 epay_main" required pattern="[A-Za-z0-9_.-]+"><label class="mt-3" for="new-name">显示名称</label><input class="form-control" id="new-name" name="name" placeholder="如 易支付主通道" required>
+<label class="mt-3" for="new-api">API 地址</label><input class="form-control" id="new-api" name="api_url" placeholder="API 地址"><label class="mt-3" for="new-pid">商户 PID</label><input class="form-control" id="new-pid" name="pid" placeholder="商户 PID"><label class="mt-3" for="new-key">商户密钥</label><input class="form-control" id="new-key" name="key" type="password" placeholder="商户密钥" autocomplete="new-password"><label class="mt-3" for="new-channel">支付渠道</label><input class="form-control" id="new-channel" name="channel" value="alipay" placeholder="支付渠道"><label class="mt-3" for="new-sort">排序</label><input class="form-control" id="new-sort" name="sort" type="number" value="0"><label class="form-check-label mt-3"><input class="form-check-input" type="checkbox" name="enabled" value="1" checked> 启用</label><button class="ui-btn mt-4" type="submit">添加</button>
+</form></div>
 {{end}}

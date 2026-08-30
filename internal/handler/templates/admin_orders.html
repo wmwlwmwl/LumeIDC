@@ -1,21 +1,17 @@
 {{define "page"}}
-<h1>最近订单（50 条）</h1>
-{{if .Error}}<p style="color:#b91c1c">{{.Error}}</p>{{end}}
-<table>
-<tr><th>ID</th><th>用户</th><th>金额</th><th>周期</th><th>状态</th><th>利润</th><th>退款</th></tr>
+<h1 class="h3 mb-4">最近订单 <span class="ui-muted fw-normal">（50 条）</span></h1>
+{{if .Error}}<div class="ui-alert ui-alert-error" role="alert">{{.Error}}</div>{{end}}
+<div class="ui-table-wrap" aria-label="最近订单"><table><thead>
+<tr><th scope="col">ID</th><th scope="col">用户</th><th scope="col">金额</th><th scope="col">周期</th><th scope="col">状态</th><th scope="col">利润</th><th scope="col">退款</th></tr></thead><tbody>
 {{range .Rows}}<tr>
-<td>{{.ID}}</td><td>{{.A}}</td><td>{{.B}}</td><td>{{.C}}</td><td>{{.D}}</td><td>{{.E}}</td>
-<td>
-<form method="post" action="/admin/orders/{{.ID}}/refund" style="display:flex;gap:4px">
+<td>{{.ID}}</td><td>{{.A}}</td><td>￥{{.B}}</td><td>{{.C}}</td><td>{{.D}}</td><td>{{.E}}</td>
+<td><form method="post" action="/admin/orders/{{.ID}}/refund" class="ui-actions flex-nowrap">
 <input type="hidden" name="_csrf" value="{{$.CSRF}}">
-<input name="amount" value="{{.B}}" size="6">
-<select name="method"><option value="balance">退余额</option><option value="gateway">线下/手动（标记已退款）</option></select>
-<input name="reason" placeholder="原因" size="8">
-<button type="submit">退款</button>
-</form>
-</td>
-</tr>{{end}}
-</table>
-<p>总毛利：{{.TotalProfit}} 元</p>
-<p><a href="/admin/refunds">查看退款记录</a></p>
+<label class="visually-hidden" for="refund-amount-{{.ID}}">退款金额</label><input class="form-control form-control-sm" id="refund-amount-{{.ID}}" name="amount" value="{{.B}}" size="6">
+<label class="visually-hidden" for="refund-method-{{.ID}}">退款方式</label><select class="form-select form-select-sm" id="refund-method-{{.ID}}" name="method"><option value="balance">退余额</option><option value="gateway">线下/手动（标记已退款）</option></select>
+<label class="visually-hidden" for="refund-reason-{{.ID}}">退款原因</label><input class="form-control form-control-sm" id="refund-reason-{{.ID}}" name="reason" placeholder="原因" size="8">
+<button class="ui-btn ui-btn-danger py-1 px-2" type="submit">退款</button>
+</form></td></tr>{{end}}
+</tbody></table></div>
+<div class="ui-card mt-3 d-flex justify-content-between align-items-center flex-wrap gap-2"><span>总毛利：<strong>{{.TotalProfit}}</strong> 元</span><a href="/admin/refunds">查看退款记录</a></div>
 {{end}}

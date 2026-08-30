@@ -117,6 +117,7 @@ func Build(cfg *config.Config) (*App, error) {
 	}
 
 	mux := http.NewServeMux()
+	handler.RegisterAssets(mux)
 	auth.Register(mux)
 	pages.Register(mux)
 	pay.Register(mux)

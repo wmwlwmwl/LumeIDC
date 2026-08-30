@@ -1,11 +1,11 @@
 {{define "page"}}
-<h1>{{if .Product}}编辑产品{{else}}新增产品{{end}}</h1>
-<form method="post" action="{{if .Product}}/admin/products/{{.Product.ID}}/save{{else}}/admin/products/save{{end}}" style="max-width:560px;background:#fff;padding:20px;border-radius:8px">
+<h1 class="h3 mb-4">{{if .Product}}编辑产品{{else}}新增产品{{end}}</h1>
+<form method="post" action="{{if .Product}}/admin/products/{{.Product.ID}}/save{{else}}/admin/products/save{{end}}" class="ui-card ui-form" style="max-width:720px">
 <input type="hidden" name="_csrf" value="{{.CSRF}}">
 <input type="hidden" name="id" value="{{if .Product}}{{.Product.ID}}{{end}}">
-<label style="display:block;margin:10px 0 4px;font-weight:600;font-size:.88rem">产品名称</label>
-<input name="name" value="{{if .Product}}{{.Product.Name}}{{end}}" required style="width:100%;padding:8px;box-sizing:border-box;border:1px solid #ccc;border-radius:6px">
-<label style="display:block;margin:10px 0 4px;font-weight:600;font-size:.88rem">所属分类</label>
+<label class="form-label fw-semibold mt-3"产品名称</label>
+<input class="form-control" name="name" value="{{if .Product}}{{.Product.Name}}{{end}}" required>
+<label class="form-label fw-semibold mt-3"所属分类</label>
 <select name="type_id" required style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px">
 <option value="">请选择二级分类</option>
 {{$cur := ""}}{{if .Product}}{{$cur = printf "%v" .Product.TypeID.Int64}}{{end}}
@@ -16,7 +16,7 @@
 </optgroup>
 {{end}}{{end}}
 </select>
-<label style="display:block;margin:10px 0 4px;font-weight:600;font-size:.88rem">描述</label>
+<label class="form-label fw-semibold mt-3"描述</label>
 <textarea name="description" rows="3" style="width:100%;box-sizing:border-box;border:1px solid #ccc;border-radius:6px">{{if .Product}}{{.Product.Description}}{{end}}</textarea>
 
 <label style="display:block;margin:16px 0 4px;font-weight:600;font-size:.9rem">上游自动开通</label>
@@ -51,7 +51,7 @@
 </div>
 <p class="muted" style="font-size:.76rem;color:#888;margin:6px 0 0">售价加成（ZJMF 上游百分比语义）：合计 =（基础价+配置费用）×(1+比例%)，固定金额则为合计+金额；购买/下单/周期续费按加成价计费。0 表示不加成。</p>
 </div>
-<label style="display:block;margin:10px 0 4px;font-weight:600;font-size:.88rem">库存（-1 为不限）</label>
+<label class="form-label fw-semibold mt-3"库存（-1 为不限）</label>
 <input name="stock" type="number" value="{{if .Product}}{{.Product.Stock}}{{else}}-1{{end}}" style="width:120px;padding:8px;border:1px solid #ccc;border-radius:6px">
 
 <label style="display:block;margin:12px 0 4px;font-weight:600;font-size:.9rem">配置项（购买时展示，可选）</label>
@@ -103,7 +103,7 @@
     </div>
   </div>
 </div>
-<label style="display:block;margin:10px 0 4px;font-weight:600;font-size:.88rem">前台显示</label>
+<label class="form-label fw-semibold mt-3"前台显示</label>
 <select name="hidden" style="padding:8px;border:1px solid #ccc;border-radius:6px">
 <option value="0">显示</option>
 <option value="1" {{if and .Product .Product.Hidden}}selected{{end}}>隐藏</option>
