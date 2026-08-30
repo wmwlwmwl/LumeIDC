@@ -26,6 +26,8 @@ type ProductType struct {
 	Name        string
 	Description string
 	Sort        int
+	ParentID    int64 // 0=一级；仅支持两级（对齐 ZJMF 商品分组）
+	Hidden      bool
 }
 
 type Products struct{ DB *sql.DB }
@@ -35,24 +37,6 @@ const productCols = `SELECT id,type_id,server_id,upstream_pid,upstream_cycle,nam
 func scanProduct(rows *sql.Rows, pr *Product) error {
 	return rows.Scan(&pr.ID, &pr.TypeID, &pr.ServerID, &pr.UpstreamPID, &pr.UpstreamCycle,
 		&pr.Name, &pr.Description, &pr.Stock, &pr.Hidden, &pr.ProfitType, &pr.ProfitValue)
-}
-
-func (p *Products) ListVisible(ctx context.Context) ([]Product, error) {
-	rows, err := p.DB.QueryContext(ctx,
-		productCols+` FROM products WHERE hidden=false ORDER BY id`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []Product
-	for rows.Next() {
-		var pr Product
-		if err := scanProduct(rows, &pr); err != nil {
-			return nil, err
-		}
-		out = append(out, pr)
-	}
-	return out, rows.Err()
 }
 
 // ListAll 后台用：包含隐藏产品
@@ -74,10 +58,13 @@ func (p *Products) ListAll(ctx context.Context) ([]Product, error) {
 	return out, rows.Err()
 }
 
-// ListByType returns visible products in a type.
-func (p *Products) ListByType(ctx context.Context, typeID int64) ([]Product, error) {
+// ListVisibleByTypes 前台按分类集合取可见产品（当前仅传单 ID；保留集合签名便于后续组合展示）。
+func (p *Products) ListVisibleByTypes(ctx context.Context, typeIDs []int64) ([]Product, error) {
+	if len(typeIDs) == 0 {
+		return nil, nil
+	}
 	rows, err := p.DB.QueryContext(ctx,
-		productCols+` FROM products WHERE hidden=false AND type_id=$1 ORDER BY id`, typeID)
+		productCols+` FROM products WHERE hidden=false AND type_id = ANY($1) ORDER BY id`, typeIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -145,7 +132,7 @@ func (p *Products) Delete(ctx context.Context, id int64) error {
 
 func (p *Products) ListTypes(ctx context.Context) ([]ProductType, error) {
 	rows, err := p.DB.QueryContext(ctx,
-		`SELECT id,name,description,sort FROM product_types ORDER BY sort,id`)
+		`SELECT id,name,description,sort,parent_id,hidden FROM product_types ORDER BY sort,id`)
 	if err != nil {
 		return nil, err
 	}
@@ -153,7 +140,7 @@ func (p *Products) ListTypes(ctx context.Context) ([]ProductType, error) {
 	var out []ProductType
 	for rows.Next() {
 		var t ProductType
-		if err := rows.Scan(&t.ID, &t.Name, &t.Description, &t.Sort); err != nil {
+		if err := rows.Scan(&t.ID, &t.Name, &t.Description, &t.Sort, &t.ParentID, &t.Hidden); err != nil {
 			return nil, err
 		}
 		out = append(out, t)
@@ -161,23 +148,61 @@ func (p *Products) ListTypes(ctx context.Context) ([]ProductType, error) {
 	return out, rows.Err()
 }
 
-func (p *Products) CreateType(ctx context.Context, name, description string, sort int) (int64, error) {
+func (p *Products) CreateType(ctx context.Context, name, description string, sort int, parentID int64, hidden bool) (int64, error) {
 	var id int64
 	err := p.DB.QueryRowContext(ctx,
-		`INSERT INTO product_types(name,description,sort) VALUES($1,$2,$3) RETURNING id`,
-		name, description, sort).Scan(&id)
+		`INSERT INTO product_types(name,description,sort,parent_id,hidden) VALUES($1,$2,$3,$4,$5) RETURNING id`,
+		name, description, sort, parentID, hidden).Scan(&id)
 	return id, err
 }
 
-func (p *Products) UpdateType(ctx context.Context, id int64, name, description string, sort int) error {
+func (p *Products) UpdateType(ctx context.Context, id int64, name, description string, sort int, parentID int64, hidden bool) error {
 	_, err := p.DB.ExecContext(ctx,
-		`UPDATE product_types SET name=$2,description=$3,sort=$4 WHERE id=$1`, id, name, description, sort)
+		`UPDATE product_types SET name=$2,description=$3,sort=$4,parent_id=$5,hidden=$6 WHERE id=$1`,
+		id, name, description, sort, parentID, hidden)
 	return err
 }
 
+// TypeProductCounts 各分类直挂产品数（不含子分类）。
+func (p *Products) TypeProductCounts(ctx context.Context) (map[int64]int, error) {
+	rows, err := p.DB.QueryContext(ctx,
+		`SELECT type_id,count(*) FROM products WHERE type_id IS NOT NULL GROUP BY type_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int64]int{}
+	for rows.Next() {
+		var id int64
+		var n int
+		if err := rows.Scan(&id, &n); err != nil {
+			return nil, err
+		}
+		out[id] = n
+	}
+	return out, rows.Err()
+}
+
+// MoveTypeProducts 整组移动产品到目标分类，返回移动数量。
+func (p *Products) MoveTypeProducts(ctx context.Context, from, to int64) (int64, error) {
+	res, err := p.DB.ExecContext(ctx,
+		`UPDATE products SET type_id=$2 WHERE type_id=$1`, from, to)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 func (p *Products) DeleteType(ctx context.Context, id int64) error {
-	// 分类下有产品则拒绝删除，避免悬挂引用
+	// 有子分类或有产品均拒绝删除（对齐 ZJMF 删除保护）
 	var n int
+	if err := p.DB.QueryRowContext(ctx,
+		`SELECT count(*) FROM product_types WHERE parent_id=$1`, id).Scan(&n); err != nil {
+		return err
+	}
+	if n > 0 {
+		return ErrTypeHasChildren
+	}
 	if err := p.DB.QueryRowContext(ctx,
 		`SELECT count(*) FROM products WHERE type_id=$1`, id).Scan(&n); err != nil {
 		return err
@@ -189,7 +214,21 @@ func (p *Products) DeleteType(ctx context.Context, id int64) error {
 	return err
 }
 
-var ErrTypeInUse = fixedErr("该分类下仍有产品，无法删除")
+var (
+	ErrTypeInUse       = fixedErr("该分类下仍有产品，无法删除")
+	ErrTypeHasChildren = fixedErr("该分类下有子分类，无法删除")
+	ErrTypeNotFound    = fixedErr("分类不存在")
+)
+
+// FindType 在扁平分类表中按 ID 查找。
+func FindType(types []ProductType, id int64) (ProductType, bool) {
+	for _, t := range types {
+		if t.ID == id {
+			return t, true
+		}
+	}
+	return ProductType{}, false
+}
 
 type fixedErr string
 

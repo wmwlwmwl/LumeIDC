@@ -54,6 +54,45 @@ func (m *AdminManage) audit(r *http.Request, action, targetType string, targetID
 
 // ---------- 分类管理 ----------
 
+// typeRow 分类树行（两级，模板用）。
+type typeRow struct {
+	ID           int64
+	ParentID     int64
+	Name         string
+	Description  string
+	Sort         int
+	Hidden       bool
+	ProductCount int
+	Children     []typeRow
+}
+
+// buildTypeRows 扁平分类组装为两级树（一级 + Children），并挂直挂产品数。
+func buildTypeRows(types []repo.ProductType, counts map[int64]int) []typeRow {
+	var firsts []typeRow
+	idx := map[int64]int{}
+	for _, t := range types {
+		if t.ParentID == 0 {
+			idx[t.ID] = len(firsts)
+			firsts = append(firsts, typeRow{
+				ID: t.ID, ParentID: 0, Name: t.Name, Description: t.Description,
+				Sort: t.Sort, Hidden: t.Hidden, ProductCount: counts[t.ID],
+			})
+		}
+	}
+	for _, t := range types {
+		if t.ParentID == 0 {
+			continue
+		}
+		if i, ok := idx[t.ParentID]; ok {
+			firsts[i].Children = append(firsts[i].Children, typeRow{
+				ID: t.ID, ParentID: t.ParentID, Name: t.Name, Description: t.Description,
+				Sort: t.Sort, Hidden: t.Hidden, ProductCount: counts[t.ID],
+			})
+		}
+	}
+	return firsts
+}
+
 func (m *AdminManage) TypesList(w http.ResponseWriter, r *http.Request) {
 	if !m.require(w, r) {
 		return
@@ -63,38 +102,106 @@ func (m *AdminManage) TypesList(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "查询失败", 500)
 		return
 	}
-	var rows []adminRow
-	for _, t := range list {
-		rows = append(rows, adminRow{ID: t.ID, A: t.Name, B: t.Description, C: strconv.Itoa(t.Sort)})
-	}
+	counts, _ := m.Products.TypeProductCounts(r.Context())
 	renderAdmin(w, "admin_types.html", AdminData{
-		Rows: rows, CSRF: csrfOf(adminSessions, w, r), Error: r.URL.Query().Get("err"),
+		Rows: buildTypeRows(list, counts), CSRF: csrfOf(adminSessions, w, r), Error: r.URL.Query().Get("err"),
 	})
+}
+
+// typeRedirect 分类错误跳转（err 统一转义，防中文消息破链接）。
+func typeRedirect(w http.ResponseWriter, r *http.Request, err error) {
+	http.Redirect(w, r, "/admin/types?err="+url.QueryEscape(err.Error()), http.StatusSeeOther)
 }
 
 func (m *AdminManage) TypeSave(w http.ResponseWriter, r *http.Request) {
 	if !m.require(w, r) {
 		return
 	}
-	if tok := r.PostFormValue("_csrf"); tok == "" || !checkCSRF(r, tok) {
-		http.Error(w, "CSRF 校验失败", http.StatusForbidden)
+	if !m.requireCSRF(w, r) {
 		return
 	}
 	name := strings.TrimSpace(r.PostFormValue("name"))
-	desc := strings.TrimSpace(r.PostFormValue("description"))
-	sort, _ := strconv.Atoi(r.PostFormValue("sort"))
-	var err error
-	if idStr := r.PostFormValue("id"); idStr == "" {
-		_, err = m.Products.CreateType(r.Context(), name, desc, sort)
-	} else {
-		id, _ := strconv.ParseInt(idStr, 10, 64)
-		err = m.Products.UpdateType(r.Context(), id, name, desc, sort)
-	}
-	if err != nil {
-		http.Redirect(w, r, "/admin/types?err="+err.Error(), http.StatusSeeOther)
+	if name == "" {
+		typeRedirect(w, r, errors.New("名称必填"))
 		return
 	}
+	desc := strings.TrimSpace(r.PostFormValue("description"))
+	sort, _ := strconv.Atoi(r.PostFormValue("sort"))
+	parentID, _ := strconv.ParseInt(r.PostFormValue("parent_id"), 10, 64)
+	hidden := r.PostFormValue("hidden") != ""
+	var id int64
+	if idStr := r.PostFormValue("id"); idStr != "" {
+		id, _ = strconv.ParseInt(idStr, 10, 64)
+	}
+	// 父分类校验：必须存在且为一级，且不能是自己（防自环）
+	if parentID != 0 {
+		types, err := m.Products.ListTypes(r.Context())
+		if err != nil {
+			typeRedirect(w, r, errors.New("查询失败"))
+			return
+		}
+		parent, found := repo.FindType(types, parentID)
+		if !found {
+			typeRedirect(w, r, repo.ErrTypeNotFound)
+			return
+		}
+		if parent.ParentID != 0 {
+			typeRedirect(w, r, errors.New("仅支持两级分类，父分类必须为一级分类"))
+			return
+		}
+		if parentID == id {
+			typeRedirect(w, r, errors.New("不能将自己设为父分类"))
+			return
+		}
+	}
+	var err error
+	if id == 0 {
+		_, err = m.Products.CreateType(r.Context(), name, desc, sort, parentID, hidden)
+	} else {
+		err = m.Products.UpdateType(r.Context(), id, name, desc, sort, parentID, hidden)
+	}
+	if err != nil {
+		typeRedirect(w, r, err)
+		return
+	}
+	if id == 0 {
+		m.audit(r, "type_create", "type", parentID, name)
+	} else {
+		m.audit(r, "type_update", "type", id, name)
+	}
 	http.Redirect(w, r, "/admin/types", http.StatusSeeOther)
+}
+
+// TypeMoveProducts 整组移动产品到其他分类（清空后才能删除，对齐 ZJMF）。
+func (m *AdminManage) TypeMoveProducts(w http.ResponseWriter, r *http.Request) {
+	if !m.require(w, r) {
+		return
+	}
+	if !m.requireCSRF(w, r) {
+		return
+	}
+	from, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	to, _ := strconv.ParseInt(r.PostFormValue("target_id"), 10, 64)
+	types, err := m.Products.ListTypes(r.Context())
+	if err != nil {
+		typeRedirect(w, r, errors.New("查询失败"))
+		return
+	}
+	if _, ok := repo.FindType(types, from); !ok {
+		typeRedirect(w, r, repo.ErrTypeNotFound)
+		return
+	}
+	if target, ok := repo.FindType(types, to); !ok || target.ParentID == 0 || from == to {
+		typeRedirect(w, r, errors.New("目标分类无效"))
+		return
+	}
+	n, err := m.Products.MoveTypeProducts(r.Context(), from, to)
+	if err != nil {
+		typeRedirect(w, r, err)
+		return
+	}
+	m.audit(r, "type_move_products", "type", from, fmt.Sprintf("移动 %d 个产品到分类 %d", n, to))
+	http.Redirect(w, r, "/admin/types?msg="+url.QueryEscape(fmt.Sprintf("已移动 %d 个产品", n)), http.StatusSeeOther)
 }
 
 func (m *AdminManage) TypeDelete(w http.ResponseWriter, r *http.Request) {
@@ -106,9 +213,10 @@ func (m *AdminManage) TypeDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err := m.Products.DeleteType(r.Context(), id); err != nil {
-		http.Redirect(w, r, "/admin/types?err="+err.Error(), http.StatusSeeOther)
+		typeRedirect(w, r, err)
 		return
 	}
+	m.audit(r, "type_delete", "type", id, "")
 	http.Redirect(w, r, "/admin/types", http.StatusSeeOther)
 }
 
@@ -143,9 +251,20 @@ func (m *AdminManage) ProductsList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	types, _ := m.Products.ListTypes(r.Context())
+	// 分类列显示完整路径：一级/二级
 	typeName := map[int64]string{}
+	parentName := map[int64]string{}
 	for _, t := range types {
-		typeName[t.ID] = t.Name
+		if t.ParentID == 0 {
+			parentName[t.ID] = t.Name
+		}
+	}
+	for _, t := range types {
+		if p, ok := parentName[t.ParentID]; ok {
+			typeName[t.ID] = p + "/" + t.Name
+		} else {
+			typeName[t.ID] = t.Name
+		}
 	}
 	psID, _ := m.Products.DefaultPricesetID(r.Context())
 	rows := make([]adminProductRow, 0, len(list))
@@ -166,7 +285,7 @@ func (m *AdminManage) ProductsList(w http.ResponseWriter, r *http.Request) {
 	}
 	renderAdmin(w, "admin_products.html", AdminData{
 		Rows: rows, CSRF: csrfOf(adminSessions, w, r), Error: r.URL.Query().Get("err"),
-		Msg: r.URL.Query().Get("msg"),
+		Msg:               r.URL.Query().Get("msg"),
 		GlobalProfitType:  loadGlobalProfitType(r.Context(), m.Settings),
 		GlobalProfitValue: loadGlobalProfitValue(r.Context(), m.Settings),
 	})
@@ -311,6 +430,19 @@ func (m *AdminManage) ProductSave(w http.ResponseWriter, r *http.Request) {
 	if v := r.PostFormValue("type_id"); v != "" {
 		id, _ := strconv.ParseInt(v, 10, 64)
 		typeID = sql.NullInt64{Int64: id, Valid: true}
+	}
+	if !typeID.Valid {
+		http.Redirect(w, r, "/admin/products?err="+url.QueryEscape("请选择二级分类"), http.StatusSeeOther)
+		return
+	}
+	types, terr := m.Products.ListTypes(r.Context())
+	if terr != nil {
+		http.Redirect(w, r, "/admin/products?err="+url.QueryEscape("分类查询失败"), http.StatusSeeOther)
+		return
+	}
+	if t, ok := repo.FindType(types, typeID.Int64); !ok || t.ParentID == 0 {
+		http.Redirect(w, r, "/admin/products?err="+url.QueryEscape("商品只能挂在二级分类下"), http.StatusSeeOther)
+		return
 	}
 	psID, _ := m.Products.DefaultPricesetID(r.Context())
 	monthly := normalizeAmount(r.PostFormValue("monthly"))
@@ -471,12 +603,29 @@ func (m *AdminManage) CatalogPage(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[catalog] 查询已对接商品失败: %v", lerr)
 		linked = map[int]bool{}
 	}
+	// 一级分类清单：供导入时选择“上游分组建为某分类下的二级”
+	var firstTypes []repo.ProductType
+	if types, terr := m.Products.ListTypes(r.Context()); terr == nil {
+		for _, t := range types {
+			if t.ParentID == 0 {
+				firstTypes = append(firstTypes, t)
+			}
+		}
+	}
 	renderAdmin(w, "admin_catalog.html", AdminData{
-		CSRF:             csrfOf(adminSessions, w, r),
-		Error:            catalogErr(err),
-		ServersList:      sv,
-		Rows:             toCatalogRows(list, linked),
-		ServerProfitType: sv.ProfitType, ServerProfitValue: sv.ProfitValue,
+		CSRF: csrfOf(adminSessions, w, r),
+		// 目录拉取错误优先；否则回显导入跳转携带的错误
+		Error: func() string {
+			if e := catalogErr(err); e != "" {
+				return e
+			}
+			return r.URL.Query().Get("err")
+		}(),
+		ServersList: sv,
+		Rows:        toCatalogRows(list, linked),
+		Types:       firstTypes,
+		// 目录导入利润独立于服务器默认利润，默认 0/0，不自动带入服务器配置。
+		ServerProfitType: 0, ServerProfitValue: 0,
 	})
 }
 
@@ -638,13 +787,30 @@ func (m *AdminManage) ImportProducts(w http.ResponseWriter, r *http.Request) {
 	}
 	r.ParseForm()
 	// 导入利润：表单未填时回退服务器默认利润
-	profitType := sv.ProfitType
-	profitValue := sv.ProfitValue
-	if pt, _ := strconv.ParseInt(r.PostFormValue("profit_type"), 10, 64); pt == 1 {
-		profitType = 1
+	// 目录导入默认 0/0；只使用本次表单提交值，不回退服务器利润配置。
+	profitType, _ := strconv.ParseInt(r.PostFormValue("profit_type"), 10, 64)
+	if profitType != 1 {
+		profitType = 0
 	}
-	if pv, _ := strconv.ParseFloat(r.PostFormValue("profit_value"), 64); pv > 0 {
-		profitValue = pv
+	profitValue, _ := strconv.ParseFloat(r.PostFormValue("profit_value"), 64)
+	if profitValue < 0 {
+		profitValue = 0
+	}
+	// 导入目标父分类：0=按上游分组自动建；>0=上游分组建为该一级分类下的二级
+	parentID, _ := strconv.ParseInt(r.PostFormValue("parent_id"), 10, 64)
+	if parentID <= 0 {
+		http.Redirect(w, r, fmt.Sprintf("/admin/servers/%d/catalog?err=%s", serverID,
+			url.QueryEscape("请选择导入目标一级分类")), http.StatusSeeOther)
+		return
+	}
+	if parentID != 0 {
+		types, terr := m.Products.ListTypes(r.Context())
+		t, ok := repo.FindType(types, parentID)
+		if terr != nil || !ok || t.ParentID != 0 {
+			http.Redirect(w, r, fmt.Sprintf("/admin/servers/%d/catalog?err=%s", serverID,
+				url.QueryEscape("导入目标分类无效（需为一级分类）")), http.StatusSeeOther)
+			return
+		}
 	}
 	imported := 0
 	for _, pidStr := range r.PostForm["import"] {
@@ -652,7 +818,7 @@ func (m *AdminManage) ImportProducts(w http.ResponseWriter, r *http.Request) {
 		if err != nil || pid <= 0 {
 			continue
 		}
-		if m.importUpstreamProduct(r.Context(), sv, serverID, pid, int16(profitType), profitValue) {
+		if m.importUpstreamProduct(r.Context(), sv, serverID, pid, int16(profitType), profitValue, parentID) {
 			imported++
 		}
 	}
@@ -662,7 +828,8 @@ func (m *AdminManage) ImportProducts(w http.ResponseWriter, r *http.Request) {
 
 // importUpstreamProduct 幂等导入：已按 (server_id, upstream_pid) 对接则更新价格/绑定/配置项，
 // 否则新建分类+产品+价格+绑定+配置项。profitType/profitValue 仅对新建产品生效（不覆盖已有产品利润）。
-func (m *AdminManage) importUpstreamProduct(ctx context.Context, sv *repo.Server, serverID int64, pid int, profitType int16, profitValue float64) bool {
+// parentID：新建产品的分类归属（0=上游分组建一级；>0=建为该一级下的二级）。
+func (m *AdminManage) importUpstreamProduct(ctx context.Context, sv *repo.Server, serverID int64, pid int, profitType int16, profitValue float64, parentID int64) bool {
 	prov, err := m.Providers.Get(sv.Provider)
 	if err != nil {
 		return false
@@ -698,7 +865,7 @@ func (m *AdminManage) importUpstreamProduct(ctx context.Context, sv *repo.Server
 			log.Printf("[import] 更新描述失败 pid=%d: %v", pid, derr)
 		}
 	} else {
-		typeID, terr := m.ensureType(ctx, up.GroupName)
+		typeID, terr := m.ensureType(ctx, up.GroupName, parentID)
 		if terr != nil {
 			return false
 		}
@@ -751,17 +918,53 @@ func cleanDesc(s string) string {
 }
 
 // ensureType 按分组名取分类 id，不存在则创建。
-func (m *AdminManage) ensureType(ctx context.Context, groupName string) (int64, error) {
+// parentID=0：分组名支持两级 "一级/二级"（上游返回嵌套时），单名建一级分类；
+// parentID>0：管理员指定的一级分类，上游分组名（取末段）作为其下二级分类——
+// 对齐 ZJMF 代理上游商品"必选本地分组"的模式（上游 /cart/all 多为单层分组）。
+func (m *AdminManage) ensureType(ctx context.Context, groupName string, parentID int64) (int64, error) {
+	first, second := groupName, ""
+	if parts := strings.SplitN(groupName, "/", 2); len(parts) == 2 {
+		first, second = parts[0], parts[1]
+	}
 	types, err := m.Products.ListTypes(ctx)
 	if err != nil {
 		return 0, err
 	}
+	if parentID > 0 {
+		name := second
+		if name == "" {
+			name = first
+		}
+		for _, t := range types {
+			if t.ParentID == parentID && t.Name == name {
+				return t.ID, nil
+			}
+		}
+		return m.Products.CreateType(ctx, name, "上游导入", 99, parentID, false)
+	}
+	// 定位/创建一级
+	var fid int64
 	for _, t := range types {
-		if t.Name == groupName {
+		if t.ParentID == 0 && t.Name == first {
+			fid = t.ID
+			break
+		}
+	}
+	if fid == 0 {
+		if fid, err = m.Products.CreateType(ctx, first, "上游导入", 99, 0, false); err != nil {
+			return 0, err
+		}
+	}
+	if second == "" {
+		return fid, nil
+	}
+	// 定位/创建二级（仅限该一级下同名）
+	for _, t := range types {
+		if t.ParentID == fid && t.Name == second {
 			return t.ID, nil
 		}
 	}
-	return m.Products.CreateType(ctx, groupName, "上游导入", 99)
+	return m.Products.CreateType(ctx, second, "上游导入", 99, fid, false)
 }
 
 // ---------- 服务管理 ----------

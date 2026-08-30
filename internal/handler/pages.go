@@ -43,6 +43,7 @@ func SetPageStore(s *middleware.Store) { sessionsStore = s }
 func (h *Pages) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /{$}", h.home)
 	mux.HandleFunc("GET /products", h.products)
+	mux.HandleFunc("GET /cart", h.cart)
 	mux.HandleFunc("GET /services", h.myServices)
 	mux.HandleFunc("GET /buy/{productID}", h.buyForm)
 	mux.HandleFunc("GET /user", h.userHome)
@@ -147,43 +148,136 @@ type productView struct {
 	Stock   int
 }
 
+// typeNav 前台分类导航（两级）。
+type typeNav struct {
+	ID       int64
+	Name     string
+	Children []repo.ProductType
+}
+
+// buildTypeNav 扁平分类 → 可见两级导航：一级隐藏则其下二级一并隐藏。
+// ponytail: 内存过滤，分类量为个位/十位级；若过百再改 SQL 递归。
+func buildTypeNav(types []repo.ProductType) []typeNav {
+	byID := make(map[int64]*repo.ProductType, len(types))
+	for i := range types {
+		byID[types[i].ID] = &types[i]
+	}
+	var nav []typeNav
+	idx := map[int64]int{}
+	for _, t := range types {
+		if t.ParentID == 0 && !t.Hidden {
+			idx[t.ID] = len(nav)
+			nav = append(nav, typeNav{ID: t.ID, Name: t.Name})
+		}
+	}
+	for _, t := range types {
+		if t.ParentID == 0 || t.Hidden {
+			continue
+		}
+		if parent, ok := byID[t.ParentID]; !ok || parent.Hidden {
+			continue
+		}
+		if i, ok := idx[t.ParentID]; ok {
+			nav[i].Children = append(nav[i].Children, t)
+		}
+	}
+	return nav
+}
+
+// typeVisible 分类可见：自身未隐藏且（若为二级）父分类未隐藏。
+func typeVisible(t repo.ProductType, types []repo.ProductType) bool {
+	if t.Hidden {
+		return false
+	}
+	if t.ParentID != 0 {
+		p, ok := repo.FindType(types, t.ParentID)
+		return ok && !p.Hidden
+	}
+	return true
+}
+
 func (h *Pages) home(w http.ResponseWriter, r *http.Request) {
-	h.productListPage(w, r, "/")
+	h.products(w, r)
 }
 
 func (h *Pages) products(w http.ResponseWriter, r *http.Request) {
-	h.productListPage(w, r, "/products")
-}
-
-func (h *Pages) productListPage(w http.ResponseWriter, r *http.Request, _ string) {
-	types, _ := h.Products.ListTypes(r.Context())
-	var list []repo.Product
-	var err error
-	gid := r.URL.Query().Get("gid")
-	if gid == "" {
-		list, err = h.Products.ListVisible(r.Context())
-	} else if id, perr := strconv.ParseInt(gid, 10, 64); perr == nil {
-		list, _ = h.Products.ListByType(r.Context(), id)
-	} else {
-		list, _ = h.Products.ListVisible(r.Context())
-	}
-	if err != nil && list == nil {
+	types, err := h.Products.ListTypes(r.Context())
+	if err != nil {
 		http.Error(w, "读取产品失败", 500)
 		return
 	}
-	psID, _ := h.Products.DefaultPricesetID(r.Context())
-	var views []productView
-	for _, p := range list {
-		m := "-"
-		if pr, err := h.Products.Price(r.Context(), p.ID, psID); err == nil {
-			opts, _ := h.Products.GetConfigOptions(r.Context(), p.ID)
-			eType, eVal := resolveProfitType(r.Context(), p.ProfitType, p.ProfitValue, h.Products.DB, p.ID), resolveProfitValue(r.Context(), p.ProfitType, p.ProfitValue, h.Products.DB, p.ID)
-			m = fmt.Sprintf("%.2f", service.DisplayPrice(priceVal(pr.Monthly), opts, eType, eVal))
+	// 对齐魔方财务：产品入口默认选中第一个有二级分类的一级/二级分类。
+	for _, first := range buildTypeNav(types) {
+		if len(first.Children) == 0 {
+			continue
 		}
-		views = append(views, productView{ID: p.ID, Name: p.Name, Desc: p.Description, Monthly: m, Stock: p.Stock})
+		http.Redirect(w, r, fmt.Sprintf("/cart?fid=%d&gid=%d", first.ID, first.Children[0].ID), http.StatusSeeOther)
+		return
+	}
+	// 没有可选二级分类时仍进入分类页，明确提示管理员配置二级分类。
+	h.productListPage(w, r, "/products")
+}
+
+// cart 对齐魔方财务：一级 fid 与二级 gid 分开传递。
+func (h *Pages) cart(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Get("gid") == "" {
+		types, err := h.Products.ListTypes(r.Context())
+		if err != nil {
+			http.Error(w, "读取产品失败", 500)
+			return
+		}
+		fid, err := strconv.ParseInt(r.URL.Query().Get("fid"), 10, 64)
+		if err == nil {
+			for _, first := range buildTypeNav(types) {
+				if first.ID == fid && len(first.Children) > 0 {
+					http.Redirect(w, r, fmt.Sprintf("/cart?fid=%d&gid=%d", fid, first.Children[0].ID), http.StatusSeeOther)
+					return
+				}
+			}
+		}
+	}
+	h.productListPage(w, r, "/cart")
+}
+
+func (h *Pages) productListPage(w http.ResponseWriter, r *http.Request, _ string) {
+	types, err := h.Products.ListTypes(r.Context())
+	if err != nil {
+		http.Error(w, "读取产品失败", 500)
+		return
+	}
+	nav := buildTypeNav(types)
+	fid, gid := "", ""
+	var views []productView
+	// 对齐 ZJMF：fid 只定位一级导航，gid 必须是 fid 下的二级分类才加载商品。
+	firstID, ferr := strconv.ParseInt(r.URL.Query().Get("fid"), 10, 64)
+	secondID, gerr := strconv.ParseInt(r.URL.Query().Get("gid"), 10, 64)
+	if ferr == nil {
+		if first, ok := repo.FindType(types, firstID); ok && first.ParentID == 0 && typeVisible(first, types) {
+			fid = strconv.FormatInt(firstID, 10)
+			if gerr == nil {
+				if second, ok := repo.FindType(types, secondID); ok && second.ParentID == firstID && typeVisible(second, types) {
+					gid = strconv.FormatInt(secondID, 10)
+					list, lerr := h.Products.ListVisibleByTypes(r.Context(), []int64{second.ID})
+					if lerr != nil {
+						http.Error(w, "读取产品失败", 500)
+						return
+					}
+					psID, _ := h.Products.DefaultPricesetID(r.Context())
+					for _, p := range list {
+						m := "-"
+						if pr, perr := h.Products.Price(r.Context(), p.ID, psID); perr == nil {
+							opts, _ := h.Products.GetConfigOptions(r.Context(), p.ID)
+							eType, eVal := resolveProfitType(r.Context(), p.ProfitType, p.ProfitValue, h.Products.DB, p.ID), resolveProfitValue(r.Context(), p.ProfitType, p.ProfitValue, h.Products.DB, p.ID)
+							m = fmt.Sprintf("%.2f", service.DisplayPrice(priceVal(pr.Monthly), opts, eType, eVal))
+						}
+						views = append(views, productView{ID: p.ID, Name: p.Name, Desc: p.Description, Monthly: m, Stock: p.Stock})
+					}
+				}
+			}
+		}
 	}
 	render(w, r, "products.html", map[string]any{
-		"Products": views, "Types": types, "GID": gid,
+		"Products": views, "Types": nav, "FID": fid, "GID": gid,
 		"Announcements": h.listAnnouncements(r.Context()),
 	})
 }
@@ -218,7 +312,7 @@ func (h *Pages) buyForm(w http.ResponseWriter, r *http.Request) {
 	}
 	cfgJSON, _ := json.Marshal(map[string]any{
 		"base": baseMap, "options": opts,
-		"profit_type": resolveProfitType(r.Context(), p.ProfitType, p.ProfitValue, h.Products.DB, p.ID),
+		"profit_type":  resolveProfitType(r.Context(), p.ProfitType, p.ProfitValue, h.Products.DB, p.ID),
 		"profit_value": resolveProfitValue(r.Context(), p.ProfitType, p.ProfitValue, h.Products.DB, p.ID),
 	})
 	// 周期下拉展示价：配置计价型（基础价 0）用加成后起步价，普通产品直接加成基础价。

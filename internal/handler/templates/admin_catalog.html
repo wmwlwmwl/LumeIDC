@@ -8,6 +8,14 @@
 <form method="post" action="{{with .ServersList}}/admin/servers/{{.ID}}/import{{end}}">
 <input type="hidden" name="_csrf" value="{{.CSRF}}">
 <div style="margin-bottom:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+<span style="font-size:.88rem;font-weight:600">导入分类：</span>
+<select name="parent_id" style="padding:6px;border:1px solid #ccc;border-radius:6px;font-size:.85rem">
+<option value="">请选择目标一级分类</option>
+{{range .Types}}<option value="{{.ID}}">上游分组建为「{{.Name}}」下的二级分类</option>{{end}}
+</select>
+<span class="muted" style="font-size:.78rem">建议先在分类管理建好一级分类，此处选择后每个上游分组会挂为该分类下的二级（对齐魔方财务导入模式）</span>
+</div>
+<div style="margin-bottom:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
 <span style="font-size:.88rem;font-weight:600">导入利润：</span>
 <select name="profit_type" style="padding:6px;border:1px solid #ccc;border-radius:6px;font-size:.85rem">
 <option value="0" {{if not (eq (printf "%d" .ServerProfitType) "1")}}selected{{end}}>百分比（%）</option>

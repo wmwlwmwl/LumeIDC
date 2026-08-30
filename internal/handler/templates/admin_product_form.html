@@ -6,10 +6,15 @@
 <label style="display:block;margin:10px 0 4px;font-weight:600;font-size:.88rem">产品名称</label>
 <input name="name" value="{{if .Product}}{{.Product.Name}}{{end}}" required style="width:100%;padding:8px;box-sizing:border-box;border:1px solid #ccc;border-radius:6px">
 <label style="display:block;margin:10px 0 4px;font-weight:600;font-size:.88rem">所属分类</label>
-<select name="type_id" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px">
-<option value="">未分类</option>
+<select name="type_id" required style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px">
+<option value="">请选择二级分类</option>
 {{$cur := ""}}{{if .Product}}{{$cur = printf "%v" .Product.TypeID.Int64}}{{end}}
-{{range .Types}}<option value="{{.ID}}" {{if eq $cur (printf "%v" .ID)}}selected{{end}}>{{.Name}}</option>{{end}}
+{{range .Types}}{{if eq .ParentID 0}}
+{{$pid := .ID}}
+<optgroup label="{{.Name}}">
+{{range $.Types}}{{if eq .ParentID $pid}}<option value="{{.ID}}" {{if eq $cur (printf "%v" .ID)}}selected{{end}}>{{.Name}}</option>{{end}}{{end}}
+</optgroup>
+{{end}}{{end}}
 </select>
 <label style="display:block;margin:10px 0 4px;font-weight:600;font-size:.88rem">描述</label>
 <textarea name="description" rows="3" style="width:100%;box-sizing:border-box;border:1px solid #ccc;border-radius:6px">{{if .Product}}{{.Product.Description}}{{end}}</textarea>

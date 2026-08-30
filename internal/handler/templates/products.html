@@ -12,13 +12,19 @@
 </div>
 {{end}}
 {{if .Types}}
-<div style="display:flex;gap:10px;margin-bottom:18px;flex-wrap:wrap">
-<a class="btn" href="/products" style="{{if not .GID}}background:#312e81{{end}}">全部</a>
+<div style="display:flex;gap:10px;margin-bottom:12px;flex-wrap:wrap">
 {{range .Types}}
-{{$active := ""}}{{if eq (printf "%d" .ID) $.GID}}{{$active = "background:#312e81"}}{{end}}
-<a class="btn" href="/products?gid={{.ID}}" style="{{$active}}">{{.Name}}</a>
+{{$active := eq (printf "%d" .ID) $.FID}}
+<a class="btn" href="/cart?fid={{.ID}}" style="{{if $active}}background:#312e81{{end}}">{{.Name}}</a>
 {{end}}
 </div>
+{{range .Types}}
+{{$first := .}}
+{{if and (eq (printf "%d" .ID) $.FID) .Children}}
+<div style="display:flex;gap:10px;margin-bottom:18px;flex-wrap:wrap;padding-left:12px;border-left:3px solid #c7d2fe">
+{{range .Children}}<a class="btn" href="/cart?fid={{$first.ID}}&gid={{.ID}}" style="{{if eq (printf "%d" .ID) $.GID}}background:#312e81{{end}}">{{.Name}}</a>{{end}}
+</div>{{end}}
+{{end}}
 {{end}}
 {{if .Products}}
 <div class="grid">
@@ -31,5 +37,7 @@
 </div>
 {{end}}
 </div>
-{{else}}<p class="muted">暂无上架产品。</p>{{end}}
+{{else if .GID}}<p class="muted">该分类暂无上架产品。</p>
+{{else if .FID}}<p class="muted">请选择二级分类查看产品。</p>
+{{else}}<p class="muted">请选择一级分类。</p>{{end}}
 {{end}}

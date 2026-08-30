@@ -139,6 +139,7 @@ func Build(cfg *config.Config) (*App, error) {
 	mux.HandleFunc("GET /admin/types", mng.TypesList)
 	mux.HandleFunc("POST /admin/types/save", mng.TypeSave)
 	mux.HandleFunc("POST /admin/types/{id}/delete", mng.TypeDelete)
+	mux.HandleFunc("POST /admin/types/{id}/moveproducts", mng.TypeMoveProducts)
 	mux.HandleFunc("GET /admin/products", mng.ProductsList)
 	mux.HandleFunc("GET /admin/products/new", mng.ProductForm)
 	mux.HandleFunc("POST /admin/products/save", mng.ProductSave)

@@ -1,0 +1,3 @@
+-- 分类两级层级 + 隐藏开关（对齐 ZJMF 商品分组模型）
+ALTER TABLE product_types ADD COLUMN IF NOT EXISTS parent_id BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE product_types ADD COLUMN IF NOT EXISTS hidden BOOLEAN NOT NULL DEFAULT false;
