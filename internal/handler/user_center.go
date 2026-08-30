@@ -60,10 +60,41 @@ func (h *Pages) userHome(w http.ResponseWriter, r *http.Request) {
 		"Announcements": h.listAnnouncements(r.Context())})
 }
 
+func (h *Pages) rechargeForm(w http.ResponseWriter, r *http.Request) {
+	userID, ok := middleware.RequireUser(w, r)
+	if !ok {
+		return
+	}
+	bal, _ := h.Balance.Get(r.Context(), userID)
+	render(w, r, "user_recharge.html", map[string]any{
+		"Balance": bal, "CSRF": csrfOf(sessionsStore, w, r), "Error": r.URL.Query().Get("err"),
+	})
+}
+
+func (h *Pages) rechargeSubmit(w http.ResponseWriter, r *http.Request) {
+	userID, ok := middleware.RequireUser(w, r)
+	if !ok {
+		return
+	}
+	tok := r.PostFormValue("_csrf")
+	sess := middleware.FromSession(r.Context())
+	if tok == "" || sess == nil || tok != sess.CSRFToken() {
+		http.Error(w, "CSRF 校验失败", http.StatusForbidden)
+		return
+	}
+	id, err := h.Orders.CreateRechargeInvoice(r.Context(), userID, strings.TrimSpace(r.PostFormValue("amount")))
+	if err != nil {
+		http.Redirect(w, r, "/user/recharge?err="+url.QueryEscape(err.Error()), http.StatusSeeOther)
+		return
+	}
+	http.Redirect(w, r, "/pay/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
+}
+
 type invoiceRow struct {
 	ID        int64
 	No        string
 	Amount    string
+	Kind      string
 	Status    string
 	CreatedAt string
 }
@@ -74,7 +105,7 @@ func (h *Pages) userInvoices(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rows, err := h.Svc.DB.QueryContext(r.Context(),
-		`SELECT id,no,amount,status,to_char(created_at,'YYYY-MM-DD HH24:MI') FROM invoices WHERE user_id=$1 ORDER BY id DESC LIMIT 100`,
+		`SELECT id,no,amount,kind,status,to_char(created_at,'YYYY-MM-DD HH24:MI') FROM invoices WHERE user_id=$1 ORDER BY id DESC LIMIT 100`,
 		userID)
 	if err != nil {
 		http.Error(w, "查询失败", 500)
@@ -85,7 +116,7 @@ func (h *Pages) userInvoices(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var inv invoiceRow
 		var status int16
-		if err := rows.Scan(&inv.ID, &inv.No, &inv.Amount, &status, &inv.CreatedAt); err != nil {
+		if err := rows.Scan(&inv.ID, &inv.No, &inv.Amount, &inv.Kind, &status, &inv.CreatedAt); err != nil {
 			continue
 		}
 		switch status {

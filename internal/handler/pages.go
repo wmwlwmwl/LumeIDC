@@ -17,7 +17,7 @@ import (
 	"lumeidc/internal/service"
 )
 
-//go:embed templates/site.html templates/products.html templates/service_list.html templates/buy.html
+//go:embed templates/site.html templates/products.html templates/service_list.html templates/buy.html templates/user_recharge.html
 //go:embed templates/user_home.html templates/user_invoices.html templates/user_password.html templates/service_detail.html
 //go:embed templates/user_notifications.html
 var siteFS embed.FS
@@ -47,6 +47,8 @@ func (h *Pages) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /services", h.myServices)
 	mux.HandleFunc("GET /buy/{productID}", h.buyForm)
 	mux.HandleFunc("GET /user", h.userHome)
+	mux.HandleFunc("GET /user/recharge", h.rechargeForm)
+	mux.HandleFunc("POST /user/recharge", h.rechargeSubmit)
 	mux.HandleFunc("GET /user/invoices", h.userInvoices)
 	mux.HandleFunc("GET /services/{serviceID}", h.serviceDetail)
 	mux.HandleFunc("POST /services/{serviceID}/renew", h.serviceRenew)

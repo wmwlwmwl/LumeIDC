@@ -12,8 +12,8 @@ import (
 // Epay 实现易支付（彩虹易支付）标准提交协议：md5 签名、GET 跳转。
 type Epay struct{}
 
-func (Epay) Code() string { return "epay" }
-func (Epay) Name() string { return "易支付" }
+func (Epay) Driver() string { return "epay" }
+func (Epay) Name() string   { return "易支付" }
 
 func (Epay) PayURL(ctx context.Context, req PayRequest) (string, error) {
 	api := req.Config["api_url"]
@@ -41,6 +41,20 @@ func (Epay) PayURL(ctx context.Context, req PayRequest) (string, error) {
 	q.Set("sign_type", "MD5")
 	api = strings.TrimRight(api, "/")
 	return api + "/submit.php?" + q.Encode(), nil
+}
+
+func (e Epay) VerifyNotify(params map[string]string, cfg map[string]string) (NotifyResult, error) {
+	invoiceNo, tradeNo, ok := VerifyNotify(params, cfg["key"])
+	if !ok {
+		return NotifyResult{}, fmt.Errorf("易支付回调签名校验失败")
+	}
+	if params["trade_status"] != "TRADE_SUCCESS" && params["trade_status"] != "TRADE_FINISHED" {
+		return NotifyResult{InvoiceNo: invoiceNo, TradeNo: tradeNo}, nil
+	}
+	if tradeNo == "" || params["money"] == "" {
+		return NotifyResult{}, fmt.Errorf("易支付回调缺少流水号或金额")
+	}
+	return NotifyResult{InvoiceNo: invoiceNo, TradeNo: tradeNo, Amount: params["money"], Successful: true}, nil
 }
 
 // VerifyNotify 校验易支付异步通知签名。params 为回调全部 GET 参数。

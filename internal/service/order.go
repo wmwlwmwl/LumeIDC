@@ -154,6 +154,24 @@ func (o *Orders) CreateOrder(ctx context.Context, userID, productID, pricesetID 
 	return orderID, invoiceID, finalAmount, nil
 }
 
+// CreateRechargeInvoice 创建用户余额充值账单；充值账单不绑定产品订单。
+func (o *Orders) CreateRechargeInvoice(ctx context.Context, userID int64, amount string) (int64, error) {
+	v, err := strconv.ParseFloat(amount, 64)
+	if err != nil || v <= 0 || v > 9999999999 {
+		return 0, fmt.Errorf("充值金额无效")
+	}
+	amount = strconv.FormatFloat(v, 'f', 2, 64)
+	no, err := genInvoiceNo()
+	if err != nil {
+		return 0, err
+	}
+	var id int64
+	err = o.DB.QueryRowContext(ctx,
+		`INSERT INTO invoices(no,user_id,amount,kind) VALUES($1,$2,$3,'recharge') RETURNING id`,
+		no, userID, amount).Scan(&id)
+	return id, err
+}
+
 // applyProfit 利润加成（ZJMF 上游利润语义）：percent=成本×(1+比例%)，fixed=成本+固定金额。<=0 不加成。
 func applyProfit(cost float64, profitType int16, profitValue float64) float64 {
 	if profitValue <= 0 {

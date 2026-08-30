@@ -6,6 +6,7 @@ import (
 	"html/template"
 	"log"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -32,6 +33,7 @@ type Pay struct {
 func (h *Pay) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /order", h.createOrder)
 	mux.HandleFunc("GET /pay/notify/{code}", h.notify)
+	mux.HandleFunc("POST /pay/{invoiceID}/start", h.start)
 	mux.HandleFunc("POST /pay/{invoiceID}/balance", h.payByBalance)
 	mux.HandleFunc("GET /pay/{invoiceID}", h.payPage)
 	mux.HandleFunc("GET /mock/pay/{no}", h.mockPayPage)
@@ -84,7 +86,11 @@ type payPageData struct {
 	InvoiceID   string
 	Error       string
 	CSRF        string // 余额支付表单必填，否则会被 CSRF 中间件拦截
+	Gateways    []payGatewayView
+	Recharge    bool
 }
+
+type payGatewayView struct{ Code, Name string }
 
 func (h *Pay) loadInvoice(r *http.Request, invoiceID int64) (no string, amount string, status int16, gatewayCode string, err error) {
 	row := h.Payment.DB.QueryRowContext(r.Context(),
@@ -108,7 +114,9 @@ func (h *Pay) payPage(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	data := payPageData{InvoiceNo: no, Amount: amount, InvoiceID: r.PathValue("invoiceID"), CSRF: csrfOf(sessionsStore, w, r)}
+	var kind string
+	_ = h.Payment.DB.QueryRowContext(r.Context(), `SELECT kind FROM invoices WHERE id=$1`, id).Scan(&kind)
+	data := payPageData{InvoiceNo: no, Amount: amount, InvoiceID: r.PathValue("invoiceID"), CSRF: csrfOf(sessionsStore, w, r), Recharge: kind == "recharge"}
 	if bal, err := h.Balance.Get(r.Context(), userID); err == nil {
 		data.UserBalance = bal
 	}
@@ -116,26 +124,16 @@ func (h *Pay) payPage(w http.ResponseWriter, r *http.Request) {
 	case status == 1:
 		data.Status = "已支付"
 	default:
-		// 在线支付：优先已配置的易支付；未配置时回退到模拟网关（仅测试用）。
-		if epgw, ok := h.Gateways["epay"]; ok && len(h.gwConfig(r, "epay")) >= 3 {
-			u, uerr := epgw.PayURL(r.Context(), gateway.PayRequest{
-				InvoiceNo: no, Amount: amount, Title: "LumeIDC 账单 " + no,
-				NotifyURL: h.BaseURL + "/pay/notify/epay",
-				ReturnURL: h.BaseURL + "/pay/" + r.PathValue("invoiceID"),
-				Config:    h.gwConfig(r, "epay"),
-			})
-			if uerr == nil {
-				data.PayURL = u
-			}
-		} else if mgw, ok := h.Gateways["mock"]; ok {
-			if u, uerr := mgw.PayURL(r.Context(), gateway.PayRequest{
-				InvoiceNo: no, Amount: amount, Title: "LumeIDC 账单 " + no,
-				ReturnURL: h.BaseURL + "/pay/" + r.PathValue("invoiceID"),
-			}); uerr == nil {
-				data.PayURL = u
+		if h.GwRepo != nil {
+			if list, lerr := h.GwRepo.Enabled(r.Context()); lerr == nil {
+				for _, v := range list {
+					if _, ok := h.Gateways[v.Driver]; ok {
+						data.Gateways = append(data.Gateways, payGatewayView{Code: v.Code, Name: v.Name})
+					}
+				}
 			}
 		}
-		data.BalancePay = true
+		data.BalancePay = !data.Recharge
 	}
 	tpl, err := template.ParseFS(payFS, "templates/pay.html")
 	if err != nil {
@@ -147,6 +145,49 @@ func (h *Pay) payPage(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// start 绑定本次支付使用的网关实例并生成跳转地址。
+func (h *Pay) start(w http.ResponseWriter, r *http.Request) {
+	userID, ok := middleware.RequireUser(w, r)
+	if !ok {
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
+	tok := r.PostFormValue("_csrf")
+	sess := middleware.FromSession(r.Context())
+	if tok == "" || sess == nil || tok != sess.CSRFToken() {
+		http.Error(w, "CSRF 校验失败", http.StatusForbidden)
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("invoiceID"), 10, 64)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	no, amount, status, _, err := h.loadInvoice(r, id)
+	if err != nil || status != 0 || !h.ownsInvoice(r, userID, no) {
+		http.NotFound(w, r)
+		return
+	}
+	code := strings.TrimSpace(r.PostFormValue("gateway"))
+	inst, err := h.GwRepo.Get(r.Context(), code)
+	impl, ok := h.Gateways[inst.Driver]
+	if err != nil || !inst.Enabled || !ok {
+		http.Error(w, "支付网关不可用", http.StatusBadRequest)
+		return
+	}
+	u, err := impl.PayURL(r.Context(), gateway.PayRequest{InvoiceNo: no, Amount: amount, Title: "LumeIDC 账单 " + no,
+		NotifyURL: h.BaseURL + "/pay/notify/" + url.PathEscape(code), ReturnURL: h.BaseURL + "/pay/" + strconv.FormatInt(id, 10), Config: inst.Config})
+	if err != nil {
+		http.Error(w, "生成支付链接失败", http.StatusBadGateway)
+		return
+	}
+	if _, err := h.GwRepo.BindAttempt(r.Context(), id, code, amount); err != nil {
+		http.Error(w, "创建支付记录失败", 500)
+		return
+	}
+	http.Redirect(w, r, u, http.StatusSeeOther)
+}
+
 func (h *Pay) ownsInvoice(r *http.Request, userID int64, no string) bool {
 	var n int64
 	h.Payment.DB.QueryRowContext(r.Context(),
@@ -154,11 +195,13 @@ func (h *Pay) ownsInvoice(r *http.Request, userID int64, no string) bool {
 	return n == 1
 }
 
-// notify 处理网关异步回调。一期实现 epay。
+// notify 由网关实例 code 分发到对应插件，账单核销保持统一。
 func (h *Pay) notify(w http.ResponseWriter, r *http.Request) {
 	code := r.PathValue("code")
-	if code != "epay" {
-		w.WriteHeader(http.StatusNotFound)
+	inst, err := h.GwRepo.Get(r.Context(), code)
+	impl, ok := h.Gateways[inst.Driver]
+	if err != nil || !inst.Enabled || !ok {
+		http.NotFound(w, r)
 		return
 	}
 	r.ParseForm()
@@ -166,31 +209,21 @@ func (h *Pay) notify(w http.ResponseWriter, r *http.Request) {
 	for k := range r.Form {
 		params[k] = r.Form.Get(k)
 	}
-	key := h.gwConfig(r, code)["key"]
-	if key == "" {
+	result, err := impl.VerifyNotify(params, inst.Config)
+	if err != nil {
 		w.Write([]byte("fail"))
 		return
 	}
-	invoiceNo, tradeNo, ok := gateway.VerifyNotify(params, key)
-	if !ok {
-		w.Write([]byte("fail"))
-		return
-	}
-	// 易支付不同分支成功词可能为 TRADE_SUCCESS 或 TRADE_FINISHED，均视为支付成功。
-	if params["trade_status"] != "TRADE_SUCCESS" && params["trade_status"] != "TRADE_FINISHED" {
+	if !result.Successful {
 		w.Write([]byte("success"))
 		return
 	}
-	if params["money"] == "" {
-		w.Write([]byte("fail"))
-		return
-	}
 	var expected string
-	if err := h.Payment.DB.QueryRowContext(r.Context(), `SELECT amount::text FROM invoices WHERE no=$1`, invoiceNo).Scan(&expected); err != nil || !equalAmount(params["money"], expected) {
+	if err := h.Payment.DB.QueryRowContext(r.Context(), `SELECT amount::text FROM invoices WHERE no=$1 AND gateway=$2`, result.InvoiceNo, code).Scan(&expected); err != nil || !equalAmount(result.Amount, expected) {
 		w.Write([]byte("fail"))
 		return
 	}
-	if err := h.Payment.MarkPaid(r.Context(), invoiceNo, tradeNo, code); err != nil &&
+	if err := h.Payment.MarkPaid(r.Context(), result.InvoiceNo, result.TradeNo, code); err != nil &&
 		err != service.ErrAlreadyPaid {
 		w.Write([]byte("fail"))
 		return
@@ -215,28 +248,6 @@ func equalAmount(a, b string) bool {
 	x, okX := parse(a)
 	y, okY := parse(b)
 	return okX && okY && x == y
-}
-
-func (h *Pay) gwConfig(r *http.Request, code string) map[string]string {
-	if h.GwRepo != nil {
-		if cfg, err := h.GwRepo.Config(r.Context(), code); err == nil && len(cfg) > 0 {
-			return cfg
-		}
-	}
-	// 环境变量兜底（便于部署初期快速接入）
-	if code == "epay" {
-		return map[string]string{
-			"api_url": lookupEnv("EPAY_API_URL"),
-			"pid":     lookupEnv("EPAY_PID"),
-			"key":     lookupEnv("EPAY_KEY"),
-			"channel": envOr("EPAY_CHANNEL", "alipay"),
-		}
-	}
-	return map[string]string{}
-}
-
-func envOr(k, def string) string {
-	return lookupEnvOr(k, def)
 }
 
 // payByBalance 余额支付账单。

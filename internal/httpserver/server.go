@@ -103,16 +103,16 @@ func Build(cfg *config.Config) (*App, error) {
 	}
 	adminHandler := &handler.Admin{Admins: &repo.Admins{DB: database}, DB: database, Lockout: &repo.LoginAttempts{DB: database}, Announcements: &repo.Announcements{DB: database}}
 	pages := &handler.Pages{
-		Products:    products,
-		Svc:         &service.ServicesRepo{DB: database},
-		Orders:      &service.Orders{DB: database, Products: products, Coupons: &repo.Coupons{DB: database}},
-		UsersRepo:   users,
-		ServersRepo: serversRepo,
-		Console:     &service.Console{DB: database, Servers: serversRepo, Products: products, Providers: providers, Crypt: cryptor},
-		Balance:     balanceRepo,
-		Notifier:    notifier,
+		Products:      products,
+		Svc:           &service.ServicesRepo{DB: database},
+		Orders:        &service.Orders{DB: database, Products: products, Coupons: &repo.Coupons{DB: database}},
+		UsersRepo:     users,
+		ServersRepo:   serversRepo,
+		Console:       &service.Console{DB: database, Servers: serversRepo, Products: products, Providers: providers, Crypt: cryptor},
+		Balance:       balanceRepo,
+		Notifier:      notifier,
 		Announcements: &repo.Announcements{DB: database},
-		Settings:    &repo.Settings{DB: database},
+		Settings:      &repo.Settings{DB: database},
 	}
 
 	mux := http.NewServeMux()
@@ -120,7 +120,7 @@ func Build(cfg *config.Config) (*App, error) {
 	pages.Register(mux)
 	pay.Register(mux)
 	adminHandler.Register(mux)
-	gwHandler := &handler.AdminGateway{GwRepo: &repo.Gateways{DB: database}}
+	gwHandler := &handler.AdminGateway{GwRepo: &repo.Gateways{DB: database}, Gateways: gateways}
 	gwHandler.Register(mux)
 	srvHandler := &handler.AdminServers{Servers: serversRepo, Providers: providers}
 	srvHandler.Register(mux)
@@ -189,11 +189,11 @@ func Build(cfg *config.Config) (*App, error) {
 	cronJobs := &cron.Jobs{DB: database, Fulfillment: fulfillment, Notifier: notifier,
 		Providers: providers, Servers: serversRepo, Products: products,
 		Lifecycle: &service.Lifecycle{
-		DB:        database,
-		Servers:   serversRepo,
-		Products:  products,
-		Providers: providers,
-	}}
+			DB:        database,
+			Servers:   serversRepo,
+			Products:  products,
+			Providers: providers,
+		}}
 	cronRef := cronJobs.Start()
 	return &App{
 		Server: &http.Server{Addr: addr, Handler: h},

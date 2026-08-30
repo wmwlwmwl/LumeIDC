@@ -7,13 +7,18 @@ button{width:100%;padding:11px;background:#4f46e5;color:#fff;border:0;border-rad
 </head>
 <body>
 <div class="card">
-<h1>账单 {{.InvoiceNo}}</h1>
+<h1>{{if .Recharge}}余额充值{{else}}账单{{end}} {{.InvoiceNo}}</h1>
 <p class="amount">￥{{.Amount}}</p>
 {{if .Status}}<p>{{.Status}}</p>
 {{else}}
 <p style="color:#666;font-size:.85rem;margin:10px 0 0">账户余额：<b style="color:#4f46e5">￥{{.UserBalance}}</b></p>
 <div style="margin-top:14px;display:flex;flex-direction:column;gap:8px">
-{{if .PayURL}}<a href="{{.PayURL}}" target="_blank" style="text-decoration:none"><button style="margin-top:0">在线支付（易支付）</button></a>{{end}}
+{{range .Gateways}}
+<form method="post" action="/pay/{{$.InvoiceID}}/start" style="margin:0">
+<input type="hidden" name="_csrf" value="{{$.CSRF}}"><input type="hidden" name="gateway" value="{{.Code}}">
+<button style="margin-top:0">在线支付：{{.Name}}</button>
+</form>
+{{end}}
 {{if .BalancePay}}
 <form method="post" action="/pay/{{.InvoiceID}}/balance">
 <input type="hidden" name="_csrf" value="{{.CSRF}}">

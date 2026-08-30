@@ -1,0 +1,13 @@
+{{define "page"}}
+<h1>余额充值</h1>
+{{if .Error}}<p style="color:#b91c1c">{{.Error}}</p>{{end}}
+<div class="card" style="max-width:420px">
+<p class="muted">当前余额：￥{{.Balance}}</p>
+<form method="post" action="/user/recharge">
+<input type="hidden" name="_csrf" value="{{.CSRF}}">
+<label style="display:block;margin:10px 0 4px;font-weight:600;font-size:.88rem">充值金额</label>
+<input name="amount" type="number" min="0.01" max="9999999999" step="0.01" required placeholder="请输入充值金额" style="width:100%;padding:10px;border:1px solid #ccc;border-radius:6px;box-sizing:border-box">
+<button style="margin-top:16px;width:100%;padding:10px;background:#4f46e5;color:#fff;border:0;border-radius:6px;cursor:pointer">生成充值账单</button>
+</form>
+</div>
+{{end}}
