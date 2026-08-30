@@ -39,9 +39,10 @@ func (o *Orders) CreateOrder(ctx context.Context, userID, productID, pricesetID 
 	defer tx.Rollback()
 
 	var stock int
-	err = tx.QueryRowContext(ctx, `SELECT stock FROM products WHERE id=$1 AND hidden=false FOR UPDATE`, productID).Scan(&stock)
+	err = tx.QueryRowContext(ctx, `SELECT p.stock FROM products p JOIN product_types t ON t.id=p.type_id
+		WHERE p.id=$1 AND p.hidden=false AND t.hidden=false AND (t.parent_id=0 OR EXISTS (SELECT 1 FROM product_types parent WHERE parent.id=t.parent_id AND parent.hidden=false)) FOR UPDATE`, productID).Scan(&stock)
 	if err != nil {
-		return 0, 0, "", fmt.Errorf("商品不存在或已下架")
+		return 0, 0, "", fmt.Errorf("商品已下架")
 	}
 	if stock > 0 {
 		var reserved int

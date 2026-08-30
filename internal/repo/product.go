@@ -80,6 +80,16 @@ func (p *Products) ListVisibleByTypes(ctx context.Context, typeIDs []int64) ([]P
 	return out, rows.Err()
 }
 
+func (p *Products) IsSellable(ctx context.Context, id int64) (bool, error) {
+	var ok bool
+	err := p.DB.QueryRowContext(ctx, `
+		SELECT p.hidden=false AND t.id IS NOT NULL AND t.hidden=false
+			AND (t.parent_id=0 OR EXISTS (
+				SELECT 1 FROM product_types parent WHERE parent.id=t.parent_id AND parent.hidden=false
+			))
+		FROM products p LEFT JOIN product_types t ON t.id=p.type_id WHERE p.id=$1`, id).Scan(&ok)
+	return ok, err
+}
 func (p *Products) Get(ctx context.Context, id int64) (*Product, error) {
 	var pr Product
 	err := p.DB.QueryRowContext(ctx,

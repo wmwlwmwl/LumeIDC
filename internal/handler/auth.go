@@ -142,7 +142,7 @@ func (h *Auth) loginSubmit(w http.ResponseWriter, r *http.Request) {
 
 // safeNext 仅允许站内相对路径，防开放重定向。
 func safeNext(next string) string {
-	if next == "" || !strings.HasPrefix(next, "/") || strings.HasPrefix(next, "//") {
+	if next == "" || !strings.HasPrefix(next, "/") || strings.HasPrefix(next, "//") || strings.Contains(next, "\\") || strings.ContainsAny(next, "\r\n") {
 		return "/"
 	}
 	return next

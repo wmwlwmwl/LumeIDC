@@ -292,6 +292,10 @@ func (h *Pages) buyForm(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	if sellable, serr := h.Products.IsSellable(r.Context(), id); serr != nil || !sellable {
+		http.NotFound(w, r)
+		return
+	}
 	psID, _ := h.Products.DefaultPricesetID(r.Context())
 	pr, err := h.Products.Price(r.Context(), p.ID, psID)
 	if err != nil {
