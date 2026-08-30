@@ -289,11 +289,12 @@ func (o *Orders) CreateRenewOrder(ctx context.Context, userID, serviceID int64, 
 	// 故续费金额优先取服务自己订单的成交额（与开局/详情页价一致）；无订单时兜底读产品基础价。
 	var productID int64
 	var ownAmt sql.NullString
+	var snap []byte
 	err = tx.QueryRowContext(ctx,
-		`SELECT sv.product_id, o.amount
+		`SELECT sv.product_id, o.amount, o.config_snapshot
 		 FROM services sv LEFT JOIN orders o ON o.id=sv.order_id
 		 WHERE sv.id=$1 AND sv.user_id=$2 AND sv.status IN (1,2)`,
-		serviceID, userID).Scan(&productID, &ownAmt)
+		serviceID, userID).Scan(&productID, &ownAmt, &snap)
 	if err != nil {
 		return 0, 0, "", fmt.Errorf("服务不存在或不可续费")
 	}
@@ -303,25 +304,40 @@ func (o *Orders) CreateRenewOrder(ctx context.Context, userID, serviceID int64, 
 	}
 	// 续费金额：月付优先取服务订单成交额（配置计价型 base=0，成交额含配置价）；
 	// 季付/年付必须产品有对应周期正价，防止以 0 价或月付额误续。
-	var amountRaw string
-	if cycle == "monthly" && ownAmt.Valid && ownAmt.String != "" {
-		amountRaw = ownAmt.String
-	} else {
-		query := fmt.Sprintf(`SELECT %s FROM product_prices WHERE product_id=$1 AND priceset_id=$2`, col)
-		if err := tx.QueryRowContext(ctx, query, productID, psID).Scan(&amountRaw); err != nil {
-			return 0, 0, "", fmt.Errorf("该产品未配置%s价格", cycleCol[cycle])
+	// 续费按当前周期和保存的初购配置重算，不继承一次性优惠。
+	query := fmt.Sprintf(`SELECT %s FROM product_prices WHERE product_id=$1 AND priceset_id=$2`, col)
+	var baseRaw string
+	if err := tx.QueryRowContext(ctx, query, productID, psID).Scan(&baseRaw); err != nil {
+		return 0, 0, "", fmt.Errorf("该产品未配置%s价格", cycleCol[cycle])
+	}
+	base, err := strconv.ParseFloat(baseRaw, 64)
+	if err != nil || !money.FiniteNonNegative(base) {
+		return 0, 0, "", fmt.Errorf("商品价格无效")
+	}
+	selection := map[string]string{}
+	if len(snap) > 0 {
+		var saved struct {
+			Selection map[string]string `json:"selection"`
 		}
-		f, _ := strconv.ParseFloat(amountRaw, 64)
-		if f <= 0 {
-			return 0, 0, "", fmt.Errorf("该产品未配置%s价格", cycleCol[cycle])
-		}
-		// 周期续费同按产品利润加成定价（月付取订单成交额，已含加成，勿重复加）。
-		var pType int16
-		var pVal float64
-		if err := tx.QueryRowContext(ctx,
-			`SELECT profit_type,profit_value FROM products WHERE id=$1`, productID).Scan(&pType, &pVal); err == nil {
-			amountRaw = strconv.FormatFloat(mathRound(applyProfit(f, pType, pVal)), 'f', 2, 64)
-		}
+		_ = json.Unmarshal(snap, &saved)
+		selection = saved.Selection
+	}
+	opts, err := o.Products.GetConfigOptions(ctx, productID)
+	if err != nil {
+		return 0, 0, "", fmt.Errorf("商品配置损坏，请联系管理员")
+	}
+	quote, err := CalculateQuote(opts, base, cycle, selection)
+	if err != nil {
+		return 0, 0, "", err
+	}
+	var pType int16
+	var pVal float64
+	if err := tx.QueryRowContext(ctx, `SELECT profit_type,profit_value FROM products WHERE id=$1`, productID).Scan(&pType, &pVal); err != nil {
+		return 0, 0, "", err
+	}
+	amountRaw := strconv.FormatFloat(mathRound(applyProfit(quote.Total, pType, pVal)), 'f', 2, 64)
+	if amountRaw == "0.00" {
+		return 0, 0, "", fmt.Errorf("续费金额无效")
 	}
 
 	err = tx.QueryRowContext(ctx,

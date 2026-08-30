@@ -4,6 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
+
+	moneypkg "lumeidc/internal/money"
 )
 
 // ConfigOption 产品可配置项。
@@ -72,6 +75,21 @@ func (p *Products) GetConfigOptions(ctx context.Context, productID int64) ([]Con
 
 // SaveConfigOptions writes product configoption JSON.
 func (p *Products) SaveConfigOptions(ctx context.Context, productID int64, opts []ConfigOption) error {
+	for _, opt := range opts {
+		if !moneypkg.FiniteNonNegative(opt.Min) || !moneypkg.FiniteNonNegative(opt.Max) || !moneypkg.FiniteNonNegative(opt.Step) {
+			return errors.New("配置范围或步长无效")
+		}
+		for _, sub := range opt.Subs {
+			if !moneypkg.FiniteNonNegative(sub.Min) || !moneypkg.FiniteNonNegative(sub.Max) {
+				return errors.New("配置档位范围无效")
+			}
+			for _, v := range sub.Pricing {
+				if !moneypkg.FiniteNonNegative(v) {
+					return errors.New("配置价格无效")
+				}
+			}
+		}
+	}
 	b, err := json.Marshal(opts)
 	if err != nil {
 		return err

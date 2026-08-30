@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+
+	moneypkg "lumeidc/internal/money"
 )
 
 type Product struct {
@@ -303,6 +305,9 @@ func (p *Products) ListBound(ctx context.Context) ([]BoundProduct, error) {
 
 // UpdatePriceAndStock 更新产品价格与库存。
 func (p *Products) UpdatePriceAndStock(ctx context.Context, productID int64, monthly, quarterly, yearly float64, stock int) error {
+	if !moneypkg.FiniteNonNegative(monthly) || !moneypkg.FiniteNonNegative(quarterly) || !moneypkg.FiniteNonNegative(yearly) {
+		return fmt.Errorf("商品价格无效")
+	}
 	psID, _ := p.DefaultPricesetID(ctx)
 	tx, err := p.DB.BeginTx(ctx, nil)
 	if err != nil {

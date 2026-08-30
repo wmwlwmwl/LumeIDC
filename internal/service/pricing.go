@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 
+	"lumeidc/internal/money"
+
 	"lumeidc/internal/repo"
 )
 
@@ -28,6 +30,9 @@ type Quote struct {
 // CalculateQuote 服务端权威计价：基础周期价 + Σ配置加价。
 // 只认产品声明的配置项，用户提交的多余键一律丢弃（防注入/防篡改）。
 func CalculateQuote(opts []repo.ConfigOption, basePrice float64, cycle string, selection map[string]string) (*Quote, error) {
+	if !money.FiniteNonNegative(basePrice) {
+		return nil, fmt.Errorf("基础价格无效")
+	}
 	q := &Quote{Base: basePrice, Total: basePrice}
 	for _, opt := range opts {
 		if opt.Hidden || opt.Field == "os" { // os 不参与金额
@@ -48,14 +53,23 @@ func CalculateQuote(opts []repo.ConfigOption, basePrice float64, cycle string, s
 			}
 			q.Config = append(q.Config, line)
 			q.Total += line.Price
+			if !money.FiniteNonNegative(q.Total) {
+				return nil, fmt.Errorf("总价无效")
+			}
 		default: // select
 			sub, ok := matchSub(opt, val)
 			if !ok {
 				return nil, fmt.Errorf("%s: 无效选项", opt.Name)
 			}
 			p := sub.Price(cycle)
+			if !money.FiniteNonNegative(p) {
+				return nil, fmt.Errorf("%s: 配置价格无效", opt.Name)
+			}
 			q.Config = append(q.Config, QuoteLine{Field: opt.Field, Name: opt.Name, Value: sub.Name, Price: p})
 			q.Total += p
+			if !money.FiniteNonNegative(q.Total) {
+				return nil, fmt.Errorf("总价无效")
+			}
 		}
 	}
 	return q, nil
@@ -129,8 +143,8 @@ func priceRange(opt repo.ConfigOption, valStr, cycle string) (QuoteLine, error) 
 		Field: opt.Field, Name: opt.Name,
 		Value: fmt.Sprintf("%g%s", v, opt.Unit),
 		Price: math.Round(price*100) / 100,
-		}, nil
-	}
+	}, nil
+}
 
 // subSize 从离散规格包的名称/值中解析其规格数值（如 "20G"、"20|20G" → 20）。
 func subSize(s repo.ConfigValue) float64 {
