@@ -76,7 +76,8 @@ func (h *Auth) registerSubmit(w http.ResponseWriter, r *http.Request) {
 			link := "https://" + r.Host + "/verify?token=" + tok
 			if se := h.Notifier.SendMail(r.Context(), email, "请验证邮箱", "点击完成注册验证："+link); se != nil {
 				log.Printf("[register] 验证邮件发送失败，直接放行: %v", se)
-				_ = h.Users.MarkVerified(r.Context(), id)
+				http.Error(w, "验证邮件发送失败，请稍后重试", http.StatusBadRequest)
+				return
 			}
 		}
 	} else {

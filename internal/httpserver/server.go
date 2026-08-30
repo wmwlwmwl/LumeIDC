@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"time"
 
 	"lumeidc/internal/config"
 	"lumeidc/internal/cron"
@@ -196,8 +197,15 @@ func Build(cfg *config.Config) (*App, error) {
 		}}
 	cronRef := cronJobs.Start()
 	return &App{
-		Server: &http.Server{Addr: addr, Handler: h},
-		DB:     database,
-		Cron:   cronRef,
+		Server: &http.Server{
+			Addr:              addr,
+			Handler:           h,
+			ReadHeaderTimeout: 10 * time.Second,
+			ReadTimeout:       30 * time.Second,
+			WriteTimeout:      60 * time.Second,
+			IdleTimeout:       120 * time.Second,
+		},
+		DB:   database,
+		Cron: cronRef,
 	}, nil
 }
