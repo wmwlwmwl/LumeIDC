@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"database/sql"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -22,15 +23,16 @@ import (
 var siteFS embed.FS
 
 type Pages struct {
-	Products    *repo.Products
-	Svc         *service.ServicesRepo
-	Orders      *service.Orders
-	UsersRepo   *repo.Users
-	ServersRepo *repo.Servers
-	Console     *service.Console
-	Balance     *repo.Balance
-	Notifier    *service.Notifier
+	Products      *repo.Products
+	Svc           *service.ServicesRepo
+	Orders        *service.Orders
+	UsersRepo     *repo.Users
+	ServersRepo   *repo.Servers
+	Console       *service.Console
+	Balance       *repo.Balance
+	Notifier      *service.Notifier
 	Announcements *repo.Announcements
+	Settings      *repo.Settings
 }
 
 // sessionsStore 由 httpserver 注入，用于匿名会话 CSRF token。
@@ -142,6 +144,7 @@ type productView struct {
 	Name    string
 	Desc    string
 	Monthly string
+	Stock   int
 }
 
 func (h *Pages) home(w http.ResponseWriter, r *http.Request) {
@@ -174,9 +177,10 @@ func (h *Pages) productListPage(w http.ResponseWriter, r *http.Request, _ string
 		m := "-"
 		if pr, err := h.Products.Price(r.Context(), p.ID, psID); err == nil {
 			opts, _ := h.Products.GetConfigOptions(r.Context(), p.ID)
-			m = fmt.Sprintf("%.2f", service.DisplayPrice(priceVal(pr.Monthly), opts, p.ProfitType, p.ProfitValue))
+			eType, eVal := resolveProfitType(r.Context(), p.ProfitType, p.ProfitValue, h.Products.DB, p.ID), resolveProfitValue(r.Context(), p.ProfitType, p.ProfitValue, h.Products.DB, p.ID)
+			m = fmt.Sprintf("%.2f", service.DisplayPrice(priceVal(pr.Monthly), opts, eType, eVal))
 		}
-		views = append(views, productView{ID: p.ID, Name: p.Name, Desc: p.Description, Monthly: m})
+		views = append(views, productView{ID: p.ID, Name: p.Name, Desc: p.Description, Monthly: m, Stock: p.Stock})
 	}
 	render(w, r, "products.html", map[string]any{
 		"Products": views, "Types": types, "GID": gid,
@@ -214,12 +218,14 @@ func (h *Pages) buyForm(w http.ResponseWriter, r *http.Request) {
 	}
 	cfgJSON, _ := json.Marshal(map[string]any{
 		"base": baseMap, "options": opts,
-		"profit_type": p.ProfitType, "profit_value": p.ProfitValue,
+		"profit_type": resolveProfitType(r.Context(), p.ProfitType, p.ProfitValue, h.Products.DB, p.ID),
+		"profit_value": resolveProfitValue(r.Context(), p.ProfitType, p.ProfitValue, h.Products.DB, p.ID),
 	})
 	// 周期下拉展示价：配置计价型（基础价 0）用加成后起步价，普通产品直接加成基础价。
-	dispMonthly := fmt.Sprintf("%.2f", service.DisplayPrice(priceVal(pr.Monthly), opts, p.ProfitType, p.ProfitValue))
-	dispQuarterly := fmt.Sprintf("%.2f", service.DisplayPrice(priceVal(pr.Quarterly), opts, p.ProfitType, p.ProfitValue))
-	dispYearly := fmt.Sprintf("%.2f", service.DisplayPrice(priceVal(pr.Yearly), opts, p.ProfitType, p.ProfitValue))
+	eType, eVal := resolveProfitType(r.Context(), p.ProfitType, p.ProfitValue, h.Products.DB, p.ID), resolveProfitValue(r.Context(), p.ProfitType, p.ProfitValue, h.Products.DB, p.ID)
+	dispMonthly := fmt.Sprintf("%.2f", service.DisplayPrice(priceVal(pr.Monthly), opts, eType, eVal))
+	dispQuarterly := fmt.Sprintf("%.2f", service.DisplayPrice(priceVal(pr.Quarterly), opts, eType, eVal))
+	dispYearly := fmt.Sprintf("%.2f", service.DisplayPrice(priceVal(pr.Yearly), opts, eType, eVal))
 	render(w, r, "buy.html", map[string]any{
 		"Product": p, "Monthly": dispMonthly, "Quarterly": dispQuarterly, "Yearly": dispYearly,
 		"ShowQuarterly": showQ, "ShowYearly": showY,
@@ -235,6 +241,37 @@ func priceVal(s string) float64 {
 		return 0
 	}
 	return v
+}
+
+// resolveProfitType/resolveProfitValue 回退利润：产品利润为空时用服务器默认值。
+func resolveProfitType(ctx context.Context, pType int16, pVal float64, db *sql.DB, productID int64) int16 {
+	if pVal > 0 {
+		return pType
+	}
+	var sid sql.NullInt64
+	db.QueryRowContext(ctx, `SELECT server_id FROM products WHERE id=$1`, productID).Scan(&sid)
+	if sid.Valid {
+		var st int16
+		if db.QueryRowContext(ctx, `SELECT coalesce(profit_type,0) FROM servers WHERE id=$1`, sid.Int64).Scan(&st) == nil && st > 0 {
+			return st
+		}
+	}
+	return 0
+}
+
+func resolveProfitValue(ctx context.Context, pType int16, pVal float64, db *sql.DB, productID int64) float64 {
+	if pVal > 0 {
+		return pVal
+	}
+	var sid sql.NullInt64
+	db.QueryRowContext(ctx, `SELECT server_id FROM products WHERE id=$1`, productID).Scan(&sid)
+	if sid.Valid {
+		var sv float64
+		if db.QueryRowContext(ctx, `SELECT coalesce(profit_value,0) FROM servers WHERE id=$1`, sid.Int64).Scan(&sv) == nil && sv > 0 {
+			return sv
+		}
+	}
+	return 0
 }
 
 func isLoggedIn(r *http.Request) bool {

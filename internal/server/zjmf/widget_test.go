@@ -24,8 +24,8 @@ func TestDetailWidgetRendersAllSections(t *testing.T) {
 					{Key: "security_groups", Name: "安全组"},
 					{Key: "setting", Name: "设置"},
 				},
-				Buttons:  []server.ModuleButton{{Function: "reset_network", Name: "重置网络"}},
-				HasChart: true,
+			Buttons:  nil, // 模块按钮区已删除（与实例控制台重复）
+			HasChart: true,
 			},
 		},
 	})
@@ -40,7 +40,7 @@ func TestDetailWidgetRendersAllSections(t *testing.T) {
 		"快照/备份", "创建快照", "创建备份", "restoreSnap", "restoreBackup", "delSnap", "delBackup",
 		"NAT转发", "addNatAcl", "delNatAcl", "共享建站", "addNatWeb", "delNatWeb",
 		"安全组", "createSecurityGroup", "linkSecurityGroup", "delSecurityGroup", "新增策略", "createSecurityRule", "delSecurityRule",
-		"挂载 ISO", "mountIso", "启动顺序", "setBootOrder", "上游模块操作", "/services/18/module/reset_network",
+		"挂载 ISO", "mountIso", "启动顺序", "setBootOrder",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("widget 缺少 %q", want)

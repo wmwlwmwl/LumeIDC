@@ -9,6 +9,8 @@ import (
 
 	"github.com/robfig/cron/v3"
 
+	"lumeidc/internal/repo"
+	"lumeidc/internal/server"
 	"lumeidc/internal/service"
 )
 
@@ -17,6 +19,9 @@ type Jobs struct {
 	Lifecycle   *service.Lifecycle
 	Fulfillment *service.Fulfillment
 	Notifier    *service.Notifier
+	Providers   *server.Registry
+	Servers     *repo.Servers
+	Products    *repo.Products
 }
 
 func (j *Jobs) Start() *cron.Cron {
@@ -39,6 +44,8 @@ func (j *Jobs) Start() *cron.Cron {
 			j.Lifecycle.SyncUpstreamStatus(context.Background())
 		}
 	})
+	// 定时同步上游产品价格与库存（每 6 小时）
+	c.AddFunc("@every 6h", func() { j.syncPrices(context.Background()) })
 	c.Start()
 	return c
 }
@@ -159,5 +166,68 @@ func (j *Jobs) releaseExpiredStock(ctx context.Context) {
 	}
 	if n, _ := res.RowsAffected(); n > 0 {
 		log.Printf("[cron] 已释放 %d 条过期库存预留", n)
+	}
+}
+
+// syncPrices 定时同步上游产品价格与库存（按服务器分组，每服务器一次 Catalog 调用）。
+func (j *Jobs) syncPrices(ctx context.Context) {
+	if j.Providers == nil || j.Servers == nil || j.Products == nil {
+		return
+	}
+	bound, err := j.Products.ListBound(ctx)
+	if err != nil {
+		log.Printf("[sync] 查询已绑定产品失败: %v", err)
+		return
+	}
+	if len(bound) == 0 {
+		return
+	}
+	// 按 server_id 分组
+	type group struct {
+		sv   *repo.Server
+		pids map[int64]int64 // upstream_pid -> local product_id
+	}
+	groups := map[int64]*group{}
+	for _, bp := range bound {
+		g, ok := groups[bp.ServerID]
+		if !ok {
+			sv, serr := j.Servers.Get(ctx, bp.ServerID)
+			if serr != nil {
+				log.Printf("[sync] 读取服务器 %d 失败: %v", bp.ServerID, serr)
+				continue
+			}
+			g = &group{sv: sv, pids: map[int64]int64{}}
+			groups[bp.ServerID] = g
+		}
+		g.pids[bp.UpstreamPID] = bp.ID
+	}
+	updated, failed := 0, 0
+	for _, g := range groups {
+		prov, err := j.Providers.Get(g.sv.Provider)
+		if err != nil {
+			log.Printf("[sync] 供应商 %s 不可用: %v", g.sv.Provider, err)
+			continue
+		}
+		cfg := server.Config{APIURL: g.sv.APIURL, APIUsername: g.sv.APIUsername, APIKey: g.sv.APIKey}
+		list, err := prov.Catalog(ctx, cfg)
+		if err != nil {
+			log.Printf("[sync] 拉取 %s 目录失败: %v", g.sv.Name, err)
+			continue
+		}
+		for _, up := range list {
+			pid, ok := g.pids[int64(up.PID)]
+			if !ok {
+				continue
+			}
+			if err := j.Products.UpdatePriceAndStock(ctx, pid, up.Monthly, up.Quarterly, up.Yearly, up.Stock); err != nil {
+				log.Printf("[sync] 更新产品 %d 失败: %v", pid, err)
+				failed++
+				continue
+			}
+			updated++
+		}
+	}
+	if updated > 0 || failed > 0 {
+		log.Printf("[sync] 价格/库存同步完成: 更新 %d，失败 %d", updated, failed)
 	}
 }

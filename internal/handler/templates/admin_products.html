@@ -4,6 +4,7 @@
 <a class="btn" href="/admin/products/new" style="background:#4f46e5;color:#fff;padding:8px 16px;border-radius:6px;text-decoration:none">新增产品</a>
 </div>
 {{if .Error}}<p style="color:#b91c1c">{{.Error}}</p>{{end}}
+{{if .Msg}}<p style="color:#15803d">{{.Msg}}</p>{{end}}
 <table><tr><th>ID</th><th>名称</th><th>分类</th><th>月付价</th><th>显示</th><th>操作</th></tr>
 {{range .Rows}}
 <tr><td>{{.ID}}</td><td>{{.A}}</td><td>{{.B}}</td><td>￥{{.C}}</td><td>{{.D}}</td>

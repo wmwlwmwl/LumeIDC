@@ -16,6 +16,8 @@ type Server struct {
 	APIKey             string
 	Disabled           bool
 	CredentialRevision int
+	ProfitType         int16
+	ProfitValue        float64
 }
 
 type Servers struct{ DB *sql.DB }
@@ -24,7 +26,7 @@ var ErrServerNotFound = fixedErr("服务器不存在")
 
 func (s *Servers) List(ctx context.Context) ([]Server, error) {
 	rows, err := s.DB.QueryContext(ctx,
-		`SELECT id,name,provider,api_url,api_username,api_key,disabled,credential_revision FROM servers ORDER BY id`)
+		`SELECT id,name,provider,api_url,api_username,api_key,disabled,credential_revision,coalesce(profit_type,0),coalesce(profit_value,0) FROM servers ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -32,7 +34,7 @@ func (s *Servers) List(ctx context.Context) ([]Server, error) {
 	var out []Server
 	for rows.Next() {
 		var sv Server
-		if err := rows.Scan(&sv.ID, &sv.Name, &sv.Provider, &sv.APIURL, &sv.APIUsername, &sv.APIKey, &sv.Disabled, &sv.CredentialRevision); err != nil {
+		if err := rows.Scan(&sv.ID, &sv.Name, &sv.Provider, &sv.APIURL, &sv.APIUsername, &sv.APIKey, &sv.Disabled, &sv.CredentialRevision, &sv.ProfitType, &sv.ProfitValue); err != nil {
 			return nil, err
 		}
 		out = append(out, sv)
@@ -43,8 +45,8 @@ func (s *Servers) List(ctx context.Context) ([]Server, error) {
 func (s *Servers) Get(ctx context.Context, id int64) (*Server, error) {
 	var sv Server
 	err := s.DB.QueryRowContext(ctx,
-		`SELECT id,name,provider,api_url,api_username,api_key,disabled,credential_revision FROM servers WHERE id=$1`, id).
-		Scan(&sv.ID, &sv.Name, &sv.Provider, &sv.APIURL, &sv.APIUsername, &sv.APIKey, &sv.Disabled, &sv.CredentialRevision)
+		`SELECT id,name,provider,api_url,api_username,api_key,disabled,credential_revision,coalesce(profit_type,0),coalesce(profit_value,0) FROM servers WHERE id=$1`, id).
+		Scan(&sv.ID, &sv.Name, &sv.Provider, &sv.APIURL, &sv.APIUsername, &sv.APIKey, &sv.Disabled, &sv.CredentialRevision, &sv.ProfitType, &sv.ProfitValue)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrServerNotFound
 	}
@@ -60,12 +62,12 @@ func (s *Servers) Create(ctx context.Context, sv *Server) (int64, error) {
 }
 
 func (s *Servers) Update(ctx context.Context, sv *Server) error {
-	// 凭据变更时自动递增 revision，使 JWT 缓存失效
 	res, err := s.DB.ExecContext(ctx,
 		`UPDATE servers SET name=$2,provider=$3,api_url=$4,api_username=$5,api_key=$6,disabled=$7,
+		 profit_type=$8,profit_value=$9,
 		 credential_revision=CASE WHEN api_key!=$6 OR api_username!=$5 OR api_url!=$4 THEN credential_revision+1 ELSE credential_revision END
 		 WHERE id=$1`,
-		sv.ID, sv.Name, sv.Provider, sv.APIURL, sv.APIUsername, sv.APIKey, sv.Disabled)
+		sv.ID, sv.Name, sv.Provider, sv.APIURL, sv.APIUsername, sv.APIKey, sv.Disabled, sv.ProfitType, sv.ProfitValue)
 	if err != nil {
 		return err
 	}

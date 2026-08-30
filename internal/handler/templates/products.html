@@ -26,7 +26,8 @@
 <div class="card">
 <h3>{{.Name}}</h3><p class="muted">{{.Desc}}</p>
 <p class="price">￥{{.Monthly}}<span class="unit">/月</span></p>
-<a class="btn" href="/buy/{{.ID}}">立即购买</a>
+<p class="muted" style="font-size:.82rem;margin:4px 0">库存：{{if eq .Stock -1}}不限{{else if gt .Stock 0}}{{.Stock}}{{else}}已售罄{{end}}</p>
+{{if eq .Stock 0}}<span class="btn" style="background:#4f46e5;color:#fff;padding:8px 16px;border-radius:6px;opacity:.45;cursor:not-allowed;display:inline-block;text-decoration:none;font-size:.88rem">已售罄</span>{{else}}<a class="btn" href="/buy/{{.ID}}">立即购买</a>{{end}}
 </div>
 {{end}}
 </div>

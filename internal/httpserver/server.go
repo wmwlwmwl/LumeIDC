@@ -112,6 +112,7 @@ func Build(cfg *config.Config) (*App, error) {
 		Balance:     balanceRepo,
 		Notifier:    notifier,
 		Announcements: &repo.Announcements{DB: database},
+		Settings:    &repo.Settings{DB: database},
 	}
 
 	mux := http.NewServeMux()
@@ -131,6 +132,7 @@ func Build(cfg *config.Config) (*App, error) {
 		Lifecycle: lifecycleSvc,
 		Payment:   paymentSvc,
 		Providers: providers,
+		Settings:  &repo.Settings{DB: database},
 	}
 	mux.HandleFunc("GET /admin/users/{id}/edit", mng.UserEdit)
 	mux.HandleFunc("POST /admin/users/{id}/save", mng.UserSave)
@@ -153,6 +155,7 @@ func Build(cfg *config.Config) (*App, error) {
 	mux.HandleFunc("POST /admin/products/{id}/pull-config", mng.PullConfig)
 	mux.HandleFunc("GET /admin/products/upstream-options", mng.UpstreamOptions)
 	mux.HandleFunc("GET /admin/products/upstream-config", mng.UpstreamConfig)
+	mux.HandleFunc("POST /admin/settings/profit", mng.SaveGlobalProfit)
 
 	// 健康检查端点（不经过 CSRF）
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -182,7 +185,9 @@ func Build(cfg *config.Config) (*App, error) {
 	}}
 	// 支付成功立即异步执行履约队列（cron 每 15s 轮询仍兜底），开通不再等轮询周期
 	paymentSvc.TriggerFulfillment = func() { go fulfillment.Drain(context.Background(), 3) }
-	cronJobs := &cron.Jobs{DB: database, Fulfillment: fulfillment, Notifier: notifier, Lifecycle: &service.Lifecycle{
+	cronJobs := &cron.Jobs{DB: database, Fulfillment: fulfillment, Notifier: notifier,
+		Providers: providers, Servers: serversRepo, Products: products,
+		Lifecycle: &service.Lifecycle{
 		DB:        database,
 		Servers:   serversRepo,
 		Products:  products,

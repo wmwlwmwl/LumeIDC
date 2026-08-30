@@ -81,6 +81,15 @@ func (o *Orders) CreateOrder(ctx context.Context, userID, productID, pricesetID 
 		`SELECT profit_type,profit_value FROM products WHERE id=$1`, productID).Scan(&profitType, &profitValue); err != nil {
 		return 0, 0, "", err
 	}
+	// 产品未设置利润时回退服务器默认
+	if profitValue <= 0 {
+		var sid sql.NullInt64
+		tx.QueryRowContext(ctx, `SELECT server_id FROM products WHERE id=$1`, productID).Scan(&sid)
+		if sid.Valid {
+			tx.QueryRowContext(ctx, `SELECT coalesce(profit_type,0) FROM servers WHERE id=$1`, sid.Int64).Scan(&profitType)
+			tx.QueryRowContext(ctx, `SELECT coalesce(profit_value,0) FROM servers WHERE id=$1`, sid.Int64).Scan(&profitValue)
+		}
+	}
 	cost := mathRound(quote.Total)
 	sell := mathRound(applyProfit(cost, profitType, profitValue))
 	finalAmount := strconv.FormatFloat(sell, 'f', 2, 64)

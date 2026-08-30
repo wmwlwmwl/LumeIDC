@@ -7,6 +7,15 @@
 {{if .Rows}}
 <form method="post" action="{{with .ServersList}}/admin/servers/{{.ID}}/import{{end}}">
 <input type="hidden" name="_csrf" value="{{.CSRF}}">
+<div style="margin-bottom:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+<span style="font-size:.88rem;font-weight:600">导入利润：</span>
+<select name="profit_type" style="padding:6px;border:1px solid #ccc;border-radius:6px;font-size:.85rem">
+<option value="0" {{if not (eq (printf "%d" .ServerProfitType) "1")}}selected{{end}}>百分比（%）</option>
+<option value="1" {{if eq (printf "%d" .ServerProfitType) "1"}}selected{{end}}>固定金额</option>
+</select>
+<input name="profit_value" type="number" step="0.01" min="0" value="{{.ServerProfitValue}}" placeholder="如 30 或 5" style="width:120px;padding:6px;border:1px solid #ccc;border-radius:6px;font-size:.85rem">
+<span class="muted" style="font-size:.78rem">默认取服务器利润设置，已有产品不覆盖</span>
+</div>
 <table><tr><th></th><th>PID</th><th>名称</th><th>分组</th><th>月付价</th><th>库存</th><th>状态</th></tr>
 {{range .Rows}}
 <tr>

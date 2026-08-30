@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 )
 
 type Product struct {
@@ -224,3 +225,52 @@ func (p *Products) DefaultPricesetID(ctx context.Context) (int64, error) {
 	}
 	return id.Int64, nil
 }
+
+// BoundProduct 上游已绑定产品的同步所需字段。
+type BoundProduct struct {
+	ID          int64
+	ServerID    int64
+	UpstreamPID int64
+}
+
+// ListBound 返回所有绑定了上游（server_id + upstream_pid）的产品。
+func (p *Products) ListBound(ctx context.Context) ([]BoundProduct, error) {
+	rows, err := p.DB.QueryContext(ctx,
+		`SELECT id,server_id,upstream_pid FROM products WHERE server_id IS NOT NULL AND upstream_pid > 0`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []BoundProduct
+	for rows.Next() {
+		var bp BoundProduct
+		if err := rows.Scan(&bp.ID, &bp.ServerID, &bp.UpstreamPID); err != nil {
+			continue
+		}
+		out = append(out, bp)
+	}
+	return out, rows.Err()
+}
+
+// UpdatePriceAndStock 更新产品价格与库存。
+func (p *Products) UpdatePriceAndStock(ctx context.Context, productID int64, monthly, quarterly, yearly float64, stock int) error {
+	psID, _ := p.DefaultPricesetID(ctx)
+	tx, err := p.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO product_prices(product_id,priceset_id,monthly,quarterly,yearly) VALUES($1,$2,$3,$4,$5)
+		 ON CONFLICT (product_id,priceset_id) DO UPDATE SET monthly=$3,quarterly=$4,yearly=$5`,
+		productID, psID, money(monthly), money(quarterly), money(yearly)); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE products SET stock=$2 WHERE id=$1`, productID, stock); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func money(v float64) string { return fmt.Sprintf("%.2f", v) }

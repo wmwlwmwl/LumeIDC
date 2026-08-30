@@ -31,6 +31,7 @@ type AdminManage struct {
 	Lifecycle *service.Lifecycle
 	Payment   *service.Payment
 	Providers *server.Registry
+	Settings  *repo.Settings
 }
 
 func (m *AdminManage) require(w http.ResponseWriter, r *http.Request) bool {
@@ -152,7 +153,8 @@ func (m *AdminManage) ProductsList(w http.ResponseWriter, r *http.Request) {
 		mn := "-"
 		if pr, err := m.Products.Price(r.Context(), p.ID, psID); err == nil {
 			opts, _ := m.Products.GetConfigOptions(r.Context(), p.ID)
-			mn = fmt.Sprintf("%.2f", service.DisplayPrice(priceVal(pr.Monthly), opts, p.ProfitType, p.ProfitValue))
+			eType, eVal := resolveProfitType(r.Context(), p.ProfitType, p.ProfitValue, m.Products.DB, p.ID), resolveProfitValue(r.Context(), p.ProfitType, p.ProfitValue, m.Products.DB, p.ID)
+			mn = fmt.Sprintf("%.2f", service.DisplayPrice(priceVal(pr.Monthly), opts, eType, eVal))
 		}
 		h := "显示"
 		if p.Hidden {
@@ -164,6 +166,9 @@ func (m *AdminManage) ProductsList(w http.ResponseWriter, r *http.Request) {
 	}
 	renderAdmin(w, "admin_products.html", AdminData{
 		Rows: rows, CSRF: csrfOf(adminSessions, w, r), Error: r.URL.Query().Get("err"),
+		Msg: r.URL.Query().Get("msg"),
+		GlobalProfitType:  loadGlobalProfitType(r.Context(), m.Settings),
+		GlobalProfitValue: loadGlobalProfitValue(r.Context(), m.Settings),
 	})
 }
 
@@ -187,6 +192,8 @@ func (m *AdminManage) ProductForm(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		data.Product = p
+		// 按需同步上游价格与库存（编辑产品时拉取最新）
+		m.syncProductUpstream(r.Context(), p)
 		psID, _ := m.Products.DefaultPricesetID(r.Context())
 		if pr, err := m.Products.Price(r.Context(), id, psID); err == nil {
 			data.Monthly, data.Quarterly, data.Yearly = pr.Monthly, pr.Quarterly, pr.Yearly
@@ -465,10 +472,11 @@ func (m *AdminManage) CatalogPage(w http.ResponseWriter, r *http.Request) {
 		linked = map[int]bool{}
 	}
 	renderAdmin(w, "admin_catalog.html", AdminData{
-		CSRF:        csrfOf(adminSessions, w, r),
-		Error:       catalogErr(err),
-		ServersList: sv,
-		Rows:        toCatalogRows(list, linked),
+		CSRF:             csrfOf(adminSessions, w, r),
+		Error:            catalogErr(err),
+		ServersList:      sv,
+		Rows:             toCatalogRows(list, linked),
+		ServerProfitType: sv.ProfitType, ServerProfitValue: sv.ProfitValue,
 	})
 }
 
@@ -629,13 +637,22 @@ func (m *AdminManage) ImportProducts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	r.ParseForm()
+	// 导入利润：表单未填时回退服务器默认利润
+	profitType := sv.ProfitType
+	profitValue := sv.ProfitValue
+	if pt, _ := strconv.ParseInt(r.PostFormValue("profit_type"), 10, 64); pt == 1 {
+		profitType = 1
+	}
+	if pv, _ := strconv.ParseFloat(r.PostFormValue("profit_value"), 64); pv > 0 {
+		profitValue = pv
+	}
 	imported := 0
 	for _, pidStr := range r.PostForm["import"] {
 		pid, err := strconv.Atoi(pidStr)
 		if err != nil || pid <= 0 {
 			continue
 		}
-		if m.importUpstreamProduct(r.Context(), sv, serverID, pid) {
+		if m.importUpstreamProduct(r.Context(), sv, serverID, pid, int16(profitType), profitValue) {
 			imported++
 		}
 	}
@@ -644,8 +661,8 @@ func (m *AdminManage) ImportProducts(w http.ResponseWriter, r *http.Request) {
 }
 
 // importUpstreamProduct 幂等导入：已按 (server_id, upstream_pid) 对接则更新价格/绑定/配置项，
-// 否则新建分类+产品+价格+绑定+配置项。
-func (m *AdminManage) importUpstreamProduct(ctx context.Context, sv *repo.Server, serverID int64, pid int) bool {
+// 否则新建分类+产品+价格+绑定+配置项。profitType/profitValue 仅对新建产品生效（不覆盖已有产品利润）。
+func (m *AdminManage) importUpstreamProduct(ctx context.Context, sv *repo.Server, serverID int64, pid int, profitType int16, profitValue float64) bool {
 	prov, err := m.Providers.Get(sv.Provider)
 	if err != nil {
 		return false
@@ -692,6 +709,10 @@ func (m *AdminManage) importUpstreamProduct(ctx context.Context, sv *repo.Server
 		productID, err = m.Products.Create(ctx, sqlNull(typeID), up.Name, desc, up.Stock)
 		if err != nil {
 			return false
+		}
+		// 新建产品设置导入利润
+		if profitValue > 0 {
+			m.Products.SetProfit(ctx, productID, profitType, profitValue)
 		}
 	}
 	// 价格始终刷新（新建或更新均覆盖月/季/年）
@@ -941,6 +962,79 @@ func (m *AdminManage) OrderRefund(w http.ResponseWriter, r *http.Request) {
 	}
 	m.audit(r, "refund", "order", id, amount+" via "+method)
 	http.Redirect(w, r, "/admin/refunds?ok=1", http.StatusSeeOther)
+}
+
+// syncProductUpstream 按需同步单个产品的上游价格与库存（编辑表单打开时调用）。
+func (m *AdminManage) syncProductUpstream(ctx context.Context, p *repo.Product) {
+	if !p.ServerID.Valid || p.UpstreamPID <= 0 {
+		return
+	}
+	sv, err := m.Servers.Get(ctx, p.ServerID.Int64)
+	if err != nil {
+		return
+	}
+	prov, err := m.Providers.Get(sv.Provider)
+	if err != nil {
+		return
+	}
+	cfg := serverConfig(sv)
+	// 拉取价格
+	if fp, ok := prov.(server.PriceFetcher); ok {
+		if mon, qtr, yr, ferr := fp.FetchProductPrice(ctx, cfg, p.UpstreamPID); ferr == nil {
+			m.Products.UpdatePriceAndStock(ctx, p.ID, mon, qtr, yr, p.Stock)
+		}
+	}
+	// 拉取库存（FetchProductMeta 返回 desc + stock）
+	type metaFetcher interface {
+		FetchProductMeta(ctx context.Context, cfg server.Config, upstreamPID int64) (string, int, error)
+	}
+	if mf, ok := prov.(metaFetcher); ok {
+		if _, stock, merr := mf.FetchProductMeta(ctx, cfg, p.UpstreamPID); merr == nil {
+			m.Products.DB.ExecContext(ctx, `UPDATE products SET stock=$2 WHERE id=$1`, p.ID, stock)
+		}
+	}
+}
+
+func loadGlobalProfitType(ctx context.Context, s *repo.Settings) int64 {
+	if s == nil {
+		return 0
+	}
+	v, _ := s.Get(ctx, "default_profit_type")
+	n, _ := strconv.ParseInt(v, 10, 64)
+	if n != 1 {
+		n = 0
+	}
+	return n
+}
+
+func loadGlobalProfitValue(ctx context.Context, s *repo.Settings) float64 {
+	if s == nil {
+		return 0
+	}
+	v, _ := s.Get(ctx, "default_profit_value")
+	f, _ := strconv.ParseFloat(v, 64)
+	if f < 0 {
+		f = 0
+	}
+	return f
+}
+
+// SaveGlobalProfit POST /admin/settings/profit — 保存全局默认利润。
+func (m *AdminManage) SaveGlobalProfit(w http.ResponseWriter, r *http.Request) {
+	if !m.require(w, r) || !m.requireCSRF(w, r) {
+		return
+	}
+	profitType, _ := strconv.ParseInt(r.PostFormValue("profit_type"), 10, 64)
+	if profitType != 1 {
+		profitType = 0
+	}
+	profitValue, _ := strconv.ParseFloat(r.PostFormValue("profit_value"), 64)
+	if profitValue < 0 {
+		profitValue = 0
+	}
+	m.Settings.Set(r.Context(), "default_profit_type", strconv.FormatInt(profitType, 10))
+	m.Settings.Set(r.Context(), "default_profit_value", strconv.FormatFloat(profitValue, 'f', 2, 64))
+	http.Redirect(w, r, "/admin/products?msg=全局利润已保存", http.StatusSeeOther)
 }
 
 var _ = context.Background

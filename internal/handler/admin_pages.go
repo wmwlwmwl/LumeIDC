@@ -40,6 +40,12 @@ type AdminData struct {
 	ProductHintsJSON template.JS
 	// ProviderWidgets 供应商产品表单独立区块（插槽，按当前供应商显隐）。
 	ProviderWidgets template.HTML
+	// GlobalProfit 全局默认利润（产品未单独设置时回退）
+	GlobalProfitType  int64
+	GlobalProfitValue float64
+	// ServerProfit 服务器默认利润（导入表单预填）
+	ServerProfitType  int16
+	ServerProfitValue float64
 }
 
 func renderAdmin(w http.ResponseWriter, page string, data AdminData) {

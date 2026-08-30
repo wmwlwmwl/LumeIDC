@@ -17,6 +17,15 @@
 <option value="0">启用</option>
 <option value="1" {{if and .Product .Product.Disabled}}selected{{end}}>停用</option>
 </select>
+<label style="display:block;margin:10px 0 4px;font-weight:600;font-size:.88rem">默认利润</label>
+<div style="display:flex;gap:8px;align-items:center">
+<select name="profit_type" style="padding:8px;border:1px solid #ccc;border-radius:6px">
+<option value="0" {{if not (and .Product (eq (printf "%d" .Product.ProfitType) "1"))}}selected{{end}}>百分比（%）</option>
+<option value="1" {{if and .Product (eq (printf "%d" .Product.ProfitType) "1")}}selected{{end}}>固定金额</option>
+</select>
+<input name="profit_value" type="number" step="0.01" min="0" value="{{if .Product}}{{.Product.ProfitValue}}{{else}}0{{end}}" placeholder="如 30 或 5" style="width:140px;padding:8px;border:1px solid #ccc;border-radius:6px">
+</div>
+<p class="muted" style="font-size:.78rem;margin:4px 0 0">该上游下产品未单独设利润时，使用此默认值</p>
 <button style="margin-top:18px;width:100%;padding:11px;background:#4f46e5;color:#fff;border:0;border-radius:6px;cursor:pointer">保存</button>
 </form>
 <script>

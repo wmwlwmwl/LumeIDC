@@ -56,6 +56,11 @@ type MarkupFreeProvider interface {
 	MarkupFree() bool
 }
 
+// BalanceFetcher 可选：拉取上游账户余额（测试连接时展示）。
+type BalanceFetcher interface {
+	FetchBalance(ctx context.Context, cfg Config) (string, error)
+}
+
 // FieldSuggestion 配置标识建议（后台配置项弹窗下拉候选）。
 type FieldSuggestion struct {
 	Field string `json:"field"`

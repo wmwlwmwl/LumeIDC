@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
@@ -121,9 +122,10 @@ func (p Provider) RescueState(ctx context.Context, cfg server.Config, hostID int
 	return out.Data.Rescue == 1, nil
 }
 
-// ExitRescue 退出救援模式（exitRescue 走 /provision/custom 通道）。
+// ExitRescue 退出救援模式（走 /provision/custom 通道，避免上游非标准响应格式误判为失败）。
 func (p Provider) ExitRescue(ctx context.Context, cfg server.Config, hostID int64) error {
-	return defaultModuleAction(ctx, cfg, hostID, "exitRescue", nil)
+	_, err := customModuleAction(ctx, cfg, hostID, "exitRescue", nil)
+	return err
 }
 
 // vncCache 缓存 VNC 会话信息（wss 地址 + 密码）：上游 func=vnc 每次返回新 token，
@@ -286,6 +288,23 @@ func defaultModuleAction(ctx context.Context, cfg server.Config, hostID int64, f
 		}
 	}
 	return postForm(ctx, cfg, "/provision/default", form, &map[string]any{})
+}
+
+// customModuleAction 走 /provision/custom/{hostID} 通道（doRaw，不强制校验 JSON 业务码），
+// 适用于上游返回非标准响应格式的操作（如 exitRescue）。
+func customModuleAction(ctx context.Context, cfg server.Config, hostID int64, fn string, extra url.Values) (string, error) {
+	form := url.Values{"func": {fn}}
+	for k, vs := range extra {
+		for _, v := range vs {
+			form.Add(k, v)
+		}
+	}
+	token, err := ensureToken(ctx, cfg)
+	if err != nil {
+		return "", err
+	}
+	u := strings.TrimRight(cfg.APIURL, "/") + "/provision/custom/" + strconv.FormatInt(hostID, 10)
+	return doRaw(ctx, cfg, http.MethodPost, u, "application/x-www-form-urlencoded", form.Encode(), "Bearer "+token)
 }
 
 // Chart 拉取监控图表时序：GET /provision/chart/{hostID}?type=&select=&is_api=true。

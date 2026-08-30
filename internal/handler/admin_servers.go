@@ -128,6 +128,13 @@ func (s *AdminServers) Save(w http.ResponseWriter, r *http.Request) {
 		APIKey:      strings.TrimSpace(r.PostFormValue("api_key")),
 		Disabled:    r.PostFormValue("disabled") == "1",
 	}
+	if pt, _ := strconv.ParseInt(r.PostFormValue("profit_type"), 10, 64); pt == 1 {
+		sv.ProfitType = 1
+	}
+	sv.ProfitValue, _ = strconv.ParseFloat(r.PostFormValue("profit_value"), 64)
+	if sv.ProfitValue < 0 {
+		sv.ProfitValue = 0
+	}
 	if idStr == "" {
 		if _, err := s.Servers.Create(r.Context(), sv); err != nil {
 			http.Redirect(w, r, "/admin/servers?err="+err.Error(), http.StatusSeeOther)
@@ -178,5 +185,11 @@ func (s *AdminServers) TestConn(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]string{"ok": "0", "msg": err.Error()})
 		return
 	}
-	writeJSON(w, map[string]string{"ok": "1", "msg": "连接成功"})
+	msg := "连接成功"
+	if bf, ok := prov.(server.BalanceFetcher); ok {
+		if balance, berr := bf.FetchBalance(ctx, cfg); berr == nil && balance != "" {
+			msg = "连接成功 · 余额: " + balance
+		}
+	}
+	writeJSON(w, map[string]string{"ok": "1", "msg": msg})
 }

@@ -142,8 +142,11 @@ function setSelectDefaults(){
 
 function recalc(){
   const cycle = document.getElementById("cycleSel").value;
-  let total = CFG.base[cycle] || 0;
-  document.getElementById("basePrice").textContent = "￥" + (CFG.base[cycle] || 0).toFixed(2);
+  const pRate = CFG.profit_type === 1 ? 0 : (CFG.profit_value||0)/100;
+  const pFixed = CFG.profit_type === 1 ? (CFG.profit_value||0) : 0;
+  const baseRaw = CFG.base[cycle] || 0;
+  let total = baseRaw;
+  document.getElementById("basePrice").textContent = "￥" + (pFixed ? (baseRaw+pFixed).toFixed(2) : (baseRaw*(1+pRate)).toFixed(2));
   document.getElementById("cycleLabel").textContent = "/" + cycleNames[cycle];
 
   const lines = [];
@@ -165,8 +168,6 @@ function recalc(){
         }
         return s.min || 0;
       }
-      // 跨度区间子项（s.max>s.min，如数据盘 "0|0G" 0~120GB）：单价×数量；
-      // 离散规格包（s.max===s.min，如 "20|20G"）：按名称解析规格，仅当 v==规格时命中（单价即总价）。
       let exact = null, rangeSub = null;
       for(const s of subs){
         const maxB = s.max || opt.max;
@@ -181,14 +182,14 @@ function recalc(){
         let p;
         if(picked.max > picked.min){ p = priceOf(picked, cycle) * Math.floor(v/step); }
         else { p = priceOf(picked, cycle); }
-        lines.push([opt.name, v + (opt.unit||""), p]);
+        lines.push([opt.name, v + (opt.unit||""), pRate ? p*(1+pRate) : p]);
         total += p;
       }
     } else {
       const s = subFor(opt, val);
       if(s){
         const p = priceOf(s, cycle);
-        lines.push([opt.name, s.option_name, p]);
+        lines.push([opt.name, s.option_name, pRate ? p*(1+pRate) : p]);
         total += p;
       }
     }
@@ -199,9 +200,8 @@ function recalc(){
     `<td style="padding:3px 0">${esc(l[1])}</td>` +
     `<td style="padding:3px 0;text-align:right">${l[2]>0?"+"+l[2].toFixed(2):"0.00"}</td></tr>`
   ).join("");
-  // 利润加成（ZJMF 上游百分比语义）：比例=×(1+%)，固定金额=+金额；与服务端 CreateOrder 口径一致。
-  if(CFG.profit_type === 1){ total = total + (CFG.profit_value||0); }
-  else { total = total * (1 + (CFG.profit_value||0)/100); }
+  if(pFixed){ total = total + pFixed; }
+  else { total = total * (1 + pRate); }
   document.getElementById("totalPrice").textContent = total.toFixed(2);
 }
 setSelectDefaults();

@@ -25,13 +25,43 @@ func (Provider) Name() string { return "智简魔方财务（ZJMF）" }
 // TestConnection 登录并拉用户资料验证凭据。旧版上游无 /v1/user（404），
 // 回退用 /cart/all 验证——登录成功且目录接口可用即视为连通。
 func (p Provider) TestConnection(ctx context.Context, cfg server.Config) error {
-	var out map[string]any
-	if err := getJSON(ctx, cfg, "/v1/user", &out); err == nil {
-		return nil
-	} else if !strings.Contains(err.Error(), "404") {
-		return err
+	_, err := p.FetchBalance(ctx, cfg)
+	return err
+}
+
+// FetchBalance 拉取上游账户余额。返回余额字符串（如 "100.00"）；不支持时返回空。
+func (p Provider) FetchBalance(ctx context.Context, cfg server.Config) (string, error) {
+	// 魔方财务 user_info → user.credit
+	var info struct {
+		User struct {
+			Credit string `json:"credit"`
+		} `json:"user"`
 	}
-	return getJSON(ctx, cfg, "/cart/all", &out)
+	if err := getJSON(ctx, cfg, "/user_info", &info); err == nil && info.User.Credit != "" {
+		return info.User.Credit, nil
+	}
+	// CBAP / WHMCS /v1/user → data.credit 或 data.balance
+	var out struct {
+		Data struct {
+			Credit  string `json:"credit"`
+			Balance string `json:"balance"`
+		} `json:"data"`
+	}
+	if err := getJSON(ctx, cfg, "/v1/user", &out); err != nil {
+		if strings.Contains(err.Error(), "404") {
+			// 旧版上游不支持，用 /cart/all 验证连通性
+			var dummy map[string]any
+			if err2 := getJSON(ctx, cfg, "/cart/all", &dummy); err2 != nil {
+				return "", err2
+			}
+			return "", nil
+		}
+		return "", err
+	}
+	if out.Data.Credit != "" {
+		return out.Data.Credit, nil
+	}
+	return out.Data.Balance, nil
 }
 
 // ---------- 商品目录 ----------
