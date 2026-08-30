@@ -5,6 +5,14 @@
 <a href="/services" style="margin-left:auto;font-size:.85rem;color:#4f46e5">← 返回列表</a>
 </div>
 
+{{if eq .Svc.StatusText "待开通"}}
+<div class="card" style="margin-top:16px;background:#eff6ff;border:1px solid #bfdbfe">
+<p style="margin:0;color:#1d4ed8;font-size:.9rem;font-weight:600">正在开通…</p>
+<p class="muted" style="margin:6px 0 0;font-size:.82rem">通常几秒内完成，本页每 3 秒自动刷新；若长时间未完成请联系管理员。</p>
+</div>
+<script>setTimeout(function(){location.reload()},3000)</script>
+{{end}}
+
 {{if .Flash}}
 <div class="card" style="margin-top:16px;background:#f0fdf4;border:1px solid #bbf7d0">
 <p style="margin:0;color:#15803d;font-size:.9rem;font-weight:600">操作成功</p>

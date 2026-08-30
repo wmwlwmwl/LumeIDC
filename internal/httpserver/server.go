@@ -174,7 +174,14 @@ func Build(cfg *config.Config) (*App, error) {
 	if a := os.Getenv("LISTEN"); a != "" {
 		addr = a // 环境变量覆盖配置，便于本地多实例测试
 	}
-	fulfillment := &service.Fulfillment{Jobs: &repo.FulfillmentJobs{DB: database}, Payment: paymentSvc}
+	fulfillment := &service.Fulfillment{Jobs: &repo.FulfillmentJobs{DB: database}, Payment: paymentSvc, Lifecycle: &service.Lifecycle{
+		DB:        database,
+		Servers:   serversRepo,
+		Products:  products,
+		Providers: providers,
+	}}
+	// 支付成功立即异步执行履约队列（cron 每 15s 轮询仍兜底），开通不再等轮询周期
+	paymentSvc.TriggerFulfillment = func() { go fulfillment.Drain(context.Background(), 3) }
 	cronJobs := &cron.Jobs{DB: database, Fulfillment: fulfillment, Notifier: notifier, Lifecycle: &service.Lifecycle{
 		DB:        database,
 		Servers:   serversRepo,

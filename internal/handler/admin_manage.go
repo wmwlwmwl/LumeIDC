@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"html"
+	"html/template"
 	"log"
 	"net/http"
 	"net/url"
@@ -198,6 +199,31 @@ func (m *AdminManage) ProductForm(w http.ResponseWriter, r *http.Request) {
 	}
 	serversList, _ := m.Servers.List(r.Context())
 	data.ServersList = serversList
+	// 供应商产品表单差异声明（模板动态适配，新上游零模板改动）
+	if b, err := json.Marshal(m.Providers.ProductFormHintsSets()); err == nil {
+		data.ProductHintsJSON = template.JS(b)
+	}
+	// 各供应商产品表单独立区块（插槽注入，同详情页 DetailWidget 模式）
+	var wf strings.Builder
+	for _, pi := range m.Providers.List() {
+		prov, err := m.Providers.Get(pi.Code)
+		if err != nil {
+			continue
+		}
+		wp, ok := prov.(server.ProductFormWidgetProvider)
+		if !ok {
+			continue
+		}
+		html, err := wp.ProductFormWidget()
+		if err != nil {
+			log.Printf("[admin] %s 产品表单区块渲染失败: %v", pi.Code, err)
+			continue
+		}
+		wf.WriteString(`<div class="provform" data-provider="` + pi.Code + `" style="display:none">`)
+		wf.Write([]byte(html))
+		wf.WriteString(`</div>`)
+	}
+	data.ProviderWidgets = template.HTML(wf.String())
 	if p, ok := data.Product.(*repo.Product); ok {
 		data.UpstreamBound = p.ServerID.Valid && p.UpstreamPID > 0
 	}
@@ -306,6 +332,16 @@ func (m *AdminManage) ProductSave(w http.ResponseWriter, r *http.Request) {
 	profitValue, _ := strconv.ParseFloat(r.PostFormValue("profit_value"), 64)
 	if profitValue < 0 {
 		profitValue = 0
+	}
+	// 无上游成本的供应商（如 EasyPanel）：利润加成无意义，服务端强制归零（表单已按类型隐藏）
+	if bindServer.Valid {
+		if sv, serr := m.Servers.Get(r.Context(), bindServer.Int64); serr == nil {
+			if prov, perr := m.Providers.Get(sv.Provider); perr == nil {
+				if mf, ok := prov.(server.MarkupFreeProvider); ok && mf.MarkupFree() {
+					profitType, profitValue = 0, 0
+				}
+			}
+		}
 	}
 	savePrice := func(pid int64) error {
 		_, err := m.Products.DB.ExecContext(r.Context(),

@@ -36,6 +36,10 @@ type AdminData struct {
 	Providers     []server.ProviderInfo // 上游供应商清单（服务器表单下拉）
 	// ProviderFieldsJSON 服务器表单动态凭据字段：{"fields":{code:[...]}, "values":{api_url:...}}。
 	ProviderFieldsJSON template.JS
+	// ProductHintsJSON 产品表单供应商差异声明：{code:{markupFree,hideCatalog,pidHint}}。
+	ProductHintsJSON template.JS
+	// ProviderWidgets 供应商产品表单独立区块（插槽，按当前供应商显隐）。
+	ProviderWidgets template.HTML
 }
 
 func renderAdmin(w http.ResponseWriter, page string, data AdminData) {

@@ -53,6 +53,24 @@ func (r *Registry) CredentialFieldSets() map[string][]CredentialField {
 	return out
 }
 
+// ProductFormHintsSets 所有供应商的产品表单差异声明；MarkupFree 从能力接口自动合并。
+func (r *Registry) ProductFormHintsSets() map[string]ProductFormHints {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make(map[string]ProductFormHints, len(r.providers))
+	for code, p := range r.providers {
+		var h ProductFormHints
+		if fp, ok := p.(ProductFormProvider); ok {
+			h = fp.ProductFormHints()
+		}
+		if mf, ok := p.(MarkupFreeProvider); ok && mf.MarkupFree() {
+			h.MarkupFree = true
+		}
+		out[code] = h
+	}
+	return out
+}
+
 // Get 按 code 获取供应商；空字符串默认 "zjmf"；未知 code 返回错误。
 func (r *Registry) Get(code string) (Provider, error) {
 	if code == "" {

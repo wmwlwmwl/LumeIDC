@@ -14,6 +14,7 @@
 </select>
 
 {{range .Options}}
+{{if .Hidden}}<input type="hidden" name="cfg_{{.Field}}" value="{{if eq .Mode "range"}}{{.Min}}{{else}}{{if .Subs}}{{with index .Subs 0}}{{if .Value}}{{.Value}}{{else}}{{.Name}}{{end}}{{end}}{{end}}{{end}}">{{else}}
 <label style="display:block;margin:14px 0 4px;font-weight:600;font-size:.9rem">{{.Name}}{{if .Unit}}（{{.Unit}}）{{end}}</label>
 {{if eq .Mode "range"}}
 <div style="display:flex;align-items:center;gap:8px">
@@ -31,6 +32,7 @@
 <option value="{{if .Value}}{{.Value}}{{else}}{{.Name}}{{end}}" {{if and $.Options (index .Pricing "monthly")}}data-m="{{$f}}|{{.Name}}|{{index .Pricing "monthly"}}"{{end}}>{{.Name}}</option>
 {{end}}
 </select>
+{{end}}
 {{end}}
 {{end}}
 

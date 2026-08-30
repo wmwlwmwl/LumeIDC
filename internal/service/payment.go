@@ -29,6 +29,9 @@ type Payment struct {
 	PeriodGrants *repo.PeriodGrants
 	Notifier     *Notifier
 	Crypt        *crypto.Cryptor // 实例密码加密落库（services.password_crypt），可为 nil
+	// TriggerFulfillment 支付成功后立即触发队列执行（httpserver 注入，异步 Drain）。
+	// 为 nil 时仅靠 cron 每 15s 轮询，支付后开通最多延迟一个轮询周期。
+	TriggerFulfillment func()
 }
 
 // MarkPaidByBalance 用余额支付账单。余额不足返回错误，账单保持未支付。
@@ -131,6 +134,9 @@ func (p *Payment) MarkPaidByBalance(ctx context.Context, invoiceNo string, userI
 	}
 	if err := tx.Commit(); err != nil {
 		return err
+	}
+	if p.TriggerFulfillment != nil {
+		p.TriggerFulfillment()
 	}
 	if p.Notifier != nil {
 		p.Notifier.Notify(ctx, userID, "支付成功", "账单 "+invoiceNo+" 已通过余额支付，服务开通中。")
@@ -295,6 +301,9 @@ func (p *Payment) MarkPaid(ctx context.Context, invoiceNo, tradeNo, gatewayCode 
 	if err := tx.Commit(); err != nil {
 		return err
 	}
+	if p.TriggerFulfillment != nil {
+		p.TriggerFulfillment()
+	}
 	if p.Notifier != nil {
 		p.Notifier.Notify(ctx, userID, "支付成功", "账单 "+invoiceNo+" 已支付，服务开通中。")
 	}
@@ -388,11 +397,11 @@ func (p *Payment) provision(ctx context.Context, serviceID, _ int64, cycle strin
 		return p.failProvision(ctx, serviceID, err)
 	}
 	if res.UpstreamHostID > 0 {
+		// 开通成功即激活（此前只写 host id，等 30s 状态同步 cron 才置 1，用户看到长时间"待开通"）
 		if _, err := p.DB.ExecContext(ctx,
-			`UPDATE services SET upstream_host_id=$2 WHERE id=$1 AND status=0`, serviceID, res.UpstreamHostID); err != nil {
+			`UPDATE services SET upstream_host_id=$2, status=1, provision_error='' WHERE id=$1 AND status=0`, serviceID, res.UpstreamHostID); err != nil {
 			return err
 		}
-		p.clearProvisionError(ctx, serviceID)
 	}
 	// 供应商回传了实例密码（如 EasyPanel）：加密落库供详情页展示与面板直登。
 	if res.Password != "" && p.Crypt != nil {

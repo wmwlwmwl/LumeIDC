@@ -13,8 +13,9 @@ import (
 // Fulfillment executes persisted provision/renew jobs. PostgreSQL leases make
 // jobs recoverable after process exit without adding an external queue.
 type Fulfillment struct {
-	Jobs    *repo.FulfillmentJobs
-	Payment *Payment
+	Jobs      *repo.FulfillmentJobs
+	Payment   *Payment
+	Lifecycle *Lifecycle // renew 用；缺省时按 Payment 依赖拼装
 }
 
 func (f *Fulfillment) ProcessOne(ctx context.Context) (bool, error) {
@@ -28,7 +29,15 @@ func (f *Fulfillment) ProcessOne(ctx context.Context) (bool, error) {
 	case "provision":
 		err = f.Payment.provision(opCtx, job.ServiceID, 0, job.Cycle)
 	case "renew":
-		lc := &Lifecycle{DB: f.Payment.DB, Servers: f.Payment.Servers, Products: f.Payment.Products}
+		lc := f.Lifecycle
+		if lc == nil {
+			// 兜底拼装（Providers 必须注入，否则上游调用空指针）
+			if f.Payment == nil || f.Payment.Providers == nil {
+				err = fmt.Errorf("renew 任务缺少供应商注册表")
+				break
+			}
+			lc = &Lifecycle{DB: f.Payment.DB, Servers: f.Payment.Servers, Products: f.Payment.Products, Providers: f.Payment.Providers}
+		}
 		err = lc.Renew(opCtx, job.ServiceID, job.Cycle)
 	default:
 		err = fmt.Errorf("未知履约任务类型: %s", job.Kind)

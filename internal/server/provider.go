@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"html/template"
 	"net/url"
 
 	"lumeidc/internal/repo"
@@ -49,6 +50,37 @@ type PIDOptionalProvider interface {
 	PIDOptional() bool
 }
 
+// MarkupFreeProvider 可选：无上游成本概念的供应商（本地自主定价，如 EasyPanel）。
+// 利润加成（上游成本外毛利）对其无意义，产品保存时服务端强制归零。
+type MarkupFreeProvider interface {
+	MarkupFree() bool
+}
+
+// FieldSuggestion 配置标识建议（后台配置项弹窗下拉候选）。
+type FieldSuggestion struct {
+	Field string `json:"field"`
+	Label string `json:"label"`
+}
+
+// ProductFormHints 供应商对产品表单的差异化声明（布尔/文案级；带 UI 的差异走 ProductFormWidgetProvider）。
+type ProductFormHints struct {
+	MarkupFree       bool              `json:"markupFree,omitempty"`       // 隐藏「利润加成」区
+	PIDHint          string            `json:"pidHint,omitempty"`          // PID 输入框的专属提示文案
+	FieldSuggestions []FieldSuggestion `json:"fieldSuggestions,omitempty"` // 配置标识 field 候选（如 EP 的 web_quota）
+}
+
+// ProductFormProvider 可选：声明产品表单差异（MarkupFree 由注册表自动合并，无需自填）。
+type ProductFormProvider interface {
+	ProductFormHints() ProductFormHints
+}
+
+// ProductFormWidgetProvider 可选：产品表单专属区块（独立模板插槽注入，同 DetailWidget 模式）。
+// 返回的 HTML 注入上游绑定区，共享表单按当前供应商显隐；区块内可自带脚本，
+// 约定用 provFormRegister(code, fields, init) 注册（详见 docs/provider.md）。
+type ProductFormWidgetProvider interface {
+	ProductFormWidget() (template.HTML, error)
+}
+
 // ConfigOptionsFetcher 可选拉取配置项能力的供应商（类型断言使用）。
 type ConfigOptionsFetcher interface {
 	FetchProductConfigOptions(ctx context.Context, cfg Config, upstreamPID int64) ([]repo.ConfigOption, error)
@@ -90,7 +122,7 @@ type UpstreamProduct struct {
 	DisplayMonthly float64
 	Stock          int // -1 不限
 	ConfigCount    int // 可配置项数量
-	Description     string
+	Description    string
 }
 
 // DisplayPrice 目录展示月价：真实基础价>0 用真实价，否则用最低配置价兜底（仅展示）。
@@ -141,9 +173,9 @@ type HostDetail struct {
 	PanelURL string
 	// 以下字段取自 /host/header 的 host_data / config_options，详情页「实例信息」面板展示用。
 	AdditionalIPs []string // 附加 IP
-	BWLimit        string   // 带宽限额
-	BWUsage        string   // 带宽已用
-	Datacenter     string   // 数据中心 / 机房
+	BWLimit       string   // 带宽限额
+	BWUsage       string   // 带宽已用
+	Datacenter    string   // 数据中心 / 机房
 }
 
 // HostDetailFetcher 可选获取实例登录/系统信息能力的供应商（类型断言使用）。
@@ -262,10 +294,10 @@ type DiskItem struct {
 
 // SnapshotInfo 快照/备份概况：配额 + 列表 + 可用磁盘。
 type SnapshotInfo struct {
-	SnapNum    int            `json:"snap_num"`
-	BackupNum  int            `json:"backup_num"`
-	List       []SnapshotItem `json:"list"`
-	Disk       []DiskItem     `json:"disk"`
+	SnapNum   int            `json:"snap_num"`
+	BackupNum int            `json:"backup_num"`
+	List      []SnapshotItem `json:"list"`
+	Disk      []DiskItem     `json:"disk"`
 }
 
 // SnapshotProvider 可选：快照/备份能力（上游 provision/custom/content v10）。
@@ -277,11 +309,11 @@ type SnapshotProvider interface {
 
 // NatRule NAT 转发条目。
 type NatRule struct {
-	ID       int64  `json:"id"`        // 0 = 默认规则（不可删除）
+	ID       int64  `json:"id"` // 0 = 默认规则（不可删除）
 	Name     string `json:"name"`
-	External string `json:"external"`  // 外部地址 host:port
-	Internal string `json:"internal"`  // 内部端口
-	Protocol string `json:"protocol"`  // tcp/udp
+	External string `json:"external"` // 外部地址 host:port
+	Internal string `json:"internal"` // 内部端口
+	Protocol string `json:"protocol"` // tcp/udp
 }
 
 // NatWebEntry 共享建站条目。
@@ -319,8 +351,8 @@ type SelectOption struct {
 
 // SettingData 设置方块数据：ISO 挂载与启动顺序。
 type SettingData struct {
-	Iso   []SelectOption `json:"iso"`
-	Boot  []SelectOption `json:"boot"`
+	Iso  []SelectOption `json:"iso"`
+	Boot []SelectOption `json:"boot"`
 }
 
 // ModuleBlocksProvider 可选：NAT/共享建站/安全组/设置方块的结构化数据与操作。

@@ -34,6 +34,9 @@ type Provider interface {
 | `ProductMetaFetcher` | 商品描述/库存 |
 | `PriceFetcher` | 商品基础价 |
 | `PIDOptionalProvider` | 上游产品 ID 可省略（弹性模式） |
+| `MarkupFreeProvider` | 无上游成本概念（本地自主定价）：产品表单隐藏利润加成，保存时服务端强制归零 |
+| `ProductFormProvider` | 声明产品表单差异（PID 提示；`MarkupFree` 注册表自动合并） |
+| `ProductFormWidgetProvider` | 产品表单独立区块（内嵌模板插槽注入，同 `DetailWidgetProvider` 模式）：ZJMF 目录下拉/拉取配置项（`zjmf/productform.html`）、EP 站点类型（`easypanel/productform.html`）。区块脚本约定 `provFormRegister(code, 托管fields, init)`：init 在加载与每次选中时调用（幂等，从 `cfgOptions` 回显）；切换供应商时共享表单自动清理其它供应商托管 fields |
 | `ProviderUI` | 声明凭据表单字段（服务器表单按类型动态渲染，`api_url`/`api_username`/`api_key` 三列映射） |
 | `DetailWidgetProvider` | 自带服务详情页管理区块（内嵌模板 + 插槽注入，实现后全局面板自动让位）。参考 `easypanel/widget.go` |
 | `ConsoleProvider` | 电源/重装/救援/重置密码（详情页控制台） |
