@@ -1198,6 +1198,15 @@ func (h *Pages) serviceModuleSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	serviceID, _ := strconv.ParseInt(r.PathValue("serviceID"), 10, 64)
+	key := r.PathValue("key")
+	if strings.TrimSpace(key) == "" {
+		writeJSON(w, map[string]any{"ok": 0, "msg": "模块不可用"})
+		return
+	}
+	if sum, err := h.Console.ModuleSummary(r.Context(), userID, serviceID); err != nil || !moduleKeyInSummary(sum, key) {
+		writeJSON(w, map[string]any{"ok": 0, "msg": "模块不可用"})
+		return
+	}
 	if err := r.ParseForm(); err != nil {
 		writeJSON(w, map[string]any{"ok": 0, "msg": "表单解析失败"})
 		return
@@ -1210,8 +1219,14 @@ func (h *Pages) serviceModuleSubmit(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, moduleResultJSON(raw))
 }
 
-// moduleResultJSON 包装上游模块响应：透传上游 status/msg（方块内嵌 JS 依赖 data.status==200），
-// 同时附加本地 ok/msg（供 shell 的表单拦截与 ajax 包装统一判断）。
+func moduleKeyInSummary(sum server.ModuleSummary, key string) bool {
+	for _, a := range sum.Areas {
+		if a.Key == key {
+			return true
+		}
+	}
+	return false
+}
 func moduleResultJSON(raw string) map[string]any {
 	out := map[string]any{"ok": 1, "msg": strings.TrimSpace(raw)}
 	var m map[string]any

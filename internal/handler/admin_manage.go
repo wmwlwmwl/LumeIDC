@@ -1112,7 +1112,10 @@ func (m *AdminManage) UserSave(w http.ResponseWriter, r *http.Request) {
 	// 状态
 	status := r.PostFormValue("status")
 	if status == "0" || status == "1" {
-		m.Users.SetStatus(r.Context(), id, status == "1")
+		if err := m.Users.SetStatus(r.Context(), id, status == "1"); err != nil {
+			http.Redirect(w, r, "/admin/users/"+itoa(id)+"/edit?err="+url.QueryEscape("保存状态失败"), http.StatusSeeOther)
+			return
+		}
 	}
 	// 重置密码（可选填写）
 	if pw := r.PostFormValue("new_password"); pw != "" {
@@ -1120,7 +1123,10 @@ func (m *AdminManage) UserSave(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, "/admin/users/"+itoa(id)+"/edit?err=密码至少8位", http.StatusSeeOther)
 			return
 		}
-		m.Users.ResetPassword(r.Context(), id, pw)
+		if err := m.Users.ResetPassword(r.Context(), id, pw); err != nil {
+			http.Redirect(w, r, "/admin/users/"+itoa(id)+"/edit?err="+url.QueryEscape("重置密码失败"), http.StatusSeeOther)
+			return
+		}
 	}
 	// 余额调整（可选填写）
 	if amtStr := strings.TrimSpace(r.PostFormValue("balance_adjust")); amtStr != "" {

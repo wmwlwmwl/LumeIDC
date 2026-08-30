@@ -99,10 +99,13 @@ func (s *Store) Get(r *http.Request) *Session {
 	if len(parts) != 2 || !hmac.Equal([]byte(s.sign(parts[0])), []byte(parts[1])) {
 		return nil
 	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	sess := s.sess[parts[0]]
 	if sess == nil || time.Now().After(sess.ExpiresAt) {
+		if sess != nil {
+			delete(s.sess, parts[0])
+		}
 		return nil
 	}
 	return sess
