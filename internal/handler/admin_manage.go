@@ -236,51 +236,36 @@ func checkCSRF(r *http.Request, tok string) bool {
 // ---------- 产品管理 ----------
 
 type adminProductRow struct {
-	ID      int64
-	A, B, C string // 名称 / 分类 / 月付价
-	D       string // 显示状态
+	ID          int64
+	A, B, C     string // 名称 / 分类 / 月付价
+	D           string // 显示状态
+	ServerName  string
+	UpstreamPID int64
 }
 
 func (m *AdminManage) ProductsList(w http.ResponseWriter, r *http.Request) {
 	if !m.require(w, r) {
 		return
 	}
-	list, err := m.Products.ListAll(r.Context())
+	psID, _ := m.Products.DefaultPricesetID(r.Context())
+	list, err := m.Products.ListAdmin(r.Context(), psID)
 	if err != nil {
 		http.Error(w, "查询失败", 500)
 		return
 	}
-	types, _ := m.Products.ListTypes(r.Context())
-	// 分类列显示完整路径：一级/二级
-	typeName := map[int64]string{}
-	parentName := map[int64]string{}
-	for _, t := range types {
-		if t.ParentID == 0 {
-			parentName[t.ID] = t.Name
-		}
-	}
-	for _, t := range types {
-		if p, ok := parentName[t.ParentID]; ok {
-			typeName[t.ID] = p + "/" + t.Name
-		} else {
-			typeName[t.ID] = t.Name
-		}
-	}
-	psID, _ := m.Products.DefaultPricesetID(r.Context())
 	rows := make([]adminProductRow, 0, len(list))
 	for _, p := range list {
 		mn := "-"
-		if pr, err := m.Products.Price(r.Context(), p.ID, psID); err == nil {
-			opts, _ := m.Products.GetConfigOptions(r.Context(), p.ID)
-			eType, eVal := resolveProfitType(r.Context(), p.ProfitType, p.ProfitValue, m.Products.DB, p.ID), resolveProfitValue(r.Context(), p.ProfitType, p.ProfitValue, m.Products.DB, p.ID)
-			mn = fmt.Sprintf("%.2f", service.DisplayPrice(priceVal(pr.Monthly), opts, eType, eVal))
+		if p.Monthly != "" {
+			mn = fmt.Sprintf("%.2f", service.DisplayPrice(priceVal(p.Monthly), p.Options, p.ProfitType, p.ProfitValue))
 		}
 		h := "显示"
 		if p.Hidden {
 			h = "隐藏"
 		}
 		rows = append(rows, adminProductRow{
-			ID: p.ID, A: p.Name, B: typeName[p.TypeID.Int64], C: mn, D: h,
+			ID: p.ID, A: p.Name, B: p.TypeName, C: mn, D: h,
+			ServerName: p.ServerName, UpstreamPID: p.UpstreamPID,
 		})
 	}
 	renderAdmin(w, "admin_products.html", AdminData{

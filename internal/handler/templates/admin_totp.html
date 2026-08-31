@@ -1,23 +1,47 @@
 {{define "page"}}
-<h1>两步验证（TOTP）</h1>
-{{if .Error}}<p style="color:#b91c1c">{{.Error}}</p>{{end}}
-{{if .Msg}}<p style="color:#047857">操作成功</p>{{end}}
+<div class="admin-page-header">
+  <div class="admin-page-title">
+    <span class="eyebrow">SECURITY / MFA</span>
+    <h1>两步验证</h1>
+    <p>为管理员账户增加一层安全保护</p>
+  </div>
+</div>
+
+{{if .Error}}<div class="ui-alert ui-alert-error" role="alert">{{.Error}}</div>{{end}}
+{{if .Msg}}<div class="ui-alert ui-alert-success" role="status">操作成功</div>{{end}}
+
 {{if .UpstreamBound}}
-<p>两步验证已启用。</p>
-<form method="post" action="/admin/totp">
-<input type="hidden" name="_csrf" value="{{.CSRF}}">
-<input type="hidden" name="action" value="disable">
-<button type="submit">关闭两步验证</button>
-</form>
+<div class="admin-panel admin-form-narrow">
+  <div class="admin-panel-body">
+    <div class="admin-status-ok">
+      <div class="admin-status-dot"></div>
+      <div>
+        <strong>两步验证已启用</strong>
+        <p class="text-muted small">当前管理员账户已受 TOTP 保护。</p>
+      </div>
+    </div>
+    <form method="post" action="/admin/totp">
+      <input type="hidden" name="_csrf" value="{{.CSRF}}">
+      <input type="hidden" name="action" value="disable">
+      <button class="ui-btn ui-btn-danger" type="submit">关闭两步验证</button>
+    </form>
+  </div>
+</div>
 {{else}}
-<p>扫描下方密钥到 Google Authenticator / 1Password 等，再输入 6 位码启用：</p>
-<p><code style="font-size:1.1rem">{{.Secret}}</code></p>
-<p class="muted">{{index .ServersList "URI"}}</p>
-<form method="post" action="/admin/totp" style="display:flex;gap:8px;margin-top:10px">
-<input type="hidden" name="_csrf" value="{{.CSRF}}">
-<input name="action" value="enable" type="hidden">
-<input name="code" placeholder="6 位验证码" size="8" required>
-<button type="submit">启用</button>
-</form>
+<div class="admin-panel admin-form-narrow">
+  <div class="admin-panel-body">
+    <p class="text-muted">扫描下方密钥到 Google Authenticator / 1Password 等，再输入 6 位验证码启用：</p>
+    <div class="admin-secret-block">
+      <code>{{.Secret}}</code>
+    </div>
+    <p class="text-muted small">{{index .ServersList "URI"}}</p>
+    <form method="post" action="/admin/totp" class="admin-inline-form">
+      <input type="hidden" name="_csrf" value="{{.CSRF}}">
+      <input type="hidden" name="action" value="enable">
+      <input name="code" placeholder="6 位验证码" inputmode="numeric" maxlength="6" required>
+      <button class="ui-btn" type="submit">启用验证 <span>→</span></button>
+    </form>
+  </div>
+</div>
 {{end}}
 {{end}}

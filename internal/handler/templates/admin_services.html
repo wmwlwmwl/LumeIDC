@@ -1,22 +1,86 @@
 {{define "page"}}
-<h1 class="h3 mb-4">服务管理</h1>
+<div class="admin-page-header">
+  <div class="admin-page-title">
+    <span class="eyebrow">OPERATIONS / SERVICES</span>
+    <h1>服务实例管理</h1>
+    <p>监控实例状态、开通任务与上游异常</p>
+  </div>
+  <div class="admin-page-actions">
+    <span class="text-muted small">每 10 秒自动刷新状态</span>
+  </div>
+</div>
+
 {{if .Error}}<div class="ui-alert ui-alert-error" role="alert">{{.Error}}</div>{{end}}
-<div class="ui-table-wrap" aria-label="服务列表"><table id="svTbody"><thead><tr><th scope="col">ID</th><th scope="col">用户</th><th scope="col">产品</th><th scope="col">状态</th><th scope="col">到期</th><th scope="col">上游</th><th scope="col">失败原因</th><th scope="col">利润</th><th scope="col">操作</th></tr></thead><tbody>
-{{range .Rows}}
-<tr data-id="{{.ID}}" data-st="{{.C}}" data-pe="{{.ProvErr}}">
-<td>{{.ID}}</td><td>{{.A}}</td><td>{{.B}}</td><td>{{.C}}</td><td>{{.D}}</td>
-<td>{{if .Upstream}}#{{.Upstream}}{{else}}-{{end}}</td>
-<td>{{if .ProvErr}}<span class="text-danger">{{.ProvErr}}</span>{{else}}-{{end}}</td>
-<td>{{.Profit}}</td>
-<td class="text-nowrap">
-{{if and (eq .C "待开通") .ProvErr}}<form method="post" action="/admin/services/{{.ID}}/action" class="d-inline"><input type="hidden" name="_csrf" value="{{$.CSRF}}"><input type="hidden" name="do" value="retry"><button class="ui-btn-ghost p-0 text-success" type="submit">重试开通</button></form> · {{end}}
-{{if eq .C "激活"}}<form method="post" action="/admin/services/{{.ID}}/action" class="d-inline"><input type="hidden" name="_csrf" value="{{$.CSRF}}"><input type="hidden" name="do" value="suspend"><button class="ui-btn-ghost p-0 text-warning" type="submit">停机</button></form> · {{end}}
-{{if eq .C "已停机"}}<form method="post" action="/admin/services/{{.ID}}/action" class="d-inline"><input type="hidden" name="_csrf" value="{{$.CSRF}}"><input type="hidden" name="do" value="unsuspend"><button class="ui-btn-ghost p-0 text-success" type="submit">解除</button></form> · {{end}}
-<form method="post" action="/admin/services/{{.ID}}/action" class="d-inline" onsubmit="return confirm('确认删除该服务？')"><input type="hidden" name="_csrf" value="{{$.CSRF}}"><input type="hidden" name="do" value="terminate"><button class="ui-btn-ghost p-0 text-danger" type="submit">删除</button></form>
-</td></tr>
-{{end}}
-{{if not .Rows}}<tr><td colspan="9" class="ui-muted">暂无服务。</td></tr>{{end}}
-</tbody></table></div>
+
+<div class="admin-panel">
+  <div class="admin-table-wrap">
+    <table class="admin-table" id="svTbody">
+      <thead>
+        <tr>
+          <th scope="col">ID</th>
+          <th scope="col">用户</th>
+          <th scope="col">产品</th>
+          <th scope="col">状态</th>
+          <th scope="col">到期</th>
+          <th scope="col">上游</th>
+          <th scope="col">失败原因</th>
+          <th scope="col">利润</th>
+          <th scope="col" class="th-actions">操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .Rows}}
+        <tr data-id="{{.ID}}" data-st="{{.C}}" data-pe="{{.ProvErr}}">
+          <td class="td-id">{{.ID}}</td>
+          <td>{{.A}}</td>
+          <td class="td-name">{{.B}}</td>
+          <td>
+            {{if eq .C "激活"}}<span class="badge badge-ok">{{.C}}</span>
+            {{else if eq .C "已停机"}}<span class="badge badge-warn">{{.C}}</span>
+            {{else}}<span class="badge badge-idle">{{.C}}</span>{{end}}
+          </td>
+          <td>{{.D}}</td>
+          <td>{{if .Upstream}}#{{.Upstream}}{{else}}-{{end}}</td>
+          <td>{{if .ProvErr}}<span class="text-danger">{{.ProvErr}}</span>{{else}}-{{end}}</td>
+          <td>{{.Profit}}</td>
+          <td class="td-actions">
+            {{if and (eq .C "待开通") .ProvErr}}
+            <form method="post" action="/admin/services/{{.ID}}/action" class="inline-form">
+              <input type="hidden" name="_csrf" value="{{$.CSRF}}">
+              <input type="hidden" name="do" value="retry">
+              <button class="admin-row-btn is-success" type="submit">重试开通</button>
+            </form>
+            {{end}}
+            {{if eq .C "激活"}}
+            <form method="post" action="/admin/services/{{.ID}}/action" class="inline-form">
+              <input type="hidden" name="_csrf" value="{{$.CSRF}}">
+              <input type="hidden" name="do" value="suspend">
+              <button class="admin-row-btn is-warn" type="submit">停机</button>
+            </form>
+            {{end}}
+            {{if eq .C "已停机"}}
+            <form method="post" action="/admin/services/{{.ID}}/action" class="inline-form">
+              <input type="hidden" name="_csrf" value="{{$.CSRF}}">
+              <input type="hidden" name="do" value="unsuspend">
+              <button class="admin-row-btn is-success" type="submit">解除</button>
+            </form>
+            {{end}}
+            <form method="post" action="/admin/services/{{.ID}}/action" class="inline-form" onsubmit="return confirm('确认删除该服务？')">
+              <input type="hidden" name="_csrf" value="{{$.CSRF}}">
+              <input type="hidden" name="do" value="terminate">
+              <button class="admin-row-btn is-danger" type="submit">删除</button>
+            </form>
+          </td>
+        </tr>
+        {{end}}
+        {{if not .Rows}}
+        <tr><td colspan="9" class="admin-table-empty">暂无服务实例</td></tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</div>
+
 <script>
 // 每 10 秒轮询一次上游开通状态；仅当某行状态或失败原因变化时才整页刷新，避免无谓闪烁。
 const SV_REFRESH_MS = 10000;

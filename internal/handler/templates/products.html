@@ -1,43 +1,98 @@
 {{define "page"}}
-<h1 class="h3 mb-4">产品列表</h1>
-{{if .Announcements}}
-<div class="ui-stack mb-4">
-{{range .Announcements}}
-<article class="ui-card" style="border-left:4px solid {{if .Pinned}}#4f46e5{{else}}#cbd5e1{{end}}">
-<h2 class="h6 mb-1">{{if .Pinned}}📌 {{end}}{{.Title}}</h2>
-{{if .Content}}<p class="ui-muted mb-1" style="white-space:pre-wrap">{{.Content}}</p>{{end}}
-<small class="ui-muted">{{.CreatedAt}}</small>
-</article>
-{{end}}
-</div>
-{{end}}
 {{if .Types}}
-<div class="ui-actions mb-3" aria-label="产品分类">
-{{range .Types}}
-{{$active := eq (printf "%d" .ID) $.FID}}
-<a class="ui-btn {{if not $active}}ui-btn-secondary{{end}}" href="/cart?fid={{.ID}}">{{.Name}}</a>
-{{end}}
+<div class="fx-purchase">
+  <aside class="fx-catalog-rail">
+    <div class="fx-catalog-search">
+      <label class="visually-hidden" for="catalog-search-input">搜索产品</label>
+      <span class="fx-search-icon" aria-hidden="true"></span>
+      <input id="catalog-search-input" type="search" placeholder="搜索产品名称" autocomplete="off">
+    </div>
+
+    <div class="fx-catalog-heading">
+      <strong>产品目录</strong>
+      <small>{{len .Types}} 个分类</small>
+    </div>
+
+    <nav class="fx-catalog-menu" aria-label="产品分类">
+      {{range .Types}}
+      {{$active := eq (printf "%d" .ID) $.FID}}
+      <div class="fx-cat-group" data-catalog-item>
+        <button class="fx-cat-toggle {{if $active}}is-active{{end}} {{if not .Children}}is-empty{{end}}" type="button" aria-expanded="{{if $active}}true{{else}}false{{end}}" data-catalog-toggle data-catalog-label="{{.Name}}">
+          <span>{{.Name}}</span>
+          <span class="fx-cat-arrow" aria-hidden="true">›</span>
+        </button>
+        {{if .Children}}
+        <div class="fx-cat-submenu {{if $active}}is-open{{end}}" data-catalog-submenu>
+          {{$first := .}}
+          {{range .Children}}
+          <a class="fx-cat-sub {{if eq (printf "%d" .ID) $.GID}}is-active{{end}}" href="/cart?fid={{$first.ID}}&gid={{.ID}}" data-catalog-label="{{.Name}}">{{.Name}}</a>
+          {{end}}
+        </div>
+        {{end}}
+      </div>
+      {{end}}
+    </nav>
+  </aside>
+
+  <section class="fx-purchase-main">
+    {{if .Products}}
+    <div class="fx-purchase-head">
+      <div class="fx-purchase-title">
+        <span class="eyebrow">PRODUCT CATALOG</span>
+        <h2>{{range .Types}}{{if eq (printf "%d" .ID) $.FID}}{{.Name}}{{end}}{{end}}</h2>
+        <p>选择产品，开始配置部署</p>
+      </div>
+      <span class="fx-count-badge">共 {{len .Products}} 个产品</span>
+    </div>
+
+    {{range .Types}}{{if and (eq (printf "%d" .ID) $.FID) .Children}}{{$first := .}}
+    <div class="fx-subcat-tabs" aria-label="子分类">
+      {{range .Children}}<a class="{{if eq (printf "%d" .ID) $.GID}}is-active{{end}}" href="/cart?fid={{$first.ID}}&gid={{.ID}}">{{.Name}}</a>{{end}}
+    </div>
+    {{end}}{{end}}
+
+    <div class="fx-product-grid">
+      {{range .Products}}
+      <article class="fx-product-card">
+        <div class="fx-product-body">
+          <h3>{{.Name}}</h3>
+          <p>{{.Desc}}</p>
+        </div>
+        <div class="fx-product-foot">
+          <div class="fx-product-price">
+            <strong>￥{{.Monthly}}</strong>
+            <span>/月</span>
+            <small>库存：{{if eq .Stock -1}}不限{{else if gt .Stock 0}}{{.Stock}}{{else}}已售罄{{end}}</small>
+          </div>
+          {{if eq .Stock 0}}
+          <span class="fx-soldout">已售罄</span>
+          {{else}}
+          <a class="ui-btn fx-buy-btn" href="/buy/{{.ID}}">立即购买 <span>→</span></a>
+          {{end}}
+        </div>
+      </article>
+      {{end}}
+    </div>
+    {{else if .GID}}
+    <div class="fx-empty-state">
+      <div class="fx-empty-icon"></div>
+      <h3>该分类暂无上架产品</h3>
+      <p>请选择其他分类浏览</p>
+    </div>
+    {{else if .FID}}
+    <div class="fx-empty-state">
+      <div class="fx-empty-icon"></div>
+      <h3>请选择二级分类</h3>
+      <p>从左侧目录选择具体分类查看产品</p>
+    </div>
+    {{else}}
+    <div class="fx-empty-state">
+      <div class="fx-empty-icon"></div>
+      <h3>请选择一级分类</h3>
+      <p>从左侧目录开始浏览</p>
+    </div>
+    {{end}}
+  </section>
 </div>
-{{range .Types}}
-{{$first := .}}
-{{if and (eq (printf "%d" .ID) $.FID) .Children}}
-<div class="ui-actions mb-4 ps-3 border-start border-3 border-primary-subtle">
-{{range .Children}}<a class="ui-btn {{if ne (printf "%d" .ID) $.GID}}ui-btn-secondary{{end}}" href="/cart?fid={{$first.ID}}&gid={{.ID}}">{{.Name}}</a>{{end}}
-</div>{{end}}
 {{end}}
-{{end}}
-{{if .Products}}
-<div class="ui-grid">
-{{range .Products}}
-<article class="ui-card d-flex flex-column">
-<h2 class="h5">{{.Name}}</h2><p class="ui-muted flex-grow-1">{{.Desc}}</p>
-<p class="ui-price">￥{{.Monthly}}<span class="ui-unit">/月</span></p>
-<p class="ui-muted small mb-3">库存：{{if eq .Stock -1}}不限{{else if gt .Stock 0}}{{.Stock}}{{else}}已售罄{{end}}</p>
-{{if eq .Stock 0}}<span class="ui-btn opacity-50" aria-disabled="true">已售罄</span>{{else}}<a class="ui-btn" href="/buy/{{.ID}}">立即购买</a>{{end}}
-</article>
-{{end}}
-</div>
-{{else if .GID}}<p class="ui-muted">该分类暂无上架产品。</p>
-{{else if .FID}}<p class="ui-muted">请选择二级分类查看产品。</p>
-{{else}}<p class="ui-muted">请选择一级分类。</p>{{end}}
 {{end}}

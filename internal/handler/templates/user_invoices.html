@@ -1,14 +1,52 @@
 {{define "page"}}
-<h1 class="h3 mb-4">财务记录</h1>
+<div class="fx-page-head">
+  <div class="fx-page-title">
+    <span class="eyebrow">BILLING</span>
+    <h1>财务记录</h1>
+    <p>查看充值、订单和支付状态</p>
+  </div>
+</div>
+
 {{if .Invoices}}
-<div class="ui-table-wrap" aria-label="财务记录">
-<table><thead><tr><th scope="col">类型</th><th scope="col">账单号</th><th scope="col">金额</th><th scope="col">状态</th><th scope="col">时间</th><th scope="col">操作</th></tr></thead><tbody>
-{{range .Invoices}}
-<tr><td>{{if eq .Kind "recharge"}}余额充值{{else}}产品订单{{end}}</td><td>{{.No}}</td><td>￥{{.Amount}}</td>
-<td>{{if eq .Status "未支付"}}<span class="badge badge-warn">{{.Status}}</span>{{else}}{{.Status}}{{end}}</td>
-<td>{{.CreatedAt}}</td>
-<td>{{if eq .Status "未支付"}}<a href="/pay/{{.ID}}">去支付</a>{{else}}—{{end}}</td></tr>
+<div class="fx-panel">
+  <div class="fx-table-wrap">
+    <table class="fx-table">
+      <thead>
+        <tr>
+          <th scope="col">类型</th>
+          <th scope="col">账单号</th>
+          <th scope="col">金额</th>
+          <th scope="col">状态</th>
+          <th scope="col">时间</th>
+          <th scope="col">操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .Invoices}}
+        <tr>
+          <td>{{if eq .Kind "recharge"}}<span class="fx-type-tag">充值</span>{{else}}<span class="fx-type-tag is-order">订单</span>{{end}}</td>
+          <td class="fx-td-mono">{{.No}}</td>
+          <td class="fx-td-price">￥{{.Amount}}</td>
+          <td>
+            {{if eq .Status "未支付"}}<span class="badge badge-warn">{{.Status}}</span>
+            {{else if eq .Status "已支付"}}<span class="badge badge-ok">{{.Status}}</span>
+            {{else}}<span class="badge badge-idle">{{.Status}}</span>{{end}}
+          </td>
+          <td class="fx-td-muted">{{.CreatedAt}}</td>
+          <td>{{if eq .Status "未支付"}}<a class="fx-pay-link" href="/pay/{{.ID}}">去支付 →</a>{{else}}<span class="text-muted">—</span>{{end}}</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</div>
+{{else}}
+<div class="fx-panel">
+  <div class="fx-empty-state">
+    <div class="fx-empty-icon"></div>
+    <h3>暂无账单记录</h3>
+    <p>购买产品或充值后会显示在这里</p>
+  </div>
+</div>
 {{end}}
-</tbody></table></div>
-{{else}}<div class="ui-card text-center py-5"><p class="ui-muted mb-0">暂无账单记录。</p></div>{{end}}
 {{end}}

@@ -1,30 +1,63 @@
 {{define "page"}}
-<div class="d-flex align-items-center gap-3 flex-wrap mb-4">
-<h1 class="h3 mb-0">我的服务</h1>
-<a class="ui-btn ui-btn-secondary ms-auto" href="/products">购买服务</a>
+<div class="fx-page-head">
+  <div class="fx-page-title">
+    <span class="eyebrow">SERVICE CONSOLE</span>
+    <h1>我的服务</h1>
+    <p>查看和管理你已部署的所有服务实例</p>
+  </div>
+  <div class="fx-page-actions">
+    <a class="ui-btn" href="/products">购买服务 <span>→</span></a>
+  </div>
 </div>
+
 {{if .Services}}
-<div class="ui-table-wrap" aria-label="我的服务列表">
-<table><thead><tr><th scope="col">ID</th><th scope="col">名称</th><th scope="col">状态</th><th scope="col">到期时间</th><th scope="col">操作</th></tr></thead><tbody>
-{{range .Services}}
-<tr>
-<td>{{.ID}}</td><td><a href="/services/{{.ID}}">{{.Name}}</a></td>
-<td><span class="badge {{if eq .StatusText "激活"}}badge-ok{{else if eq .StatusText "已停机"}}badge-warn{{else}}badge-idle{{end}}">{{.StatusText}}</span></td>
-<td{{if .ExpiringSoon}} class="text-danger fw-semibold"{{end}}>{{.ExpiresAt.Format "2006-01-02"}}</td>
-<td class="text-nowrap">
-<a class="ui-btn ui-btn-secondary py-1 px-2" href="/services/{{.ID}}">管理</a>
-{{if ne .StatusText "待开通"}}
-<form method="post" action="/services/{{.ID}}/renew" class="d-inline-flex align-items-center gap-1 ms-1">
-<input type="hidden" name="_csrf" value="{{$.CSRF}}">
-<label class="visually-hidden" for="renew-cycle-{{.ID}}">续费周期</label>
-<select name="cycle" id="renew-cycle-{{.ID}}" class="form-select form-select-sm w-auto">
-<option value="monthly">月付</option>{{if .ShowQ}}<option value="quarterly">季付</option>{{end}}{{if .ShowY}}<option value="yearly">年付</option>{{end}}
-</select>
-<button class="ui-btn py-1 px-2" type="submit">续费</button>
-</form>
+<div class="fx-service-grid">
+  {{range .Services}}
+  <article class="fx-service-card">
+    <div class="fx-service-card-head">
+      <span class="fx-service-mark">S</span>
+      <div class="fx-service-name-wrap">
+        <a class="fx-service-name" href="/services/{{.ID}}">{{.Name}}</a>
+        <small>ID #{{.ID}}</small>
+      </div>
+      <span class="badge {{if eq .StatusText "激活"}}badge-ok{{else if eq .StatusText "已停机"}}badge-warn{{else}}badge-idle{{end}}">{{.StatusText}}</span>
+    </div>
+    <div class="fx-service-info">
+      <div class="fx-service-info-item">
+        <span>到期时间</span>
+        <strong class="{{if .ExpiringSoon}}is-warning{{end}}">{{.ExpiresAt.Format "2006-01-02"}}</strong>
+      </div>
+      <div class="fx-service-info-item">
+        <span>续费方式</span>
+        <strong>手动续费</strong>
+      </div>
+    </div>
+    <div class="fx-service-actions">
+      <a class="ui-btn ui-btn-secondary ui-btn-small" href="/services/{{.ID}}">管理服务</a>
+      {{if ne .StatusText "待开通"}}
+      <form method="post" action="/services/{{.ID}}/renew" class="fx-renew-form">
+        <input type="hidden" name="_csrf" value="{{$.CSRF}}">
+        <label class="visually-hidden" for="renew-cycle-{{.ID}}">续费周期</label>
+        <select name="cycle" id="renew-cycle-{{.ID}}">
+          <option value="monthly">月付</option>
+          {{if .ShowQ}}<option value="quarterly">季付</option>{{end}}
+          {{if .ShowY}}<option value="yearly">年付</option>{{end}}
+        </select>
+        <button class="ui-btn ui-btn-small" type="submit">续费</button>
+      </form>
+      {{end}}
+    </div>
+  </article>
+  {{end}}
+</div>
+{{else}}
+<div class="fx-panel">
+  <div class="fx-empty-state">
+    <div class="fx-empty-icon"></div>
+    <h3>还没有服务</h3>
+    <p>购买一个产品后，服务实例会显示在这里</p>
+    <a class="ui-btn" href="/products">浏览产品 →</a>
+  </div>
+</div>
 {{end}}
-</td></tr>
-{{end}}
-</tbody></table></div>
-{{else}}<div class="ui-card text-center py-5"><p class="ui-muted mb-3">还没有服务，去购买一个吧。</p><a class="ui-btn" href="/products">浏览产品</a></div>{{end}}
 {{end}}

@@ -1,24 +1,81 @@
 {{define "page"}}
-<h1 class="h3 mb-4">用户中心</h1>
+<div class="fx-page-head">
+  <div class="fx-page-title">
+    <span class="eyebrow">ACCOUNT CONSOLE</span>
+    <h1>欢迎回来</h1>
+    <p>从这里管理你的服务、账单和账户</p>
+  </div>
+  <div class="fx-page-actions">
+    <a class="ui-btn" href="/products">购买服务 <span>→</span></a>
+  </div>
+</div>
+
 {{if .Announcements}}
-<div class="ui-stack mb-4">
-{{range .Announcements}}
-<article class="ui-card" style="border-left:4px solid {{if .Pinned}}#4f46e5{{else}}#cbd5e1{{end}}">
-<h2 class="h6 mb-1">{{if .Pinned}}📌 {{end}}{{.Title}}</h2>
-{{if .Content}}<p class="ui-muted mb-1" style="white-space:pre-wrap">{{.Content}}</p>{{end}}
-<small class="ui-muted">{{.CreatedAt}}</small>
-</article>
-{{end}}
+<div class="fx-notice-list" aria-label="系统公告">
+  {{range .Announcements}}
+  <div class="fx-notice-item {{if .Pinned}}is-pinned{{end}}">
+    <span class="fx-notice-mark">{{if .Pinned}}置顶{{else}}通知{{end}}</span>
+    <div class="fx-notice-body">
+      <strong>{{.Title}}</strong>
+      {{if .Content}}<p>{{.Content}}</p>{{end}}
+      <small>{{.CreatedAt}}</small>
+    </div>
+  </div>
+  {{end}}
 </div>
 {{end}}
-<div class="ui-grid">
-<div class="ui-card"><div class="ui-price">{{.Stats.ServiceCount}}</div><p class="ui-muted">我的服务（激活 {{.Stats.ActiveCount}}）</p><a href="/services">查看 →</a></div>
-<div class="ui-card"><div class="ui-price">{{.Stats.PaidTotal}}</div><p class="ui-muted">累计消费（元）</p></div>
-<div class="ui-card"><div class="ui-price">{{.Balance}}</div><p class="ui-muted">账户余额（元）</p></div>
-<div class="ui-card"><div class="ui-price">{{.Stats.UnpaidCount}}</div><p class="ui-muted">待支付账单</p><a href="/user/invoices">查看 →</a></div>
+
+<div class="fx-stat-grid">
+  <a class="fx-stat-card" href="/services">
+    <span class="fx-stat-label">我的服务</span>
+    <span class="fx-stat-value">{{.Stats.ServiceCount}}</span>
+    <span class="fx-stat-note">激活 {{.Stats.ActiveCount}} 项 · 查看全部 →</span>
+  </a>
+  <a class="fx-stat-card is-primary" href="/user/recharge">
+    <span class="fx-stat-label">账户余额</span>
+    <span class="fx-stat-value">￥{{.Balance}}</span>
+    <span class="fx-stat-note">充值账户余额 →</span>
+  </a>
+  <div class="fx-stat-card">
+    <span class="fx-stat-label">累计消费</span>
+    <span class="fx-stat-value">￥{{.Stats.PaidTotal}}</span>
+    <span class="fx-stat-note">全部已支付账单</span>
+  </div>
+  <a class="fx-stat-card" href="/user/invoices">
+    <span class="fx-stat-label">待支付账单</span>
+    <span class="fx-stat-value">{{.Stats.UnpaidCount}}</span>
+    <span class="fx-stat-note">查看财务记录 →</span>
+  </a>
 </div>
-<div class="ui-card mt-4">
-<h2 class="h6">账户</h2>
-<p class="mb-0"><a href="/user/recharge">余额充值</a><span class="text-secondary mx-2">·</span><a href="/user/password">修改密码</a><span class="text-secondary mx-2">·</span><a href="/user/invoices">财务记录</a></p>
+
+<div class="fx-quick-grid">
+  <a href="/services" class="fx-quick-item">
+    <div class="fx-quick-text">
+      <strong>我的服务</strong>
+      <small>管理运行中的实例</small>
+    </div>
+    <span class="fx-quick-arrow">→</span>
+  </a>
+  <a href="/user/invoices" class="fx-quick-item">
+    <div class="fx-quick-text">
+      <strong>账单记录</strong>
+      <small>查看支付和订单</small>
+    </div>
+    <span class="fx-quick-arrow">→</span>
+  </a>
+  <a href="/notifications" class="fx-quick-item">
+    <div class="fx-quick-text">
+      <strong>消息中心</strong>
+      <small>系统通知和提醒</small>
+    </div>
+    <span class="fx-quick-arrow">→</span>
+  </a>
+  <a href="/user/password" class="fx-quick-item">
+    <div class="fx-quick-text">
+      <strong>安全设置</strong>
+      <small>修改账户密码</small>
+    </div>
+    <span class="fx-quick-arrow">→</span>
+  </a>
 </div>
 {{end}}

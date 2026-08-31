@@ -1,27 +1,67 @@
 {{define "page"}}
-<div class="d-flex align-items-center justify-content-between gap-3 flex-wrap mb-4">
-<h1 class="h3 mb-0">上游服务器</h1>
-<a class="ui-btn" href="/admin/servers/new">添加服务器</a>
+<div class="admin-page-header">
+  <div class="admin-page-title">
+    <span class="eyebrow">INFRASTRUCTURE / UPSTREAM</span>
+    <h1>上游服务器</h1>
+    <p>管理供应商连接与商品目录</p>
+  </div>
+  <div class="admin-page-actions">
+    <a class="ui-btn" href="/admin/servers/new">添加服务器 <span>+</span></a>
+  </div>
 </div>
+
 {{if .Error}}<div class="ui-alert ui-alert-error" role="alert">{{.Error}}</div>{{end}}
-<div class="ui-table-wrap" aria-label="上游服务器列表"><table><thead><tr><th scope="col">ID</th><th scope="col">名称</th><th scope="col">类型</th><th scope="col">API 地址</th><th scope="col">状态</th><th scope="col">操作</th></tr></thead><tbody>
-{{range .Rows}}
-<tr id="srv-{{.ID}}"><td>{{.ID}}</td><td>{{.A}}</td><td>{{.B}}</td><td>{{.C}}</td><td>{{.D}}</td>
-<td class="text-nowrap"><a href="/admin/servers/{{.ID}}/edit">编辑</a> · <a href="/admin/servers/{{.ID}}/catalog">浏览商品</a> ·
-<a href="#" onclick="testConn({{.ID}}, this);return false" class="text-success">测试</a><span class="testmsg ui-muted ms-1"></span> ·
-<form method="post" action="/admin/servers/{{.ID}}/delete" class="d-inline"><input type="hidden" name="_csrf" value="{{$.CSRF}}"><button class="ui-btn-ghost p-0 text-danger" type="submit">删除</button></form></td></tr>
-{{end}}
-{{if not .Rows}}<tr><td colspan="6" class="ui-muted">暂无上游服务器。ZJMF 对接需要 API 地址、用户名、密钥。</td></tr>{{end}}
-</tbody></table></div>
+
+<div class="admin-panel">
+  <div class="admin-table-wrap">
+    <table class="admin-table">
+      <thead>
+        <tr>
+          <th scope="col">ID</th>
+          <th scope="col">名称</th>
+          <th scope="col">类型</th>
+          <th scope="col">API 地址</th>
+          <th scope="col">状态</th>
+          <th scope="col" class="th-actions">操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .Rows}}
+        <tr id="srv-{{.ID}}">
+          <td class="td-id">{{.ID}}</td>
+          <td class="td-name">{{.A}}</td>
+          <td>{{.B}}</td>
+          <td class="td-url">{{.C}}</td>
+          <td>{{.D}}</td>
+          <td class="td-actions">
+            <a href="/admin/servers/{{.ID}}/edit" class="admin-row-btn">编辑</a>
+            <a href="/admin/servers/{{.ID}}/catalog" class="admin-row-btn">浏览商品</a>
+            <a href="#" onclick="testConn({{.ID}}, this);return false" class="admin-row-btn is-success">测试</a>
+            <span class="testmsg text-muted small"></span>
+            <form method="post" action="/admin/servers/{{.ID}}/delete" class="inline-form">
+              <input type="hidden" name="_csrf" value="{{$.CSRF}}">
+              <button class="admin-row-btn is-danger" type="submit">删除</button>
+            </form>
+          </td>
+        </tr>
+        {{end}}
+        {{if not .Rows}}
+        <tr><td colspan="6" class="admin-table-empty">暂无上游服务器。ZJMF 对接需要 API 地址、用户名、密钥。</td></tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</div>
+
 <script>
 async function testConn(id, a){
   const span = a.parentElement.querySelector(".testmsg");
-  span.textContent = "测试中…"; span.className = "testmsg ui-muted ms-1";
+  span.textContent = " 测试中…"; span.className = "testmsg text-muted small";
   try {
     const r = await fetch(`/admin/servers/${id}/test`);
     const j = await r.json();
-    span.textContent = j.msg; span.className = "testmsg ms-1 " + (j.ok === "1" ? "text-success" : "text-danger");
-  } catch(e){ span.textContent = "请求失败"; span.className = "testmsg ms-1 text-danger"; }
+    span.textContent = " " + j.msg; span.className = "testmsg small " + (j.ok === "1" ? "text-success" : "text-danger");
+  } catch(e){ span.textContent = " 请求失败"; span.className = "testmsg small text-danger"; }
 }
 </script>
 {{end}}

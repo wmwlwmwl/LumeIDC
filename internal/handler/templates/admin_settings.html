@@ -1,21 +1,44 @@
 {{define "page"}}
-<h1 class="h3 mb-4">通知与邮件配置</h1>
+<div class="admin-page-header">
+  <div class="admin-page-title">
+    <span class="eyebrow">SYSTEM / NOTIFICATIONS</span>
+    <h1>通知与邮件</h1>
+    <p>配置系统邮件发送与通知方式</p>
+  </div>
+  <div class="admin-page-actions">
+    <span class="text-muted small">未启用邮件时通知仅以站内信下发</span>
+  </div>
+</div>
+
 {{if .Error}}<div class="ui-alert ui-alert-error" role="alert">{{.Error}}</div>{{end}}
 {{if .Msg}}<div class="ui-alert ui-alert-success" role="status">已保存</div>{{end}}
-<form method="post" action="/admin/settings" class="ui-card ui-form">
-<input type="hidden" name="_csrf" value="{{.CSRF}}">
-<label for="smtp-host">SMTP 主机</label>
-<input class="form-control" id="smtp-host" name="smtp_host" value="{{index .ServersList "smtp_host"}}">
-<label class="mt-3" for="smtp-port">SMTP 端口</label>
-<input class="form-control" id="smtp-port" name="smtp_port" value="{{index .ServersList "smtp_port"}}" placeholder="587">
-<label class="mt-3" for="smtp-user">用户名</label>
-<input class="form-control" id="smtp-user" name="smtp_user" value="{{index .ServersList "smtp_user"}}">
-<label class="mt-3" for="smtp-pass">密码</label>
-<input class="form-control" id="smtp-pass" type="password" name="smtp_pass" value="{{index .ServersList "smtp_pass"}}" autocomplete="new-password">
-<label class="mt-3" for="smtp-from">发件人</label>
-<input class="form-control" id="smtp-from" name="smtp_from" value="{{index .ServersList "smtp_from"}}" placeholder="noreply@example.com">
-<label class="form-check-label mt-3"><input class="form-check-input" type="checkbox" name="notify_email_enabled" value="1" {{if eq (index .ServersList "notify_email_enabled") "1"}}checked{{end}}> 启用邮件通知</label>
-<button class="ui-btn mt-4" type="submit">保存</button>
+
+<form method="post" action="/admin/settings" class="admin-panel admin-form-narrow">
+  <input type="hidden" name="_csrf" value="{{.CSRF}}">
+  <div class="admin-panel-header">
+    <h2>SMTP 邮件配置</h2>
+  </div>
+  <div class="admin-panel-body">
+    <div class="admin-form-row">
+      <div class="admin-form-col">
+        <label for="smtp-host">SMTP 主机</label>
+        <input id="smtp-host" name="smtp_host" value="{{index .ServersList "smtp_host"}}" placeholder="smtp.example.com">
+      </div>
+      <div class="admin-form-col admin-form-col-sm">
+        <label for="smtp-port">端口</label>
+        <input id="smtp-port" name="smtp_port" value="{{index .ServersList "smtp_port"}}" placeholder="587">
+      </div>
+    </div>
+    <label for="smtp-user">用户名</label>
+    <input id="smtp-user" name="smtp_user" value="{{index .ServersList "smtp_user"}}" placeholder="SMTP 用户名">
+    <label for="smtp-pass">密码</label>
+    <input id="smtp-pass" type="password" name="smtp_pass" value="{{index .ServersList "smtp_pass"}}" autocomplete="new-password">
+    <label for="smtp-from">发件人</label>
+    <input id="smtp-from" name="smtp_from" value="{{index .ServersList "smtp_from"}}" placeholder="noreply@example.com">
+    <label class="check-line"><input type="checkbox" name="notify_email_enabled" value="1" {{if eq (index .ServersList "notify_email_enabled") "1"}}checked{{end}}> 启用邮件通知</label>
+    <div class="admin-form-actions">
+      <button class="ui-btn" type="submit">保存配置 <span>→</span></button>
+    </div>
+  </div>
 </form>
-<p class="ui-muted mt-3">未启用邮件时，通知仅以站内信形式下发。</p>
 {{end}}

@@ -1,7 +1,42 @@
 {{define "page"}}
-<h1 class="h3 mb-4">用户列表 <span class="ui-muted fw-normal">（最近 200）</span></h1>
-<div class="ui-table-wrap" aria-label="用户列表"><table><thead><tr><th scope="col">ID</th><th scope="col">邮箱</th><th scope="col">姓名</th><th scope="col">操作</th></tr></thead><tbody>
-{{range .Rows}}<tr><td>{{.ID}}</td><td>{{.A}}</td><td>{{.B}}</td><td><a class="ui-btn ui-btn-secondary py-1 px-2" href="/admin/users/{{.ID}}/edit">管理</a></td></tr>{{end}}
-{{if not .Rows}}<tr><td colspan="4" class="ui-muted">暂无用户。</td></tr>{{end}}
-</tbody></table></div>
+<div class="admin-page-header">
+  <div class="admin-page-title">
+    <span class="eyebrow">CUSTOMERS</span>
+    <h1>用户管理</h1>
+    <p>最近 200 位注册用户</p>
+  </div>
+  <div class="admin-page-actions">
+    <span class="text-muted small">共 {{len .Rows}} 位用户</span>
+  </div>
+</div>
+
+<div class="admin-panel">
+  <div class="admin-table-wrap">
+    <table class="admin-table">
+      <thead>
+        <tr>
+          <th scope="col">ID</th>
+          <th scope="col">邮箱</th>
+          <th scope="col">姓名</th>
+          <th scope="col" class="th-actions">操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .Rows}}
+        <tr>
+          <td class="td-id">{{.ID}}</td>
+          <td class="td-name">{{.A}}</td>
+          <td>{{if .B}}{{.B}}{{else}}<span class="text-muted">-</span>{{end}}</td>
+          <td class="td-actions">
+            <a class="admin-row-btn" href="/admin/users/{{.ID}}/edit">管理</a>
+          </td>
+        </tr>
+        {{end}}
+        {{if not .Rows}}
+        <tr><td colspan="4" class="admin-table-empty">暂无用户</td></tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</div>
 {{end}}

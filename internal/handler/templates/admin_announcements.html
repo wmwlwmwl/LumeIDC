@@ -1,25 +1,53 @@
 {{define "page"}}
-<h1>公告管理</h1>
-{{if .Error}}<p style="color:#b91c1c">{{.Error}}</p>{{end}}
-{{if .Msg}}<p style="color:#15803d">{{.Msg}}</p>{{end}}
-<p><a class="btn" href="/admin/announcements/edit">+ 新建公告</a></p>
-<table id="annTbody">
-<tr><th>ID</th><th>标题</th><th>置顶</th><th>显示</th><th>创建时间</th><th>操作</th></tr>
-{{range .Rows}}
-<tr data-id="{{.ID}}">
-<td>{{.ID}}</td>
-<td>{{if .Pinned}}📌 {{end}}{{.Title}}</td>
-<td>{{if .Pinned}}是{{else}}否{{end}}</td>
-<td>{{if .Hidden}}<span style="color:#b91c1c">隐藏</span>{{else}}显示{{end}}</td>
-<td>{{.CreatedAt.Format "2006-01-02 15:04"}}</td>
-<td style="white-space:nowrap">
-<a class="btn" href="/admin/announcements/edit?id={{.ID}}">编辑</a>
-<form method="post" action="/admin/announcements/{{.ID}}/delete" style="display:inline" onsubmit="return confirm('确认删除该公告？')">
-<input type="hidden" name="_csrf" value="{{$.CSRF}}"><button style="background:none;border:0;color:#b91c1c;cursor:pointer;padding:0;font-size:.85rem">删除</button>
-</form>
-</td>
-</tr>
-{{end}}
-{{if not .Rows}}<tr><td colspan="6" style="color:#888">暂无公告。</td></tr>{{end}}
-</table>
+<div class="admin-page-header">
+  <div class="admin-page-title">
+    <span class="eyebrow">CONTENT / ANNOUNCEMENTS</span>
+    <h1>系统公告</h1>
+    <p>发布面向用户的通知和维护信息</p>
+  </div>
+  <div class="admin-page-actions">
+    <a class="ui-btn" href="/admin/announcements/edit">新建公告 <span>+</span></a>
+  </div>
+</div>
+
+{{if .Error}}<div class="ui-alert ui-alert-error" role="alert">{{.Error}}</div>{{end}}
+{{if .Msg}}<div class="ui-alert ui-alert-success" role="status">{{.Msg}}</div>{{end}}
+
+<div class="admin-panel">
+  <div class="admin-table-wrap">
+    <table class="admin-table" id="annTbody">
+      <thead>
+        <tr>
+          <th scope="col">ID</th>
+          <th scope="col">标题</th>
+          <th scope="col">置顶</th>
+          <th scope="col">显示状态</th>
+          <th scope="col">创建时间</th>
+          <th scope="col" class="th-actions">操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .Rows}}
+        <tr data-id="{{.ID}}">
+          <td class="td-id">{{.ID}}</td>
+          <td class="td-name">{{if .Pinned}}<span class="admin-pin-mark">置顶</span>{{end}}{{.Title}}</td>
+          <td>{{if .Pinned}}是{{else}}否{{end}}</td>
+          <td>{{if .Hidden}}<span class="badge badge-warn">隐藏</span>{{else}}<span class="badge badge-ok">显示</span>{{end}}</td>
+          <td>{{.CreatedAt.Format "2006-01-02 15:04"}}</td>
+          <td class="td-actions">
+            <a class="admin-row-btn" href="/admin/announcements/edit?id={{.ID}}">编辑</a>
+            <form method="post" action="/admin/announcements/{{.ID}}/delete" class="inline-form" onsubmit="return confirm('确认删除该公告？')">
+              <input type="hidden" name="_csrf" value="{{$.CSRF}}">
+              <button class="admin-row-btn is-danger" type="submit">删除</button>
+            </form>
+          </td>
+        </tr>
+        {{end}}
+        {{if not .Rows}}
+        <tr><td colspan="6" class="admin-table-empty">暂无公告</td></tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</div>
 {{end}}

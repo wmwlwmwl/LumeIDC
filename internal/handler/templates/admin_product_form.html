@@ -1,115 +1,187 @@
 {{define "page"}}
-<h1 class="h3 mb-4">{{if .Product}}编辑产品{{else}}新增产品{{end}}</h1>
-<form method="post" action="{{if .Product}}/admin/products/{{.Product.ID}}/save{{else}}/admin/products/save{{end}}" class="ui-card ui-form" style="max-width:720px">
-<input type="hidden" name="_csrf" value="{{.CSRF}}">
-<input type="hidden" name="id" value="{{if .Product}}{{.Product.ID}}{{end}}">
-<label class="form-label fw-semibold mt-3"产品名称</label>
-<input class="form-control" name="name" value="{{if .Product}}{{.Product.Name}}{{end}}" required>
-<label class="form-label fw-semibold mt-3"所属分类</label>
-<select name="type_id" required style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px">
-<option value="">请选择二级分类</option>
-{{$cur := ""}}{{if .Product}}{{$cur = printf "%v" .Product.TypeID.Int64}}{{end}}
-{{range .Types}}{{if eq .ParentID 0}}
-{{$pid := .ID}}
-<optgroup label="{{.Name}}">
-{{range $.Types}}{{if eq .ParentID $pid}}<option value="{{.ID}}" {{if eq $cur (printf "%v" .ID)}}selected{{end}}>{{.Name}}</option>{{end}}{{end}}
-</optgroup>
-{{end}}{{end}}
-</select>
-<label class="form-label fw-semibold mt-3"描述</label>
-<textarea name="description" rows="3" style="width:100%;box-sizing:border-box;border:1px solid #ccc;border-radius:6px">{{if .Product}}{{.Product.Description}}{{end}}</textarea>
-
-<label style="display:block;margin:16px 0 4px;font-weight:600;font-size:.9rem">上游自动开通</label>
-<select name="server_id" id="serverSel" onchange="toggleUpstream()" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px">
-<option value="">不自动开通（仅本地服务）</option>
-{{$sid := ""}}{{if .Product}}{{$sid = printf "%v" .Product.ServerID.Int64}}{{end}}
-{{range .ServersList}}<option value="{{.ID}}" data-provider="{{.Provider}}" {{if eq $sid (printf "%v" .ID)}}selected{{end}}>{{.Name}}（{{.Provider}}）</option>{{end}}
-</select>
-<div id="upstreamBox" style="display:none;margin-top:10px;background:#f7f7fb;border:1px solid #eef0f4;border-radius:6px;padding:12px">
-<label style="display:block;margin:0 0 4px;font-weight:600;font-size:.85rem">上游商品 PID</label>
-<input name="upstream_pid" id="pidInput" value="{{if .Product}}{{if gt .Product.UpstreamPID 0}}{{.Product.UpstreamPID}}{{end}}{{end}}" placeholder="如 100" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px">
-<p class="muted" id="pidHint" style="font-size:.76rem;color:#888;margin:6px 0 0">填上游商品 ID。</p>
-<script>function provFormRegister(code, fields, init){ (window.provFormReg=window.provFormReg||{})[code]={fields:fields,init:init}; }</script>
-{{.ProviderWidgets}}
-</div>
-
-<label style="display:block;margin:12px 0 4px;font-weight:600;font-size:.88rem">价格（元）</label>
-<div style="display:flex;gap:10px">
-<input name="monthly" value="{{.Monthly}}" placeholder="月付" style="flex:1;min-width:0;padding:8px;border:1px solid #ccc;border-radius:6px">
-<input name="quarterly" value="{{.Quarterly}}" placeholder="季付" style="flex:1;min-width:0;padding:8px;border:1px solid #ccc;border-radius:6px">
-<input name="yearly" value="{{.Yearly}}" placeholder="年付" style="flex:1;min-width:0;padding:8px;border:1px solid #ccc;border-radius:6px">
-</div>
-<div id="profitBox">
-<label style="display:block;margin:12px 0 4px;font-weight:600;font-size:.88rem">利润（上游成本外毛利）</label>
-<div style="display:flex;gap:10px;align-items:center">
-<select name="profit_type" style="padding:8px;border:1px solid #ccc;border-radius:6px">
-{{$pt := 0}}{{with .Product}}{{$pt = .ProfitType}}{{end}}
-<option value="0" {{if eq $pt 0}}selected{{end}}>按比例(%)</option>
-<option value="1" {{if eq $pt 1}}selected{{end}}>固定金额(元)</option>
-</select>
-<input name="profit_value" value="{{with .Product}}{{.ProfitValue}}{{end}}" placeholder="如 20 表示 20% 或 20 元" style="flex:1;min-width:0;padding:8px;border:1px solid #ccc;border-radius:6px">
-</div>
-<p class="muted" style="font-size:.76rem;color:#888;margin:6px 0 0">售价加成（ZJMF 上游百分比语义）：合计 =（基础价+配置费用）×(1+比例%)，固定金额则为合计+金额；购买/下单/周期续费按加成价计费。0 表示不加成。</p>
-</div>
-<label class="form-label fw-semibold mt-3"库存（-1 为不限）</label>
-<input name="stock" type="number" value="{{if .Product}}{{.Product.Stock}}{{else}}-1{{end}}" style="width:120px;padding:8px;border:1px solid #ccc;border-radius:6px">
-
-<label style="display:block;margin:12px 0 4px;font-weight:600;font-size:.9rem">配置项（购买时展示，可选）</label>
-<div id="cfgEditor" style="border:1px solid #e3e6ee;border-radius:8px;padding:12px;background:#fafbff">
-  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-    <span class="muted" style="font-size:.8rem">共 <b id="cfgCount">0</b> 项 · 保存后生效</span>
-    <div style="display:flex;gap:8px">
-      <button type="button" onclick="toggleJson()" style="padding:6px 10px;background:#fff;color:#4f46e5;border:1px solid #c7d2fe;border-radius:6px;cursor:pointer;font-size:.8rem">高级 JSON</button>
-      <button type="button" onclick="openCfgModal(-1)" style="padding:6px 12px;background:#4f46e5;color:#fff;border:0;border-radius:6px;cursor:pointer;font-size:.82rem">+ 新增配置项</button>
-    </div>
+<div class="admin-page-header">
+  <div class="admin-page-title">
+    <span class="eyebrow">CATALOG / PRODUCT EDITOR</span>
+    <h1>{{if .Product}}编辑产品{{else}}新增产品{{end}}</h1>
+    <p>维护产品信息、售价、库存和购买配置</p>
   </div>
-  <div id="cfgList"></div>
-  <p class="muted" style="font-size:.76rem;color:#888;margin:8px 0 0">select 型子项填加价；range 型填数量区间与单价。也可点上方“拉取配置项”从上游带入。</p>
-  <textarea name="configoption" id="configTa" style="display:none;width:100%;box-sizing:border-box;border:1px solid #ccc;border-radius:6px;font-family:monospace;font-size:.8rem" rows="10">{{.ConfigJSON}}</textarea>
+  <div class="admin-page-actions">
+    <a href="/admin/products" class="admin-back-btn">← 返回产品列表</a>
+  </div>
 </div>
 
-<div id="cfgModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:50" onclick="if(event.target===this)closeCfgModal()">
-  <div style="max-width:540px;margin:5vh auto;background:#fff;border-radius:10px;padding:20px;max-height:86vh;overflow:auto">
-    <h3 id="cfgModalTitle" style="margin-top:0;font-size:1rem">新增配置项</h3>
-    <label style="display:block;margin:8px 0 3px;font-weight:600;font-size:.82rem">配置标识 field（如 cpu / memory / disk）</label>
-    <input id="cfgField" list="cfgFieldList" style="width:100%;padding:7px;border:1px solid #ccc;border-radius:6px;box-sizing:border-box">
-    <datalist id="cfgFieldList"></datalist>
-    <label style="display:block;margin:8px 0 3px;font-weight:600;font-size:.82rem">显示名 name</label>
-    <input id="cfgName" style="width:100%;padding:7px;border:1px solid #ccc;border-radius:6px;box-sizing:border-box">
-    <label style="display:block;margin:8px 0 3px;font-weight:600;font-size:.82rem">类型</label>
-    <select id="cfgMode" onchange="cfgModeChange()" style="width:100%;padding:7px;border:1px solid #ccc;border-radius:6px;box-sizing:border-box">
-      <option value="select">单选 select</option>
-      <option value="range">数量范围 range</option>
-    </select>
-    <label style="display:block;margin:8px 0 3px;font-weight:600;font-size:.82rem">单位 unit（如 核 / GB / Mbps，可空）</label>
-    <input id="cfgUnit" style="width:100%;padding:7px;border:1px solid #ccc;border-radius:6px;box-sizing:border-box">
-    <div id="cfgRangeBox" style="display:none">
-      <div style="display:flex;gap:8px">
-        <div style="flex:1"><label style="display:block;margin:8px 0 3px;font-weight:600;font-size:.82rem">最小值 min</label><input id="cfgMin" type="number" style="width:100%;padding:7px;border:1px solid #ccc;border-radius:6px;box-sizing:border-box"></div>
-        <div style="flex:1"><label style="display:block;margin:8px 0 3px;font-weight:600;font-size:.82rem">最大值 max</label><input id="cfgMax" type="number" style="width:100%;padding:7px;border:1px solid #ccc;border-radius:6px;box-sizing:border-box"></div>
-        <div style="flex:1"><label style="display:block;margin:8px 0 3px;font-weight:600;font-size:.82rem">步长 step</label><input id="cfgStep" type="number" style="width:100%;padding:7px;border:1px solid #ccc;border-radius:6px;box-sizing:border-box"></div>
+{{if .Error}}<div class="ui-alert ui-alert-error" role="alert">{{.Error}}</div>{{end}}
+
+<form method="post" action="{{if .Product}}/admin/products/{{.Product.ID}}/save{{else}}/admin/products/save{{end}}" class="admin-panel admin-edit-max">
+  <input type="hidden" name="_csrf" value="{{.CSRF}}">
+  <input type="hidden" name="id" value="{{if .Product}}{{.Product.ID}}{{end}}">
+  <div class="admin-panel-body">
+
+    <div class="admin-form-section">
+      <h3>基本信息</h3>
+      <div class="admin-form-row">
+        <div class="admin-form-col">
+          <label for="product-name">产品名称</label>
+          <input id="product-name" name="name" value="{{if .Product}}{{.Product.Name}}{{end}}" placeholder="如 香港 2核2G 云服务器" required>
+        </div>
+        <div class="admin-form-col">
+          <label for="product-type">所属分类</label>
+          <select id="product-type" name="type_id" required>
+            <option value="">请选择二级分类</option>
+            {{$cur := ""}}{{if .Product}}{{$cur = printf "%v" .Product.TypeID.Int64}}{{end}}
+            {{range .Types}}{{if eq .ParentID 0}}
+            {{$pid := .ID}}
+            <optgroup label="{{.Name}}">
+              {{range $.Types}}{{if eq .ParentID $pid}}<option value="{{.ID}}" {{if eq $cur (printf "%v" .ID)}}selected{{end}}>{{.Name}}</option>{{end}}{{end}}
+            </optgroup>
+            {{end}}{{end}}
+          </select>
+        </div>
+      </div>
+      <label for="product-description">产品描述</label>
+      <textarea id="product-description" name="description" rows="3" placeholder="前台商品卡片会展示这段描述">{{if .Product}}{{.Product.Description}}{{end}}</textarea>
+    </div>
+
+    <div class="admin-form-section">
+      <h3>上游自动开通</h3>
+      <label for="serverSel">绑定上游服务器</label>
+      <select name="server_id" id="serverSel" onchange="toggleUpstream()">
+        <option value="">不自动开通（仅本地服务）</option>
+        {{$sid := ""}}{{if .Product}}{{$sid = printf "%v" .Product.ServerID.Int64}}{{end}}
+        {{range .ServersList}}<option value="{{.ID}}" data-provider="{{.Provider}}" {{if eq $sid (printf "%v" .ID)}}selected{{end}}>{{.Name}}（{{.Provider}}）</option>{{end}}
+      </select>
+      <div id="upstreamBox" class="admin-upstream-box" style="display:none">
+        <label for="pidInput">上游商品 PID</label>
+        <input name="upstream_pid" id="pidInput" value="{{if .Product}}{{if gt .Product.UpstreamPID 0}}{{.Product.UpstreamPID}}{{end}}{{end}}" placeholder="如 100">
+        <p class="text-muted small" id="pidHint">填上游商品 ID。</p>
+        <script>function provFormRegister(code, fields, init){ (window.provFormReg=window.provFormReg||{})[code]={fields:fields,init:init}; }</script>
+        {{.ProviderWidgets}}
       </div>
     </div>
-    <div style="margin-top:10px">
-      <div style="display:flex;justify-content:space-between;align-items:center">
-        <b style="font-size:.85rem">子项 / 价格档位</b>
-        <button type="button" onclick="addSubRow()" style="padding:5px 10px;background:#15803d;color:#fff;border:0;border-radius:6px;cursor:pointer;font-size:.78rem">+ 子项</button>
+
+    <div class="admin-form-section">
+      <h3>价格（元）</h3>
+      <div class="admin-form-row">
+        <div class="admin-form-col">
+          <label for="price-monthly">月付</label>
+          <input id="price-monthly" name="monthly" value="{{.Monthly}}" placeholder="0.00">
+        </div>
+        <div class="admin-form-col">
+          <label for="price-quarterly">季付</label>
+          <input id="price-quarterly" name="quarterly" value="{{.Quarterly}}" placeholder="0.00">
+        </div>
+        <div class="admin-form-col">
+          <label for="price-yearly">年付</label>
+          <input id="price-yearly" name="yearly" value="{{.Yearly}}" placeholder="0.00">
+        </div>
+      </div>
+    </div>
+
+    <div class="admin-form-section" id="profitBox">
+      <h3>利润加成</h3>
+      <p class="text-muted small">售价加成：合计 =（基础价+配置费用）×(1+比例%) 或 +固定金额。0 表示不加成。</p>
+      <div class="admin-form-row">
+        <div class="admin-form-col">
+          <label for="profit-type-sel">利润方式</label>
+          <select id="profit-type-sel" name="profit_type">
+            {{$pt := 0}}{{with .Product}}{{$pt = .ProfitType}}{{end}}
+            <option value="0" {{if eq $pt 0}}selected{{end}}>按比例（%）</option>
+            <option value="1" {{if eq $pt 1}}selected{{end}}>固定金额（元）</option>
+          </select>
+        </div>
+        <div class="admin-form-col">
+          <label for="profit-value-input">利润值</label>
+          <input id="profit-value-input" name="profit_value" value="{{with .Product}}{{.ProfitValue}}{{end}}" placeholder="如 20 表示 20% 或 20 元">
+        </div>
+      </div>
+    </div>
+
+    <div class="admin-form-section">
+      <div class="admin-form-row">
+        <div class="admin-form-col admin-form-col-sm">
+          <label for="product-stock">库存（-1 为不限）</label>
+          <input id="product-stock" name="stock" type="number" value="{{if .Product}}{{.Product.Stock}}{{else}}-1{{end}}">
+        </div>
+        <div class="admin-form-col admin-form-col-sm">
+          <label for="product-hidden">前台显示</label>
+          <select id="product-hidden" name="hidden">
+            <option value="0">显示</option>
+            <option value="1" {{if and .Product .Product.Hidden}}selected{{end}}>隐藏</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <div class="admin-form-section">
+      <h3>配置项（购买时展示，可选）</h3>
+      <div id="cfgEditor" class="admin-cfg-editor">
+        <div class="admin-cfg-toolbar">
+          <span class="text-muted small">共 <b id="cfgCount">0</b> 项 · 保存后生效</span>
+          <div class="admin-cfg-toolbar-btns">
+            <button type="button" onclick="toggleJson()" class="admin-row-btn">高级 JSON</button>
+            <button type="button" onclick="openCfgModal(-1)" class="ui-btn ui-btn-small">+ 新增配置项</button>
+          </div>
+        </div>
+        <div id="cfgList"></div>
+        <p class="text-muted small">select 型子项填加价；range 型填数量区间与单价。也可从上游拉取配置项。</p>
+        <textarea name="configoption" id="configTa" style="display:none" rows="10">{{.ConfigJSON}}</textarea>
+      </div>
+    </div>
+
+    <div class="admin-form-actions">
+      <button class="ui-btn" type="submit">保存产品 <span>→</span></button>
+      <a class="ui-btn ui-btn-secondary" href="/admin/products">取消</a>
+    </div>
+  </div>
+</form>
+
+<div id="cfgModal" style="display:none" onclick="if(event.target===this)closeCfgModal()">
+  <div class="admin-modal-card">
+    <h3 id="cfgModalTitle">新增配置项</h3>
+    <div class="admin-form-row">
+      <div class="admin-form-col">
+        <label for="cfgField">配置标识 field（如 cpu / memory / disk）</label>
+        <input id="cfgField" list="cfgFieldList">
+        <datalist id="cfgFieldList"></datalist>
+      </div>
+      <div class="admin-form-col">
+        <label for="cfgName">显示名 name</label>
+        <input id="cfgName">
+      </div>
+    </div>
+    <div class="admin-form-row">
+      <div class="admin-form-col">
+        <label for="cfgMode">类型</label>
+        <select id="cfgMode" onchange="cfgModeChange()">
+          <option value="select">单选 select</option>
+          <option value="range">数量范围 range</option>
+        </select>
+      </div>
+      <div class="admin-form-col">
+        <label for="cfgUnit">单位 unit（如 核 / GB / Mbps，可空）</label>
+        <input id="cfgUnit">
+      </div>
+    </div>
+    <div id="cfgRangeBox" style="display:none">
+      <div class="admin-form-row">
+        <div class="admin-form-col"><label for="cfgMin">最小值 min</label><input id="cfgMin" type="number"></div>
+        <div class="admin-form-col"><label for="cfgMax">最大值 max</label><input id="cfgMax" type="number"></div>
+        <div class="admin-form-col"><label for="cfgStep">步长 step</label><input id="cfgStep" type="number"></div>
+      </div>
+    </div>
+    <div class="admin-cfg-subs">
+      <div class="admin-cfg-subs-head">
+        <b>子项 / 价格档位</b>
+        <button type="button" onclick="addSubRow()" class="ui-btn ui-btn-small">+ 子项</button>
       </div>
       <div id="cfgSubs"></div>
     </div>
-    <div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end">
-      <button type="button" onclick="closeCfgModal()" style="padding:8px 14px;background:#fff;color:#444;border:1px solid #ccc;border-radius:6px;cursor:pointer">取消</button>
-      <button type="button" onclick="saveCfgModal()" style="padding:8px 14px;background:#4f46e5;color:#fff;border:0;border-radius:6px;cursor:pointer">保存</button>
+    <div class="admin-modal-actions">
+      <button type="button" onclick="closeCfgModal()" class="ui-btn ui-btn-secondary ui-btn-small">取消</button>
+      <button type="button" onclick="saveCfgModal()" class="ui-btn ui-btn-small">保存</button>
     </div>
   </div>
 </div>
-<label class="form-label fw-semibold mt-3"前台显示</label>
-<select name="hidden" style="padding:8px;border:1px solid #ccc;border-radius:6px">
-<option value="0">显示</option>
-<option value="1" {{if and .Product .Product.Hidden}}selected{{end}}>隐藏</option>
-</select>
-<button style="margin-top:18px;width:100%;padding:11px;background:#4f46e5;color:#fff;border:0;border-radius:6px;cursor:pointer">保存</button>
-</form>
 
 <script>
 function esc(s){ return (s||"").replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
@@ -168,12 +240,12 @@ function renderCfgList(){
   const box = document.getElementById("cfgList");
   box.innerHTML = "";
   if(!cfgOptions.length){
-    box.innerHTML = '<p class="muted" style="font-size:.8rem;color:#888;margin:4px 0">暂无配置项，点“+ 新增配置项”或先“拉取配置项”。</p>';
+    box.innerHTML = '<p class="text-muted small">暂无配置项，点"+ 新增配置项"或先"拉取配置项"。</p>';
     return;
   }
   cfgOptions.forEach((o, i) => {
     const card = document.createElement("div");
-    card.style.cssText = "border:1px solid #e3e6ee;border-radius:8px;padding:10px;margin:8px 0;background:#fff";
+    card.className = "admin-cfg-item";
     const mode = o.option_mode === "range" ? "数量范围" : (o.option_mode === "select" ? "单选" : o.option_mode);
     const meta = o.option_mode === "range"
       ? `范围 ${o.min}~${o.max}${o.step?(" 步长"+o.step):""}${o.unit?(" "+o.unit):""}`
@@ -181,18 +253,18 @@ function renderCfgList(){
     let subs = (o.sub||[]).map(s => {
       const p = s.pricing || {};
       const price = p.monthly!=null ? ("¥"+(+p.monthly)+"/月") : "免费";
-      return `<span style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:#f1f5f9;border-radius:5px;font-size:.76rem">${esc(s.name||s.value||"")} <b>${price}</b></span>`;
+      return `<span class="admin-cfg-tag">${esc(s.name||s.value||"")} <b>${price}</b></span>`;
     }).join("");
     card.innerHTML =
-      `<div style="display:flex;justify-content:space-between;align-items:center">
-        <div><b style="font-size:.88rem">${esc(o.name||o.field||"")}</b>
-          <span class="muted" style="font-size:.74rem;color:#888"> · ${esc(o.field||"")} · ${mode}${meta?(" · "+esc(meta)):""}</span></div>
-        <div style="white-space:nowrap">
-          <button type="button" onclick="openCfgModal(${i})" style="background:none;border:0;color:#4f46e5;cursor:pointer;font-size:.82rem;padding:0 6px">编辑</button>
-          <button type="button" onclick="cfgOptions.splice(${i},1);cfgSync();renderCfgList()" style="background:none;border:0;color:#b91c1c;cursor:pointer;font-size:.82rem;padding:0 6px">删除</button>
-        </div>
-      </div>
-      <div style="margin-top:6px">${subs || '<span class="muted" style="font-size:.76rem;color:#aaa">无子项</span>'}</div>`;
+      `<div class="admin-cfg-item-head">
+         <div><b>${esc(o.name||o.field||"")}</b>
+           <span class="text-muted small"> · ${esc(o.field||"")} · ${mode}${meta?(" · "+esc(meta)):""}</span></div>
+         <div class="admin-cfg-item-actions">
+           <button type="button" onclick="openCfgModal(${i})" class="admin-row-btn">编辑</button>
+           <button type="button" onclick="cfgOptions.splice(${i},1);cfgSync();renderCfgList()" class="admin-row-btn is-danger">删除</button>
+         </div>
+       </div>
+       <div class="admin-cfg-item-subs">${subs || '<span class="text-muted small">无子项</span>'}</div>`;
     box.appendChild(card);
   });
 }
@@ -210,20 +282,19 @@ function cfgModeChange(){
 }
 function addSubRow(name, value, pricing){
   const row = document.createElement("div");
-  row.className = "subrow";
-  row.style.cssText = "border:1px solid #eee;border-radius:6px;padding:8px;margin:6px 0";
+  row.className = "subrow admin-subrow";
   const p = pricing || {};
   row.innerHTML =
-    `<div style="display:flex;gap:6px">
-      <input class="s-name" placeholder="显示名" value="${esc(name||"")}" style="flex:2;min-width:0;padding:6px;border:1px solid #ccc;border-radius:5px">
-      <input class="s-value" placeholder="提交值(可空)" value="${esc(value||"")}" style="flex:1;min-width:0;padding:6px;border:1px solid #ccc;border-radius:5px">
-      <button type="button" onclick="this.closest('.subrow').remove()" style="padding:0 9px;background:#fee;color:#b91c1c;border:0;border-radius:5px;cursor:pointer">×</button>
-    </div>
-    <div style="display:flex;gap:6px;margin-top:6px">
-      <input class="s-m" placeholder="月付加价" type="number" step="0.01" value="${p.monthly!=null?p.monthly:""}" style="flex:1;min-width:0;padding:6px;border:1px solid #ccc;border-radius:5px">
-      <input class="s-q" placeholder="季付" type="number" step="0.01" value="${p.quarterly!=null?p.quarterly:""}" style="flex:1;min-width:0;padding:6px;border:1px solid #ccc;border-radius:5px">
-      <input class="s-y" placeholder="年付" type="number" step="0.01" value="${p.yearly!=null?p.yearly:""}" style="flex:1;min-width:0;padding:6px;border:1px solid #ccc;border-radius:5px">
-    </div>`;
+    `<div class="admin-form-row">
+       <input class="s-name" placeholder="显示名" value="${esc(name||"")}">
+       <input class="s-value" placeholder="提交值(可空)" value="${esc(value||"")}">
+       <button type="button" onclick="this.closest('.subrow').remove()" class="admin-row-btn is-danger">×</button>
+     </div>
+     <div class="admin-form-row">
+       <input class="s-m" placeholder="月付加价" type="number" step="0.01" value="${p.monthly!=null?p.monthly:""}">
+       <input class="s-q" placeholder="季付" type="number" step="0.01" value="${p.quarterly!=null?p.quarterly:""}">
+       <input class="s-y" placeholder="年付" type="number" step="0.01" value="${p.yearly!=null?p.yearly:""}">
+     </div>`;
   document.getElementById("cfgSubs").appendChild(row);
 }
 function openCfgModal(idx){
@@ -240,7 +311,7 @@ function openCfgModal(idx){
   cfgModeChange();
   document.getElementById("cfgSubs").innerHTML = "";
   ((o && o.sub) || []).forEach(s => addSubRow(s.name, s.value, s.pricing));
-  document.getElementById("cfgModal").style.display = "block";
+  document.getElementById("cfgModal").style.display = "flex";
 }
 function closeCfgModal(){ document.getElementById("cfgModal").style.display = "none"; }
 function saveCfgModal(){

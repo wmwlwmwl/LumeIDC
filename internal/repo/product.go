@@ -3,6 +3,7 @@ package repo
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -21,6 +22,21 @@ type Product struct {
 	Hidden        bool
 	ProfitType    int16   // 0百分比 1固定金额（对齐 ZJMF 上游利润方式）
 	ProfitValue   float64 // 百分比或固定金额
+}
+
+// AdminProductRow 是后台产品列表一次查询所需的展示数据。
+// 配置项在这里解析，避免列表模板为每个产品再次访问数据库。
+type AdminProductRow struct {
+	ID          int64
+	Name        string
+	TypeName    string
+	ServerName  string
+	UpstreamPID int64
+	Monthly     string
+	Hidden      bool
+	Options     []ConfigOption
+	ProfitType  int16
+	ProfitValue float64
 }
 
 type ProductType struct {
@@ -56,6 +72,54 @@ func (p *Products) ListAll(ctx context.Context) ([]Product, error) {
 			return nil, err
 		}
 		out = append(out, pr)
+	}
+	return out, rows.Err()
+}
+
+// ListAdmin 一次读取后台产品列表所需的价格、配置和利润回退数据。
+func (p *Products) ListAdmin(ctx context.Context, pricesetID int64) ([]AdminProductRow, error) {
+	rows, err := p.DB.QueryContext(ctx, `
+		SELECT p.id, p.name,
+		       CASE WHEN t.parent_id <> 0 AND parent.id IS NOT NULL
+		            THEN parent.name || '/' || t.name
+		            ELSE coalesce(t.name, '') END,
+		       coalesce(s.name, ''), p.upstream_pid,
+		       coalesce(pp.monthly::text, ''), p.hidden,
+		       coalesce(p.configoption::text, '[]'),
+		       p.profit_type, p.profit_value,
+		       coalesce(s.profit_type, 0), coalesce(s.profit_value, 0)
+		FROM products p
+		LEFT JOIN product_types t ON t.id = p.type_id
+		LEFT JOIN product_types parent ON parent.id = t.parent_id
+		LEFT JOIN product_prices pp ON pp.product_id = p.id AND pp.priceset_id = $1
+		LEFT JOIN servers s ON s.id = p.server_id
+		ORDER BY p.id`, pricesetID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []AdminProductRow
+	for rows.Next() {
+		var row AdminProductRow
+		var raw string
+		var productProfitType, serverProfitType int16
+		var productProfitValue, serverProfitValue float64
+		if err := rows.Scan(&row.ID, &row.Name, &row.TypeName, &row.ServerName, &row.UpstreamPID, &row.Monthly, &row.Hidden,
+			&raw, &productProfitType, &productProfitValue, &serverProfitType, &serverProfitValue); err != nil {
+			return nil, err
+		}
+		if productProfitValue > 0 {
+			row.ProfitType = productProfitType
+			row.ProfitValue = productProfitValue
+		} else {
+			row.ProfitType = serverProfitType
+			row.ProfitValue = serverProfitValue
+		}
+		if err := json.Unmarshal([]byte(raw), &row.Options); err != nil {
+			row.Options = nil
+		}
+		out = append(out, row)
 	}
 	return out, rows.Err()
 }

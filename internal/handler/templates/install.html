@@ -2,22 +2,55 @@
 <html lang="zh-CN">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>LumeIDC 安装</title>
 <link rel="stylesheet" href="/assets/vendor/bootstrap-5.3.3/css/bootstrap.min.css"><link rel="stylesheet" href="/assets/css/lume.css"></head>
-<body>
+<body class="site-body">
 <a class="ui-skip" href="#install-main">跳到主要内容</a>
-<main class="site-main" id="install-main"><div class="ui-card ui-form mx-auto" style="max-width:520px">
-<h1 class="h3 mb-4">LumeIDC 安装向导</h1>
-<form method="post" action="/install">
-<label for="db-host">数据库地址</label><input class="form-control" id="db-host" name="db_host" value="localhost" required>
-<label class="mt-3" for="db-port">端口</label><input class="form-control" id="db-port" name="db_port" value="5432" required>
-<label class="mt-3" for="db-name">数据库名</label><input class="form-control" id="db-name" name="db_name" placeholder="lumeidc" required>
-<label class="mt-3" for="db-user">数据库用户</label><input class="form-control" id="db-user" name="db_user" required>
-<label class="mt-3" for="db-pass">数据库密码</label><input class="form-control" id="db-pass" name="db_pass" type="password" autocomplete="new-password">
-<label class="mt-3" for="admin-user">管理员用户名</label><input class="form-control" id="admin-user" name="admin_user" required autocomplete="username">
-<label class="mt-3" for="admin-pass">管理员密码</label><input class="form-control" id="admin-pass" name="admin_pass" type="password" minlength="8" required autocomplete="new-password">
-<p class="ui-muted mt-1">至少 8 位，将使用 bcrypt 哈希存储。</p>
-<label class="mt-3" for="base-url">站点地址</label><input class="form-control" id="base-url" name="base_url" value="http://localhost:8080" required>
-<button class="ui-btn w-100 mt-4" type="submit">开始安装</button>
-</form>
-</div></main>
+<main class="fx-install-layout" id="install-main">
+  <section class="fx-install-visual">
+    <a class="fx-brand" href="/">
+      <span class="fx-brand-mark">L</span>
+      <span class="fx-brand-name">Lume<span class="fx-brand-accent">IDC</span></span>
+    </a>
+    <div class="fx-install-copy">
+      <span class="eyebrow">FIRST RUN</span>
+      <h1>开始构建你的<br>基础设施平台</h1>
+      <p>完成初始化配置，启动 LumeIDC。</p>
+    </div>
+    <small class="fx-install-foot">© LumeIDC</small>
+  </section>
+  <section class="fx-install-panel">
+    <div class="fx-install-box">
+      <span class="eyebrow">SETUP WIZARD</span>
+      <h2>安装向导</h2>
+      <p class="text-muted">填写数据库和管理员信息以完成初始化。</p>
+      <form method="post" action="/install" class="fx-stack-form">
+        <label for="db-host">数据库地址</label>
+        <input id="db-host" name="db_host" value="localhost" required>
+        <div class="fx-form-row">
+          <div class="fx-form-col">
+            <label for="db-port">端口</label>
+            <input id="db-port" name="db_port" value="5432" required>
+          </div>
+          <div class="fx-form-col">
+            <label for="db-name">数据库名</label>
+            <input id="db-name" name="db_name" placeholder="lumeidc" required>
+          </div>
+        </div>
+        <label for="db-user">数据库用户</label>
+        <input id="db-user" name="db_user" required>
+        <label for="db-pass">数据库密码</label>
+        <input id="db-pass" name="db_pass" type="password" autocomplete="new-password">
+        <div class="fx-form-divider"></div>
+        <label for="admin-user">管理员用户名</label>
+        <input id="admin-user" name="admin_user" required autocomplete="username">
+        <label for="admin-pass">管理员密码</label>
+        <input id="admin-pass" name="admin_pass" type="password" minlength="8" required autocomplete="new-password">
+        <p class="text-muted small">至少 8 位，将使用 bcrypt 哈希存储。</p>
+        <label for="base-url">站点地址</label>
+        <input id="base-url" name="base_url" value="http://localhost:8080" required>
+        <button class="ui-btn" type="submit">开始安装 <span>→</span></button>
+      </form>
+    </div>
+  </section>
+</main>
 </body>
 </html>

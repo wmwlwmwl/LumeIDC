@@ -1,6 +1,57 @@
 {{define "page"}}
-<h1 class="h3 mb-4">概览</h1>
-<div class="ui-grid">
-{{range .Rows}}<div class="ui-card"><div class="ui-muted">{{.A}}</div><div class="ui-price mt-1">{{.B}}</div></div>{{end}}
+<div class="admin-page-header">
+  <div class="admin-page-title">
+    <span class="eyebrow">DASHBOARD</span>
+    <h1>运营概览</h1>
+    <p>掌握当前系统运营状态与核心指标</p>
+  </div>
+  <div class="admin-page-actions">
+    <span class="text-muted small">数据实时更新</span>
+  </div>
+</div>
+
+{{if .Error}}<div class="ui-alert ui-alert-error" role="alert">{{.Error}}</div>{{end}}
+
+<div class="admin-stats-grid">
+  {{range .Rows}}
+  <div class="admin-stat-card">
+    <div class="admin-stat-icon"></div>
+    <div class="admin-stat-content">
+      <span class="admin-stat-label">{{.A}}</span>
+      <span class="admin-stat-value">{{.B}}</span>
+    </div>
+  </div>
+  {{end}}
+</div>
+
+<div class="admin-quick-links">
+  <a href="/admin/products" class="admin-quick-link">
+    <div class="quick-link-text">
+      <strong>管理产品</strong>
+      <small>编辑商品与配置</small>
+    </div>
+    <span class="quick-link-arrow">→</span>
+  </a>
+  <a href="/admin/orders" class="admin-quick-link">
+    <div class="quick-link-text">
+      <strong>处理订单</strong>
+      <small>查看待支付与退款</small>
+    </div>
+    <span class="quick-link-arrow">→</span>
+  </a>
+  <a href="/admin/users" class="admin-quick-link">
+    <div class="quick-link-text">
+      <strong>用户管理</strong>
+      <small>管理注册用户</small>
+    </div>
+    <span class="quick-link-arrow">→</span>
+  </a>
+  <a href="/admin/settings" class="admin-quick-link">
+    <div class="quick-link-text">
+      <strong>系统设置</strong>
+      <small>配置通知与安全</small>
+    </div>
+    <span class="quick-link-arrow">→</span>
+  </a>
 </div>
 {{end}}

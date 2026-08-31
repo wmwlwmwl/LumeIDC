@@ -1,16 +1,61 @@
 {{define "page"}}
-<div class="d-flex align-items-center justify-content-between gap-3 flex-wrap mb-4">
-<h1 class="h3 mb-0">产品管理</h1>
-<a class="ui-btn" href="/admin/products/new">新增产品</a>
+<div class="admin-page-header">
+  <div class="admin-page-title">
+    <span class="eyebrow">CATALOG / PRODUCTS</span>
+    <h1>产品管理</h1>
+    <p>维护销售目录、价格与产品状态</p>
+  </div>
+  <div class="admin-page-actions">
+    <a class="ui-btn" href="/admin/products/new">新增产品 <span>+</span></a>
+  </div>
 </div>
+
 {{if .Error}}<div class="ui-alert ui-alert-error" role="alert">{{.Error}}</div>{{end}}
 {{if .Msg}}<div class="ui-alert ui-alert-success" role="status">{{.Msg}}</div>{{end}}
-<div class="ui-table-wrap" aria-label="产品列表"><table><thead><tr><th scope="col">ID</th><th scope="col">名称</th><th scope="col">分类</th><th scope="col">月付价</th><th scope="col">显示</th><th scope="col">操作</th></tr></thead><tbody>
-{{range .Rows}}
-<tr><td>{{.ID}}</td><td>{{.A}}</td><td>{{.B}}</td><td>￥{{.C}}</td><td>{{.D}}</td>
-<td class="text-nowrap"><a href="/admin/products/{{.ID}}/edit">编辑</a> ·
-<form method="post" action="/admin/products/{{.ID}}/delete" class="d-inline"><input type="hidden" name="_csrf" value="{{$.CSRF}}"><button class="ui-btn-ghost p-0 text-danger" type="submit">删除</button></form></td></tr>
-{{end}}
-{{if not .Rows}}<tr><td colspan="6" class="ui-muted">暂无产品，点击右上角新增。</td></tr>{{end}}
-</tbody></table></div>
+
+<div class="admin-panel">
+  <div class="admin-table-wrap">
+    <table class="admin-table">
+      <thead>
+        <tr>
+          <th scope="col">ID</th>
+          <th scope="col">产品名称</th>
+          <th scope="col">分类</th>
+          <th scope="col">上游</th>
+          <th scope="col">月付价</th>
+          <th scope="col">状态</th>
+          <th scope="col" class="th-actions">操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .Rows}}
+        <tr>
+          <td class="td-id">{{.ID}}</td>
+          <td class="td-name">{{.A}}</td>
+          <td class="td-cat">{{.B}}</td>
+          <td class="td-upstream">
+            {{if .ServerName}}
+            <span class="admin-upstream-tag">{{.ServerName}} / PID {{.UpstreamPID}}</span>
+            {{else}}
+            <span class="text-muted">本地产品</span>
+            {{end}}
+          </td>
+          <td class="td-price">￥{{.C}}</td>
+          <td>{{if eq .D "隐藏"}}<span class="badge badge-warn">隐藏</span>{{else}}<span class="badge badge-ok">显示</span>{{end}}</td>
+          <td class="td-actions">
+            <a href="/admin/products/{{.ID}}/edit" class="admin-row-btn">编辑</a>
+            <form method="post" action="/admin/products/{{.ID}}/delete" class="inline-form" onsubmit="return confirm('确认删除该产品？')">
+              <input type="hidden" name="_csrf" value="{{$.CSRF}}">
+              <button class="admin-row-btn is-danger" type="submit">删除</button>
+            </form>
+          </td>
+        </tr>
+        {{end}}
+        {{if not .Rows}}
+        <tr><td colspan="7" class="admin-table-empty">暂无产品，点击右上角新增</td></tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</div>
 {{end}}

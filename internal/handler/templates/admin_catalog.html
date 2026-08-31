@@ -1,18 +1,95 @@
 {{define "page"}}
-<div class="d-flex align-items-center justify-content-between gap-3 flex-wrap mb-4"><h1 class="h3 mb-0">上游商品目录{{with .ServersList}} — {{.Name}}{{end}}</h1><a href="/admin/servers">← 返回服务器</a></div>
+<div class="admin-page-header">
+  <div class="admin-page-title">
+    <span class="eyebrow">INFRASTRUCTURE / CATALOG</span>
+    <h1>上游商品目录</h1>
+    <p>{{with .ServersList}}{{.Name}}{{end}} · 选择商品导入本地目录</p>
+  </div>
+  <div class="admin-page-actions">
+    <a href="/admin/servers" class="admin-back-btn">← 返回服务器</a>
+  </div>
+</div>
+
 {{if .Error}}<div class="ui-alert ui-alert-error" role="alert">{{.Error}}</div>{{end}}
+
 {{if .Rows}}
 <form method="post" action="{{with .ServersList}}/admin/servers/{{.ID}}/import{{end}}">
-<input type="hidden" name="_csrf" value="{{.CSRF}}">
-<div class="ui-card mb-3"><div class="ui-actions"><strong>导入分类：</strong><label class="visually-hidden" for="catalog-parent">目标一级分类</label><select class="form-select w-auto" id="catalog-parent" name="parent_id"><option value="">请选择目标一级分类</option>{{range .Types}}<option value="{{.ID}}">上游分组建为「{{.Name}}」下的二级分类</option>{{end}}</select><span class="ui-muted small">建议先在分类管理建好一级分类。</span></div>
-<div class="ui-actions mt-3"><strong>导入利润：</strong><label class="visually-hidden" for="catalog-profit-type">利润类型</label><select class="form-select w-auto" id="catalog-profit-type" name="profit_type"><option value="0" {{if not (eq (printf "%d" .ServerProfitType) "1")}}selected{{end}}>百分比（%）</option><option value="1" {{if eq (printf "%d" .ServerProfitType) "1"}}selected{{end}}>固定金额</option></select><label class="visually-hidden" for="catalog-profit-value">利润值</label><input class="form-control" id="catalog-profit-value" name="profit_value" type="number" step="0.01" min="0" value="{{.ServerProfitValue}}" placeholder="如 30 或 5" style="max-width:140px"><span class="ui-muted small">默认取服务器利润设置，已有产品不覆盖</span></div></div>
-<div class="ui-table-wrap" aria-label="上游商品"><table><thead><tr><th scope="col"><span class="visually-hidden">选择</span></th><th scope="col">PID</th><th scope="col">名称</th><th scope="col">分组</th><th scope="col">月付价</th><th scope="col">库存</th><th scope="col">状态</th></tr></thead><tbody>
-{{range .Rows}}<tr><td><input type="checkbox" name="import" value="{{.PID}}" {{if .Linked}}disabled{{end}} aria-label="选择 {{.A}}"></td><td>{{.PID}}</td><td>{{.A}}</td><td>{{.B}}</td><td>￥{{.C}}</td><td>{{.Stock}}</td><td>{{if .Linked}}<span class="badge badge-ok">已对接</span>{{else}}<span class="badge badge-idle">未对接</span>{{end}}</td></tr>{{end}}
-</tbody></table></div><button class="ui-btn mt-3" type="submit">导入勾选商品</button>
+  <input type="hidden" name="_csrf" value="{{.CSRF}}">
+  <div class="admin-panel admin-import-panel">
+    <div class="admin-import-row">
+      <strong>导入分类：</strong>
+      <label class="visually-hidden" for="catalog-parent">目标一级分类</label>
+      <select class="admin-select-sm" id="catalog-parent" name="parent_id">
+        <option value="">请选择目标一级分类</option>
+        {{range .Types}}<option value="{{.ID}}">上游分组建为「{{.Name}}」下的二级分类</option>{{end}}
+      </select>
+      <span class="text-muted small">建议先在分类管理建好一级分类</span>
+    </div>
+    <div class="admin-import-row">
+      <strong>导入利润：</strong>
+      <label class="visually-hidden" for="catalog-profit-type">利润类型</label>
+      <select class="admin-select-sm" id="catalog-profit-type" name="profit_type">
+        <option value="0" {{if not (eq (printf "%d" .ServerProfitType) "1")}}selected{{end}}>百分比（%）</option>
+        <option value="1" {{if eq (printf "%d" .ServerProfitType) "1"}}selected{{end}}>固定金额</option>
+      </select>
+      <label class="visually-hidden" for="catalog-profit-value">利润值</label>
+      <input class="admin-input-sm" id="catalog-profit-value" name="profit_value" type="number" step="0.01" min="0" value="{{.ServerProfitValue}}" placeholder="如 30 或 5">
+      <span class="text-muted small">默认取服务器利润设置，已有产品不覆盖</span>
+    </div>
+  </div>
+
+  <div class="admin-panel">
+    <div class="admin-table-wrap">
+      <table class="admin-table">
+        <thead>
+          <tr>
+            <th scope="col"><span class="visually-hidden">选择</span></th>
+            <th scope="col">PID</th>
+            <th scope="col">名称</th>
+            <th scope="col">分组</th>
+            <th scope="col">月付价</th>
+            <th scope="col">库存</th>
+            <th scope="col">状态</th>
+          </tr>
+        </thead>
+        <tbody>
+          {{range .Rows}}
+          <tr>
+            <td><input type="checkbox" name="import" value="{{.PID}}" {{if .Linked}}disabled{{end}} aria-label="选择 {{.A}}"></td>
+            <td class="td-id">{{.PID}}</td>
+            <td class="td-name">{{.A}}</td>
+            <td>{{.B}}</td>
+            <td class="td-price">￥{{.C}}</td>
+            <td>{{.Stock}}</td>
+            <td>{{if .Linked}}<span class="badge badge-ok">已对接</span>{{else}}<span class="badge badge-idle">未对接</span>{{end}}</td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="admin-form-actions">
+    <button class="ui-btn" type="submit">导入勾选商品 <span>→</span></button>
+  </div>
 </form>
-{{else}}<div class="ui-card text-center py-5"><p class="ui-muted mb-0">上游目录为空。</p></div>{{end}}
-{{if .Error}}{{else}}<script>
-const u = new URLSearchParams(location.search).get("done");
-if(u && u !== "0"){ document.querySelector("h1").insertAdjacentHTML("afterend", `<div class="ui-alert ui-alert-success" role="status">已处理 ${u} 个产品（已对接的会更新价格/配置项，未对接的新建）。</div>`); }
-</script>{{end}}
+{{else}}
+<div class="admin-panel">
+  <div class="admin-empty-state">
+    <div class="empty-state-icon"></div>
+    <h3>上游目录为空</h3>
+    <p>请检查服务器连接或稍后重试</p>
+  </div>
+</div>
+{{end}}
+
+{{if not .Error}}
+<script>
+  const u = new URLSearchParams(location.search).get("done");
+  if(u && u !== "0"){
+    document.querySelector(".admin-page-header").insertAdjacentHTML("afterend",
+      `<div class="ui-alert ui-alert-success" role="status">已处理 ${u} 个产品（已对接的会更新价格/配置项，未对接的新建）。</div>`);
+  }
+</script>
+{{end}}
 {{end}}

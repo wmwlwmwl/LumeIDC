@@ -19,6 +19,7 @@ import (
 var adminFS embed.FS
 
 type AdminData struct {
+	Page          string
 	Rows          any
 	Error         string
 	Msg           string
@@ -49,6 +50,7 @@ type AdminData struct {
 }
 
 func renderAdmin(w http.ResponseWriter, page string, data AdminData) {
+	data.Page = page
 	tpl, err := template.ParseFS(adminFS, "templates/admin.html", "templates/"+page)
 	if err != nil {
 		http.Error(w, err.Error(), 500)

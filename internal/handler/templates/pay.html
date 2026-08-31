@@ -1,26 +1,59 @@
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>账单支付 - LumeIDC</title>
-<link rel="stylesheet" href="/assets/vendor/bootstrap-5.3.3/css/bootstrap.min.css"><link rel="stylesheet" href="/assets/css/lume.css"></head>
-<body>
-<main class="site-main"><div class="ui-card mx-auto" style="max-width:480px">
-<h1 class="h4">{{if .Recharge}}余额充值{{else}}账单{{end}} {{.InvoiceNo}}</h1>
-<p class="ui-price fs-3">￥{{.Amount}}</p>
-{{if .Status}}<div class="ui-alert ui-alert-info" role="status">{{.Status}}</div>
-{{else}}
-<p class="ui-muted">账户余额：<strong class="text-primary">￥{{.UserBalance}}</strong></p>
-<div class="ui-stack mt-3">
-{{range .Gateways}}
-<form method="post" action="/pay/{{$.InvoiceID}}/start">
-<input type="hidden" name="_csrf" value="{{$.CSRF}}"><input type="hidden" name="gateway" value="{{.Code}}">
-<button class="ui-btn w-100" type="submit">在线支付：{{.Name}}</button>
-</form>
-{{end}}
-{{if .BalancePay}}
-<form method="post" action="/pay/{{.InvoiceID}}/balance"><input type="hidden" name="_csrf" value="{{.CSRF}}"><button class="ui-btn w-100" type="submit" style="background:#15803d">余额支付</button></form>
-{{end}}
-</div>
-{{end}}
-</div></main>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>账单支付 - LumeIDC</title>
+<link rel="stylesheet" href="/assets/vendor/bootstrap-5.3.3/css/bootstrap.min.css">
+<link rel="stylesheet" href="/assets/css/lume.css">
+</head>
+<body class="site-body">
+<main class="fx-pay-wrap">
+  <div class="fx-pay-card">
+    <div class="fx-pay-brand">
+      <span class="fx-brand-mark">L</span>
+      <span>Lume<span class="fx-brand-accent">IDC</span></span>
+    </div>
+    <span class="eyebrow">SECURE PAYMENT</span>
+    <h1>{{if .Recharge}}余额充值{{else}}账单支付{{end}}</h1>
+    <p class="fx-pay-invoice">{{.InvoiceNo}}</p>
+
+    <div class="fx-pay-amount">￥{{.Amount}}</div>
+
+    {{if .Status}}
+    <div class="ui-alert ui-alert-info" role="status">{{.Status}}</div>
+    {{else}}
+    <div class="fx-pay-balance">
+      <span>账户余额</span>
+      <strong>￥{{.UserBalance}}</strong>
+    </div>
+    <div class="fx-pay-methods">
+      {{range .Gateways}}
+      <form method="post" action="/pay/{{$.InvoiceID}}/start">
+        <input type="hidden" name="_csrf" value="{{$.CSRF}}">
+        <input type="hidden" name="gateway" value="{{.Code}}">
+        <button class="fx-pay-method-btn" type="submit">
+          <span>在线支付 · {{.Name}}</span>
+          <span class="fx-pay-arrow">→</span>
+        </button>
+      </form>
+      {{end}}
+      {{if .BalancePay}}
+      <form method="post" action="/pay/{{.InvoiceID}}/balance">
+        <input type="hidden" name="_csrf" value="{{.CSRF}}">
+        <button class="fx-pay-method-btn is-balance" type="submit">
+          <span>使用账户余额支付</span>
+          <span class="fx-pay-arrow">→</span>
+        </button>
+      </form>
+      {{end}}
+    </div>
+    {{end}}
+
+    <div class="fx-pay-foot">
+      <a href="/user/invoices" class="fx-back-link">← 返回财务记录</a>
+    </div>
+  </div>
+</main>
 </body>
 </html>

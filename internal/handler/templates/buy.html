@@ -1,63 +1,94 @@
 {{define "page"}}
-<h1 class="h3 mb-2">{{.Product.Name}}</h1>
-<p class="ui-muted mb-4">{{.Product.Description}}</p>
-<div class="d-flex gap-3 align-items-start flex-wrap">
-<form method="post" action="/order" id="buyForm" class="ui-card flex-grow-1" style="flex-basis:480px">
-<input type="hidden" name="_csrf" value="{{.CSRF}}">
-<input type="hidden" name="product_id" value="{{.Product.ID}}">
+<div class="fx-buy-page">
+  <div class="fx-buy-header">
+    <a class="fx-back-link" href="/products">← 返回产品目录</a>
+    <span class="eyebrow">CONFIGURE SERVICE</span>
+    <h1>{{.Product.Name}}</h1>
+    <p>{{.Product.Description}}</p>
+  </div>
 
-<label class="form-label fw-semibold mt-3">计费周期</label>
-<select name="cycle" id="cycleSel" class="form-select" onchange="recalc()">
-<option value="monthly">月付 ￥{{.Monthly}}</option>
-{{if .ShowQuarterly}}<option value="quarterly">季付 ￥{{.Quarterly}}</option>{{end}}
-{{if .ShowYearly}}<option value="yearly">年付 ￥{{.Yearly}}</option>{{end}}
-</select>
+  <div class="fx-buy-steps">
+    <span class="is-current"><b>01</b>选择配置</span><i></i>
+    <span><b>02</b>确认订单</span><i></i>
+    <span><b>03</b>完成部署</span>
+  </div>
 
-{{range .Options}}
-{{if .Hidden}}<input type="hidden" name="cfg_{{.Field}}" value="{{if eq .Mode "range"}}{{.Min}}{{else}}{{if .Subs}}{{with index .Subs 0}}{{if .Value}}{{.Value}}{{else}}{{.Name}}{{end}}{{end}}{{end}}{{end}}">{{else}}
-<label class="form-label fw-semibold mt-3">{{.Name}}{{if .Unit}}（{{.Unit}}）{{end}}</label>
-{{if eq .Mode "range"}}
-<div style="display:flex;align-items:center;gap:8px">
-<button type="button" onclick="stepVal('cfg_{{.Field}}', -1)" style="width:38px;height:38px;display:flex;align-items:center;justify-content:center;font-size:1.3rem;font-weight:700;background:#eef2ff;color:#4f46e5;border:1px solid #c7d2fe;border-radius:8px;cursor:pointer">−</button>
-<input name="cfg_{{.Field}}" id="cfg_{{.Field}}" type="number" value="{{.Min}}" min="{{.Min}}" max="{{.Max}}" step="{{.Step}}"
- style="width:92px;padding:8px;border:1px solid #ccc;border-radius:6px;text-align:center;font-size:.95rem" oninput="syncNum(this.id)" onchange="clampVal(this.id)">
-<button type="button" onclick="stepVal('cfg_{{.Field}}', 1)" style="width:38px;height:38px;display:flex;align-items:center;justify-content:center;font-size:1.3rem;font-weight:700;background:#eef2ff;color:#4f46e5;border:1px solid #c7d2fe;border-radius:8px;cursor:pointer">+</button>
-<input id="rng_{{.Field}}" type="range" min="{{.Min}}" max="{{.Max}}" step="{{.Step}}" value="{{.Min}}" style="flex:1" oninput="onRange(this)">
-</div>
-<p class="muted" style="margin:4px 0 0;font-size:.75rem">范围 {{.Min}}~{{.Max}}{{if .Unit}} {{.Unit}}{{end}}</p>
-{{else}}
-<select name="cfg_{{.Field}}" id="cfg_{{.Field}}" class="form-select" onchange="recalc()">
-{{$f := .Field}}
-{{range .Subs}}
-<option value="{{if .Value}}{{.Value}}{{else}}{{.Name}}{{end}}" {{if and $.Options (index .Pricing "monthly")}}data-m="{{$f}}|{{.Name}}|{{index .Pricing "monthly"}}"{{end}}>{{.Name}}</option>
-{{end}}
-</select>
-{{end}}
-{{end}}
-{{end}}
+  <div class="fx-buy-layout">
+    <form method="post" action="/order" id="buyForm" class="fx-config-panel">
+      <input type="hidden" name="_csrf" value="{{.CSRF}}">
+      <input type="hidden" name="product_id" value="{{.Product.ID}}">
 
-<label class="form-label fw-semibold mt-3">优惠码（可选）</label>
-<input class="form-control" name="coupon" placeholder="如有优惠码请填写">
-</form>
+      <div class="fx-cfg-group">
+        <h3>计费周期</h3>
+        <p>选择适合你的付款周期</p>
+        <select name="cycle" id="cycleSel" onchange="recalc()">
+          <option value="monthly">月付 ￥{{.Monthly}}</option>
+          {{if .ShowQuarterly}}<option value="quarterly">季付 ￥{{.Quarterly}}</option>{{end}}
+          {{if .ShowYearly}}<option value="yearly">年付 ￥{{.Yearly}}</option>{{end}}
+        </select>
+      </div>
 
-<div class="ui-card flex-grow-1" style="flex-basis:300px">
-<h3 style="margin-top:0;font-size:1rem">配置费用</h3>
-<p class="muted" id="stockMsg">当前库存充足，可直接提交账单。</p>
-<table style="font-size:.85rem"><tbody id="cfgLines"></tbody></table>
-<hr style="border:0;border-top:1px solid #eef0f4;margin:10px 0">
-<div style="display:flex;justify-content:space-between;font-size:.88rem;color:#666"><span>基础价格</span><span id="basePrice"></span></div>
-<div style="margin-top:12px">
-<div style="color:#888;font-size:.82rem">合计费用</div>
-<div><span style="font-size:1.5rem;font-weight:700;color:#4f46e5" id="totalPrice">0</span>
-<span class="muted" id="cycleLabel">/月付</span></div>
-</div>
-{{if .LoggedIn}}
-<button type="submit" form="buyForm" style="margin-top:16px;width:100%;padding:11px;background:#4f46e5;color:#fff;border:0;border-radius:6px;font-size:.95rem;cursor:pointer">立即购买</button>
-{{else}}
-<a href="/login?next=/buy/{{.Product.ID}}" class="btn" style="display:block;text-align:center;margin-top:16px;width:100%;padding:11px;box-sizing:border-box">登录后购买</a>
-<p class="muted" style="margin-top:8px;font-size:.8rem">选择配置无需登录，购买时需要账号。</p>
-{{end}}
-</div>
+      <div class="fx-cfg-group">
+        <h3>服务配置</h3>
+        <p>按需调整你的实例规格</p>
+        {{range .Options}}
+        {{if .Hidden}}
+        <input type="hidden" name="cfg_{{.Field}}" value="{{if eq .Mode "range"}}{{.Min}}{{else}}{{if .Subs}}{{with index .Subs 0}}{{if .Value}}{{.Value}}{{else}}{{.Name}}{{end}}{{end}}{{end}}{{end}}">
+        {{else}}
+        <div class="fx-cfg-item">
+          <label class="fx-cfg-label">{{.Name}}{{if .Unit}}（{{.Unit}}）{{end}}</label>
+          {{if eq .Mode "range"}}
+          <div class="fx-stepper">
+            <button type="button" class="fx-step-btn" onclick="stepVal('cfg_{{.Field}}', -1)" aria-label="减少">−</button>
+            <input name="cfg_{{.Field}}" id="cfg_{{.Field}}" type="number" value="{{.Min}}" min="{{.Min}}" max="{{.Max}}" step="{{.Step}}" oninput="syncNum(this.id)" onchange="clampVal(this.id)">
+            <button type="button" class="fx-step-btn" onclick="stepVal('cfg_{{.Field}}', 1)" aria-label="增加">+</button>
+            <input id="rng_{{.Field}}" type="range" min="{{.Min}}" max="{{.Max}}" step="{{.Step}}" value="{{.Min}}" oninput="onRange(this)">
+          </div>
+          <p class="fx-cfg-hint">范围 {{.Min}}~{{.Max}}{{if .Unit}} {{.Unit}}{{end}}</p>
+          {{else}}
+          <select name="cfg_{{.Field}}" id="cfg_{{.Field}}" onchange="recalc()">
+            {{$f := .Field}}
+            {{range .Subs}}
+            <option value="{{if .Value}}{{.Value}}{{else}}{{.Name}}{{end}}" {{if and $.Options (index .Pricing "monthly")}}data-m="{{$f}}|{{.Name}}|{{index .Pricing "monthly"}}"{{end}}>{{.Name}}</option>
+            {{end}}
+          </select>
+          {{end}}
+        </div>
+        {{end}}
+        {{end}}
+
+        <div class="fx-cfg-item">
+          <label class="fx-cfg-label" for="coupon-input">优惠码（可选）</label>
+          <input id="coupon-input" name="coupon" placeholder="如有优惠码请填写">
+        </div>
+      </div>
+    </form>
+
+    <aside class="fx-summary">
+      <div class="fx-summary-label">ORDER SUMMARY</div>
+      <h2>订单摘要</h2>
+      <div class="fx-summary-product">
+        <span class="fx-summary-mark">L</span>
+        <div>
+          <strong>{{.Product.Name}}</strong>
+          <small>选择配置后实时计价</small>
+        </div>
+      </div>
+      <p class="fx-summary-stock" id="stockMsg">当前库存充足，可直接提交账单。</p>
+      <table class="fx-summary-lines"><tbody id="cfgLines"></tbody></table>
+      <div class="fx-summary-row"><span>基础价格</span><span id="basePrice"></span></div>
+      <div class="fx-summary-total">
+        <span>合计费用</span>
+        <strong><span id="totalPrice">0</span><small id="cycleLabel">/月付</small></strong>
+      </div>
+      {{if .LoggedIn}}
+      <button class="ui-btn fx-summary-submit" type="submit" form="buyForm">立即购买 <span>→</span></button>
+      {{else}}
+      <a href="/login?next=/buy/{{.Product.ID}}" class="ui-btn fx-summary-submit">登录后购买 <span>→</span></a>
+      <p class="fx-summary-note">选择配置无需登录，购买时需要账号。</p>
+      {{end}}
+    </aside>
+  </div>
 </div>
 
 <script>
@@ -196,9 +227,9 @@ function recalc(){
   }
   const tb = document.getElementById("cfgLines");
   tb.innerHTML = lines.map(l =>
-    `<tr><td style="padding:3px 0;color:#666">${esc(l[0])}</td>` +
-    `<td style="padding:3px 0">${esc(l[1])}</td>` +
-    `<td style="padding:3px 0;text-align:right">${l[2]>0?"+"+l[2].toFixed(2):"0.00"}</td></tr>`
+    `<tr><td>${esc(l[0])}</td>` +
+    `<td>${esc(l[1])}</td>` +
+    `<td class="fx-line-price">${l[2]>0?"+"+l[2].toFixed(2):"0.00"}</td></tr>`
   ).join("");
   if(pFixed){ total = total + pFixed; }
   else { total = total * (1 + pRate); }

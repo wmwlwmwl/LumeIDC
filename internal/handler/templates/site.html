@@ -9,29 +9,106 @@
 <link rel="stylesheet" href="/assets/css/lume.css">
 <script src="/assets/js/lume.js" defer></script>
 </head>
-<body>
+<body class="site-body">
 <a class="ui-skip" href="#main-content">跳到主要内容</a>
-<header class="site-header" data-site-header>
-<div class="site-header-inner">
-<a class="brand" href="/">LumeIDC</a>
-<button class="site-menu-toggle" type="button" data-site-menu aria-controls="site-nav" aria-expanded="false">菜单</button>
-<nav class="site-nav" id="site-nav" aria-label="主导航">
-<a href="/products">产品</a>
-{{if .LoggedIn}}<a href="/services">我的服务</a>{{end}}
-</nav>
-<div class="site-account">
-{{if .LoggedIn}}
-<span class="text-primary small">￥{{.Balance}}</span>
-<a href="/user">用户中心</a>
-<a href="/notifications">站内信</a>
-<form method="post" action="/logout" class="m-0"><input type="hidden" name="_csrf" value="{{.CSRF}}"><button class="ui-btn-ghost" type="submit">退出</button></form>
-{{else}}
-<a href="/login">登录</a><a href="/register">注册</a>
-{{end}}
-</div>
-</div>
+
+<header class="fx-header" data-site-header>
+  <div class="fx-header-inner">
+    <a class="fx-brand" href="/">
+      <span class="fx-brand-mark">L</span>
+      <span class="fx-brand-name">Lume<span class="fx-brand-accent">IDC</span></span>
+    </a>
+
+    <button class="fx-menu-toggle" type="button" data-site-menu aria-controls="site-nav" aria-expanded="false">
+      <span class="toggle-lines"><span></span><span></span><span></span></span>
+      <span class="toggle-text">菜单</span>
+    </button>
+
+    <nav class="fx-nav" id="site-nav" aria-label="主导航">
+      <a href="/products" class="{{if eq .Page "products.html"}}is-active{{end}}">产品与服务</a>
+      {{if .LoggedIn}}
+      <a href="/services" class="{{if or (eq .Page "service_list.html") (eq .Page "service_detail.html")}}is-active{{end}}">我的服务</a>
+      {{end}}
+    </nav>
+
+    <div class="fx-tools">
+      <label class="fx-search" for="site-search-input">
+        <span class="fx-search-icon" aria-hidden="true"></span>
+        <input id="site-search-input" type="search" placeholder="搜索产品" autocomplete="off">
+      </label>
+
+      {{if .LoggedIn}}
+      <a class="fx-console-btn" href="/user">控制台</a>
+      <div class="fx-account">
+        <a class="fx-account-chip" href="/user">
+          <span class="fx-avatar">U</span>
+          <span class="fx-account-info">
+            <strong>我的账户</strong>
+            <small>￥{{.Balance}}</small>
+          </span>
+        </a>
+        <form method="post" action="/logout" class="fx-logout-form">
+          <input type="hidden" name="_csrf" value="{{.CSRF}}">
+          <button class="fx-logout-btn" type="submit">退出</button>
+        </form>
+      </div>
+      {{else}}
+      <a class="fx-login-link" href="/login">登录</a>
+      <a class="ui-btn ui-btn-small" href="/register">免费注册</a>
+      {{end}}
+    </div>
+  </div>
 </header>
-<main class="site-main" id="main-content">{{template "page" .}}</main>
+
+{{if or (eq .Page "user_home.html") (eq .Page "service_list.html") (eq .Page "service_detail.html") (eq .Page "user_recharge.html") (eq .Page "user_invoices.html") (eq .Page "user_notifications.html") (eq .Page "user_password.html")}}
+<div class="fx-account-layout">
+  <aside class="fx-account-side">
+    <div class="fx-account-side-brand">
+      <span class="fx-account-side-mark">U</span>
+      <div>
+        <strong>账户中心</strong>
+        <small>ACCOUNT</small>
+      </div>
+    </div>
+    <nav class="fx-account-nav" aria-label="账户导航">
+      <a href="/user" class="{{if eq .Page "user_home.html"}}is-active{{end}}">
+        <span class="fx-nav-ind"></span>概览
+      </a>
+      <a href="/services" class="{{if or (eq .Page "service_list.html") (eq .Page "service_detail.html")}}is-active{{end}}">
+        <span class="fx-nav-ind"></span>我的服务
+      </a>
+      <a href="/user/invoices" class="{{if eq .Page "user_invoices.html"}}is-active{{end}}">
+        <span class="fx-nav-ind"></span>财务记录
+      </a>
+      <a href="/user/recharge" class="{{if eq .Page "user_recharge.html"}}is-active{{end}}">
+        <span class="fx-nav-ind"></span>账户充值
+      </a>
+      <a href="/notifications" class="{{if eq .Page "user_notifications.html"}}is-active{{end}}">
+        <span class="fx-nav-ind"></span>消息中心
+      </a>
+      <div class="fx-account-nav-label">账户设置</div>
+      <a href="/user/password" class="{{if eq .Page "user_password.html"}}is-active{{end}}">
+        <span class="fx-nav-ind"></span>安全设置
+      </a>
+      <a href="/products">
+        <span class="fx-nav-ind"></span>购买产品
+      </a>
+    </nav>
+  </aside>
+  <main class="fx-account-main" id="main-content">
+    {{template "page" .}}
+  </main>
+</div>
+{{else if eq .Page "products.html"}}
+<main class="fx-purchase-wrap" id="main-content">
+  {{template "page" .}}
+</main>
+{{else}}
+<main class="fx-main" id="main-content">
+  {{template "page" .}}
+</main>
+{{end}}
+
 </body>
 </html>
 {{end}}

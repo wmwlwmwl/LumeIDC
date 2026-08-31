@@ -1,32 +1,94 @@
 {{define "page"}}
-<h1>用户管理</h1>
-{{if .Error}}<p style="color:#b91c1c">{{.Error}}</p>{{end}}
-<form method="post" action="/admin/users/{{index .ServersList "ID"}}/save" style="max-width:480px;background:#fff;padding:20px;border-radius:8px">
-<input type="hidden" name="_csrf" value="{{.CSRF}}">
-<table style="font-size:.9rem;background:none">
-<tr><td class="muted" width="80">邮箱</td><td>{{index .ServersList "A"}}</td></tr>
-<tr><td class="muted">姓名</td><td>{{if index .ServersList "B"}}{{index .ServersList "B"}}{{else}}-{{end}}</td></tr>
-<tr><td class="muted">当前余额</td><td>￥{{index .ServersList "C"}}</td></tr>
-</table>
-<label style="display:block;margin:14px 0 4px;font-weight:600;font-size:.88rem">账号状态</label>
-<select name="status" style="padding:7px;border:1px solid #ccc;border-radius:6px">
-<option value="1">正常</option>
-<option value="0" {{if eq (index .ServersList "D") "0"}}selected{{end}}>禁用（禁止登录）</option>
-</select>
+<div class="admin-page-header">
+  <div class="admin-page-title">
+    <span class="eyebrow">CUSTOMERS / ACCOUNT</span>
+    <h1>用户详情</h1>
+    <p>查看账户信息、状态与余额变更</p>
+  </div>
+  <div class="admin-page-actions">
+    <a href="/admin/users" class="admin-back-btn">← 返回用户列表</a>
+  </div>
+</div>
 
-<details style="margin-top:14px">
-<summary style="cursor:pointer;color:#b91c1c;font-size:.88rem">重置密码</summary>
-<input name="new_password" type="password" minlength="8" placeholder="新密码（至少8位，留空不修改）"
- style="width:100%;margin-top:8px;padding:8px;box-sizing:border-box;border:1px solid #ccc;border-radius:6px">
-</details>
+{{if .Error}}<div class="ui-alert ui-alert-error" role="alert">{{.Error}}</div>{{end}}
 
-<details style="margin-top:10px">
-<summary style="cursor:pointer;color:#4f46e5;font-size:.88rem">调整余额</summary>
-<input name="balance_adjust" placeholder="+100 充值 / -50 扣减（留空不变）"
- style="width:100%;margin-top:8px;padding:8px;box-sizing:border-box;border:1px solid #ccc;border-radius:6px">
-<p class="muted" style="font-size:.76rem;color:#888;margin:4px 0 0">正数充值，负数扣减，操作会记入余额流水。</p>
-</details>
+<div class="admin-types-layout">
+  <section class="admin-types-main">
+    <form method="post" action="/admin/users/{{index .ServersList "ID"}}/save" class="admin-panel">
+      <input type="hidden" name="_csrf" value="{{.CSRF}}">
+      <div class="admin-panel-header">
+        <h2>账户信息</h2>
+      </div>
+      <div class="admin-panel-body">
+        <div class="admin-info-grid">
+          <div class="admin-info-item">
+            <span>邮箱</span>
+            <strong>{{index .ServersList "A"}}</strong>
+          </div>
+          <div class="admin-info-item">
+            <span>姓名</span>
+            <strong>{{if index .ServersList "B"}}{{index .ServersList "B"}}{{else}}-{{end}}</strong>
+          </div>
+          <div class="admin-info-item">
+            <span>当前余额</span>
+            <strong class="text-brand">￥{{index .ServersList "C"}}</strong>
+          </div>
+        </div>
 
-<button style="margin-top:18px;width:100%;padding:11px;background:#4f46e5;color:#fff;border:0;border-radius:6px;cursor:pointer">保存</button>
-</form>
+        <div class="admin-form-section">
+          <h3>账号状态</h3>
+          <select name="status">
+            <option value="1">正常</option>
+            <option value="0" {{if eq (index .ServersList "D") "0"}}selected{{end}}>禁用（禁止登录）</option>
+          </select>
+        </div>
+
+        <details class="admin-collapse">
+          <summary>重置密码</summary>
+          <div class="admin-collapse-body">
+            <label for="user-new-password">新密码（至少 8 位，留空不修改）</label>
+            <input id="user-new-password" name="new_password" type="password" minlength="8" placeholder="输入新密码">
+          </div>
+        </details>
+
+        <details class="admin-collapse">
+          <summary>调整余额</summary>
+          <div class="admin-collapse-body">
+            <label for="user-balance-adjust">余额调整（正数充值，负数扣减，留空不变）</label>
+            <input id="user-balance-adjust" name="balance_adjust" placeholder="+100 充值 / -50 扣减">
+            <p class="text-muted small">操作会记入余额流水。</p>
+          </div>
+        </details>
+
+        <div class="admin-form-actions">
+          <button class="ui-btn" type="submit">保存修改 <span>→</span></button>
+        </div>
+      </div>
+    </form>
+  </section>
+
+  <aside class="admin-types-side">
+    <div class="admin-panel">
+      <div class="admin-panel-header">
+        <h2>操作提示</h2>
+      </div>
+      <div class="admin-panel-body">
+        <div class="admin-tip-list">
+          <div class="admin-tip">
+            <strong>重置密码</strong>
+            <p>设置新密码后用户需要使用新密码重新登录。</p>
+          </div>
+          <div class="admin-tip">
+            <strong>调整余额</strong>
+            <p>正数表示充值，负数表示扣减，每次操作都会记录流水。</p>
+          </div>
+          <div class="admin-tip">
+            <strong>禁用账号</strong>
+            <p>禁用后用户将无法登录前台和管理页面。</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </aside>
+</div>
 {{end}}

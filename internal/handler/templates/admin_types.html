@@ -1,109 +1,186 @@
 {{define "page"}}
-<h1 class="h3 mb-4">分类管理</h1>
+<div class="admin-page-header">
+  <div class="admin-page-title">
+    <span class="eyebrow">CATALOG / STRUCTURE</span>
+    <h1>分类管理</h1>
+    <p>组织产品目录，支持一级分类和二级分类</p>
+  </div>
+  <div class="admin-page-actions">
+    <span class="text-muted small">{{len .Rows}} 个一级分类</span>
+  </div>
+</div>
+
 {{if .Error}}<div class="ui-alert ui-alert-error" role="alert">{{.Error}}</div>{{end}}
 {{if .Msg}}<div class="ui-alert ui-alert-success" role="status">{{.Msg}}</div>{{end}}
-<p class="ui-muted">支持两级分类（对齐魔方财务）：前台选择一级分类展示本级产品与二级入口，选择二级分类展示该分类产品；建议把产品挂在二级分类下。</p>
-<div class="ui-table-wrap" aria-label="分类列表"><table>
-<tr><th>ID</th><th>名称</th><th>描述</th><th>排序</th><th>产品数</th><th>状态</th><th>操作</th></tr>
-{{range .Rows}}
-{{$row := .}}
-<tr style="background:#f8fafc">
-<td>{{.ID}}</td>
-<td><b>{{.Name}}</b></td>
-<td>{{.Description}}</td>
-<td>{{.Sort}}</td>
-<td>{{.ProductCount}}</td>
-<td>{{if .Hidden}}<span style="color:#b91c1c">隐藏</span>{{else}}显示{{end}}</td>
-<td>
-{{if and .ProductCount .Children}}
-<details style="display:inline"><summary style="cursor:pointer;color:#4f46e5;display:inline">移动产品</summary>
-<form method="post" action="/admin/types/{{.ID}}/moveproducts" style="margin-top:8px;background:#fff;padding:12px;border:1px solid #e5e7eb;border-radius:6px;width:280px">
-<input type="hidden" name="_csrf" value="{{$.CSRF}}">
-<label style="display:block;font-size:.8rem;color:#666;margin-bottom:4px">将 {{.ProductCount}} 个产品移动到二级分类：</label>
-<select name="target_id" required style="width:100%;padding:6px;margin-bottom:6px;box-sizing:border-box">
-{{range .Children}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
-</select>
-<button style="padding:6px 14px;background:#4f46e5;color:#fff;border:0;border-radius:4px;cursor:pointer">移动</button>
-</form></details> ·
-{{end}}
-<details style="display:inline"><summary style="cursor:pointer;color:#4f46e5;display:inline">加子分类</summary>
-<form method="post" action="/admin/types/save" style="margin-top:8px;background:#fff;padding:12px;border:1px solid #e5e7eb;border-radius:6px;width:280px">
-<input type="hidden" name="_csrf" value="{{$.CSRF}}"><input type="hidden" name="parent_id" value="{{.ID}}">
-<input name="name" value="" placeholder="子分类名称" required style="width:100%;padding:6px;margin-bottom:6px;box-sizing:border-box">
-<input name="description" value="" placeholder="描述" style="width:100%;padding:6px;margin-bottom:6px;box-sizing:border-box">
-<input name="sort" type="number" value="0" placeholder="排序" style="width:80px;padding:6px;margin-bottom:6px">
-<button style="padding:6px 14px;background:#4f46e5;color:#fff;border:0;border-radius:4px;cursor:pointer">添加</button>
-</form></details> ·
-<details style="display:inline"><summary style="cursor:pointer;color:#4f46e5;display:inline">编辑</summary>
-<form method="post" action="/admin/types/save" style="margin-top:8px;background:#fff;padding:12px;border:1px solid #e5e7eb;border-radius:6px;width:280px">
-<input type="hidden" name="_csrf" value="{{$.CSRF}}"><input type="hidden" name="id" value="{{.ID}}">
-<input name="name" value="{{.Name}}" placeholder="名称" required style="width:100%;padding:6px;margin-bottom:6px;box-sizing:border-box">
-<input name="description" value="{{.Description}}" placeholder="描述" style="width:100%;padding:6px;margin-bottom:6px;box-sizing:border-box">
-<label style="display:block;font-size:.8rem;color:#666;margin-bottom:4px">父分类</label>
-<select name="parent_id" style="width:100%;padding:6px;margin-bottom:6px;box-sizing:border-box">
-<option value="0" {{if eq $row.ParentID 0}}selected{{end}}>无（一级分类）</option>
-{{range $.Rows}}{{if ne .ID $row.ID}}<option value="{{.ID}}" {{if eq $row.ParentID .ID}}selected{{end}}>{{.Name}}</option>{{end}}{{end}}
-</select>
-<input name="sort" type="number" value="{{.Sort}}" placeholder="排序" style="width:80px;padding:6px;margin-bottom:6px">
-<label style="display:block;font-size:.8rem;color:#666;margin-bottom:6px"><input type="checkbox" name="hidden" {{if .Hidden}}checked{{end}}> 隐藏（前台不显示）</label>
-<button style="padding:6px 14px;background:#4f46e5;color:#fff;border:0;border-radius:4px;cursor:pointer">保存</button>
-</form></details> ·
-<form method="post" action="/admin/types/{{.ID}}/delete" style="display:inline"><input type="hidden" name="_csrf" value="{{$.CSRF}}"><button style="background:none;border:0;color:#b91c1c;cursor:pointer;padding:0;font-size:.88rem">删除</button></form>
-</td></tr>
-{{range .Children}}
-{{$c := .}}
-<tr>
-<td>{{.ID}}</td>
-<td style="padding-left:28px">└ {{.Name}}</td>
-<td>{{.Description}}</td>
-<td>{{.Sort}}</td>
-<td>{{.ProductCount}}</td>
-<td>{{if .Hidden}}<span style="color:#b91c1c">隐藏</span>{{else}}显示{{end}}</td>
-<td>
-{{if .ProductCount}}
-<details style="display:inline"><summary style="cursor:pointer;color:#4f46e5;display:inline">移动产品</summary>
-<form method="post" action="/admin/types/{{.ID}}/moveproducts" style="margin-top:8px;background:#fff;padding:12px;border:1px solid #e5e7eb;border-radius:6px;width:280px">
-<input type="hidden" name="_csrf" value="{{$.CSRF}}">
-<label style="display:block;font-size:.8rem;color:#666;margin-bottom:4px">将 {{.ProductCount}} 个产品移动到：</label>
-<select name="target_id" required style="width:100%;padding:6px;margin-bottom:6px;box-sizing:border-box">
-{{range $.Rows}}{{range .Children}}{{if ne .ID $c.ID}}<option value="{{.ID}}">{{.Name}}</option>{{end}}{{end}}{{end}}
-</select>
-<button style="padding:6px 14px;background:#4f46e5;color:#fff;border:0;border-radius:4px;cursor:pointer">移动</button>
-</form></details> ·
-{{end}}
-<details style="display:inline"><summary style="cursor:pointer;color:#4f46e5;display:inline">编辑</summary>
-<form method="post" action="/admin/types/save" style="margin-top:8px;background:#fff;padding:12px;border:1px solid #e5e7eb;border-radius:6px;width:280px">
-<input type="hidden" name="_csrf" value="{{$.CSRF}}"><input type="hidden" name="id" value="{{.ID}}">
-<input name="name" value="{{.Name}}" placeholder="名称" required style="width:100%;padding:6px;margin-bottom:6px;box-sizing:border-box">
-<input name="description" value="{{.Description}}" placeholder="描述" style="width:100%;padding:6px;margin-bottom:6px;box-sizing:border-box">
-<label style="display:block;font-size:.8rem;color:#666;margin-bottom:4px">父分类</label>
-<select name="parent_id" style="width:100%;padding:6px;margin-bottom:6px;box-sizing:border-box">
-<option value="0" {{if eq $c.ParentID 0}}selected{{end}}>无（一级分类）</option>
-{{range $.Rows}}{{if ne .ID $c.ID}}<option value="{{.ID}}" {{if eq $c.ParentID .ID}}selected{{end}}>{{.Name}}</option>{{end}}{{end}}
-</select>
-<input name="sort" type="number" value="{{.Sort}}" placeholder="排序" style="width:80px;padding:6px;margin-bottom:6px">
-<label style="display:block;font-size:.8rem;color:#666;margin-bottom:6px"><input type="checkbox" name="hidden" {{if .Hidden}}checked{{end}}> 隐藏（前台不显示）</label>
-<button style="padding:6px 14px;background:#4f46e5;color:#fff;border:0;border-radius:4px;cursor:pointer">保存</button>
-</form></details> ·
-<form method="post" action="/admin/types/{{.ID}}/delete" style="display:inline"><input type="hidden" name="_csrf" value="{{$.CSRF}}"><button style="background:none;border:0;color:#b91c1c;cursor:pointer;padding:0;font-size:.88rem">删除</button></form>
-</td></tr>
-{{end}}
-{{end}}
-</table></div>
-<div class="ui-card ui-form mt-4" style="max-width:400px">
-<h3 style="margin-top:0">新增分类</h3>
-<form method="post" action="/admin/types/save">
-<input type="hidden" name="_csrf" value="{{$.CSRF}}">
-<input name="name" placeholder="名称" required class="form-control mb-2">
-<input name="description" placeholder="描述" class="form-control mb-2">
-<label style="display:block;font-size:.8rem;color:#666;margin-bottom:4px">父分类</label>
-<select name="parent_id" class="form-control mb-2">
-<option value="0">无（一级分类）</option>
-{{range .Rows}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
-</select>
-<input name="sort" type="number" value="0" placeholder="排序" style="width:90px;padding:8px;margin-bottom:8px">
-<label style="display:block;font-size:.8rem;color:#666;margin-bottom:8px"><input type="checkbox" name="hidden"> 隐藏（前台不显示）</label>
-<button style="padding:8px 20px;background:#4f46e5;color:#fff;border:0;border-radius:6px;cursor:pointer">添加</button>
-</form>
+<div class="ui-alert ui-alert-info">建议将产品挂在二级分类下，前台采购中心会按照分类树展示商品。</div>
+
+<div class="admin-types-layout">
+  <section class="admin-types-main">
+    <div class="admin-panel">
+      <div class="admin-panel-header">
+        <h2>分类树</h2>
+        <span class="text-muted small">共 {{len .Rows}} 个一级分类</span>
+      </div>
+      <div class="admin-types-list">
+        {{if not .Rows}}
+        <div class="admin-empty-state">
+          <div class="empty-state-icon"></div>
+          <h3>还没有分类</h3>
+          <p>先创建一个一级分类开始组织产品</p>
+        </div>
+        {{end}}
+        {{range .Rows}}
+        {{$row := .}}
+        <div class="admin-type-node is-parent">
+          <div class="admin-type-row">
+            <div class="admin-type-info">
+              <strong class="admin-type-name">{{.Name}}</strong>
+              <span class="admin-type-desc">{{if .Description}}{{.Description}}{{else}}暂无描述{{end}}</span>
+            </div>
+            <div class="admin-type-meta">
+              <span class="admin-type-count">{{.ProductCount}} 个产品</span>
+              {{if .Hidden}}<span class="badge badge-warn">已隐藏</span>{{else}}<span class="badge badge-ok">显示中</span>{{end}}
+            </div>
+            <div class="admin-type-actions">
+              {{if and .ProductCount .Children}}
+              <details class="admin-action-pop">
+                <summary>移动产品</summary>
+                <form method="post" action="/admin/types/{{.ID}}/moveproducts" class="admin-pop-form">
+                  <input type="hidden" name="_csrf" value="{{$.CSRF}}">
+                  <label for="move-parent-{{.ID}}">移动 {{.ProductCount}} 个产品到</label>
+                  <select id="move-parent-{{.ID}}" name="target_id" required>
+                    {{range .Children}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
+                  </select>
+                  <button class="ui-btn ui-btn-small" type="submit">确认移动</button>
+                </form>
+              </details>
+              {{end}}
+              <details class="admin-action-pop">
+                <summary>添加子分类</summary>
+                <form method="post" action="/admin/types/save" class="admin-pop-form">
+                  <input type="hidden" name="_csrf" value="{{$.CSRF}}">
+                  <input type="hidden" name="parent_id" value="{{.ID}}">
+                  <label for="child-name-{{.ID}}">子分类名称</label>
+                  <input id="child-name-{{.ID}}" name="name" required placeholder="如 香港云服务器">
+                  <label for="child-desc-{{.ID}}">描述</label>
+                  <input id="child-desc-{{.ID}}" name="description" placeholder="可选">
+                  <label for="child-sort-{{.ID}}">排序</label>
+                  <input id="child-sort-{{.ID}}" name="sort" type="number" value="0">
+                  <button class="ui-btn ui-btn-small" type="submit">添加</button>
+                </form>
+              </details>
+              <details class="admin-action-pop">
+                <summary>编辑</summary>
+                <form method="post" action="/admin/types/save" class="admin-pop-form">
+                  <input type="hidden" name="_csrf" value="{{$.CSRF}}">
+                  <input type="hidden" name="id" value="{{.ID}}">
+                  <label for="edit-name-{{.ID}}">名称</label>
+                  <input id="edit-name-{{.ID}}" name="name" value="{{.Name}}" required>
+                  <label for="edit-desc-{{.ID}}">描述</label>
+                  <input id="edit-desc-{{.ID}}" name="description" value="{{.Description}}">
+                  <label for="edit-parent-{{.ID}}">父分类</label>
+                  <select id="edit-parent-{{.ID}}" name="parent_id">
+                    <option value="0" {{if eq $row.ParentID 0}}selected{{end}}>无（一级分类）</option>
+                    {{range $.Rows}}{{if ne .ID $row.ID}}<option value="{{.ID}}" {{if eq $row.ParentID .ID}}selected{{end}}>{{.Name}}</option>{{end}}{{end}}
+                  </select>
+                  <label for="edit-sort-{{.ID}}">排序</label>
+                  <input id="edit-sort-{{.ID}}" name="sort" type="number" value="{{.Sort}}">
+                  <label class="check-line"><input id="edit-hidden-{{.ID}}" type="checkbox" name="hidden" {{if .Hidden}}checked{{end}}> 隐藏前台分类</label>
+                  <button class="ui-btn ui-btn-small" type="submit">保存修改</button>
+                </form>
+              </details>
+              <form method="post" action="/admin/types/{{.ID}}/delete" onsubmit="return confirm('确认删除该分类？')">
+                <input type="hidden" name="_csrf" value="{{$.CSRF}}">
+                <button class="admin-row-btn is-danger" type="submit">删除</button>
+              </form>
+            </div>
+          </div>
+
+          {{range .Children}}
+          {{$child := .}}
+          <div class="admin-type-node is-child">
+            <div class="admin-type-row">
+              <div class="admin-type-info">
+                <strong class="admin-type-name">{{.Name}}</strong>
+                <span class="admin-type-desc">{{if .Description}}{{.Description}}{{else}}暂无描述{{end}}</span>
+              </div>
+              <div class="admin-type-meta">
+                <span class="admin-type-count">{{.ProductCount}} 个产品</span>
+                {{if .Hidden}}<span class="badge badge-warn">已隐藏</span>{{else}}<span class="badge badge-ok">显示中</span>{{end}}
+              </div>
+              <div class="admin-type-actions">
+                {{if .ProductCount}}
+                <details class="admin-action-pop">
+                  <summary>移动产品</summary>
+                  <form method="post" action="/admin/types/{{.ID}}/moveproducts" class="admin-pop-form">
+                    <input type="hidden" name="_csrf" value="{{$.CSRF}}">
+                    <label for="move-child-{{.ID}}">移动 {{.ProductCount}} 个产品到</label>
+                    <select id="move-child-{{.ID}}" name="target_id" required>
+                      {{range $.Rows}}{{range .Children}}{{if ne .ID $child.ID}}<option value="{{.ID}}">{{.Name}}</option>{{end}}{{end}}{{end}}
+                    </select>
+                    <button class="ui-btn ui-btn-small" type="submit">确认移动</button>
+                  </form>
+                </details>
+                {{end}}
+                <details class="admin-action-pop">
+                  <summary>编辑</summary>
+                  <form method="post" action="/admin/types/save" class="admin-pop-form">
+                    <input type="hidden" name="_csrf" value="{{$.CSRF}}">
+                    <input type="hidden" name="id" value="{{.ID}}">
+                    <label for="child-edit-name-{{.ID}}">名称</label>
+                    <input id="child-edit-name-{{.ID}}" name="name" value="{{.Name}}" required>
+                    <label for="child-edit-desc-{{.ID}}">描述</label>
+                    <input id="child-edit-desc-{{.ID}}" name="description" value="{{.Description}}">
+                    <label for="child-edit-parent-{{.ID}}">父分类</label>
+                    <select id="child-edit-parent-{{.ID}}" name="parent_id">
+                      <option value="0" {{if eq $child.ParentID 0}}selected{{end}}>无（一级分类）</option>
+                      {{range $.Rows}}{{if ne .ID $child.ID}}<option value="{{.ID}}" {{if eq $child.ParentID .ID}}selected{{end}}>{{.Name}}</option>{{end}}{{end}}
+                    </select>
+                    <label for="child-edit-sort-{{.ID}}">排序</label>
+                    <input id="child-edit-sort-{{.ID}}" name="sort" type="number" value="{{.Sort}}">
+                    <label class="check-line"><input id="child-edit-hidden-{{.ID}}" type="checkbox" name="hidden" {{if .Hidden}}checked{{end}}> 隐藏前台分类</label>
+                    <button class="ui-btn ui-btn-small" type="submit">保存修改</button>
+                  </form>
+                </details>
+                <form method="post" action="/admin/types/{{.ID}}/delete" onsubmit="return confirm('确认删除该分类？')">
+                  <input type="hidden" name="_csrf" value="{{$.CSRF}}">
+                  <button class="admin-row-btn is-danger" type="submit">删除</button>
+                </form>
+              </div>
+            </div>
+          </div>
+          {{end}}
+        </div>
+        {{end}}
+      </div>
+    </div>
+  </section>
+
+  <aside class="admin-types-side">
+    <div class="admin-panel">
+      <div class="admin-panel-header">
+        <h2>新增分类</h2>
+      </div>
+      <div class="admin-panel-body">
+        <p class="text-muted small">创建一级分类，也可以选择已有分类作为父分类。</p>
+        <form method="post" action="/admin/types/save" class="stack-form">
+          <input type="hidden" name="_csrf" value="{{$.CSRF}}">
+          <label for="new-type-name">分类名称</label>
+          <input id="new-type-name" name="name" placeholder="如 云服务器" required>
+          <label for="new-type-desc">分类描述</label>
+          <input id="new-type-desc" name="description" placeholder="可选">
+          <label for="new-type-parent">父分类</label>
+          <select id="new-type-parent" name="parent_id">
+            <option value="0">无（一级分类）</option>
+            {{range .Rows}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
+          </select>
+          <label for="new-type-sort">排序</label>
+          <input id="new-type-sort" name="sort" type="number" value="0">
+          <label class="check-line"><input id="new-type-hidden" type="checkbox" name="hidden"> 隐藏前台分类</label>
+          <button class="ui-btn" type="submit">创建分类 <span>→</span></button>
+        </form>
+      </div>
+    </div>
+  </aside>
 </div>
 {{end}}

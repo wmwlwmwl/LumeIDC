@@ -1,25 +1,86 @@
 {{define "page"}}
-<h1>优惠码</h1>
-{{if .Error}}<p style="color:#b91c1c">{{.Error}}</p>{{end}}
-{{if .Msg}}<p style="color:#047857">创建成功</p>{{end}}
-<table>
-<tr><th>ID</th><th>码</th><th>类型</th><th>值</th><th>最低消费</th><th>次数</th><th>已用</th><th>过期</th><th>启用</th></tr>
-{{range .Rows}}<tr>
-<td>{{.ID}}</td><td>{{.Code}}</td><td>{{.Type}}</td><td>{{.Value}}</td><td>{{.MinAmount}}</td>
-<td>{{if eq .UsageLimit 0}}不限{{else}}{{.UsageLimit}}{{end}}</td><td>{{.UsedCount}}</td>
-<td>{{if .ExpiresAt}}{{.ExpiresAt.Format "2006-01-02"}}{{else}}永久{{end}}</td><td>{{if .Active}}是{{else}}否{{end}}</td>
-</tr>{{end}}
-</table>
+<div class="admin-page-header">
+  <div class="admin-page-title">
+    <span class="eyebrow">COMMERCE / COUPONS</span>
+    <h1>优惠折扣</h1>
+    <p>创建和管理订单优惠规则</p>
+  </div>
+  <div class="admin-page-actions">
+    <span class="text-muted small">共 {{len .Rows}} 个优惠码</span>
+  </div>
+</div>
 
-<h2 style="margin-top:24px;font-size:1rem">新建优惠码</h2>
-<form method="post" action="/admin/coupons/save" style="display:flex;gap:8px;flex-wrap:wrap;align-items:end">
-<input type="hidden" name="_csrf" value="{{.CSRF}}">
-<input name="code" placeholder="优惠码（唯一）" required>
-<select name="type"><option value="percent">百分比%</option><option value="fixed">固定金额</option></select>
-<input name="value" placeholder="值" size="6">
-<input name="min_amount" placeholder="最低消费" size="8">
-<input name="usage_limit" placeholder="次数(0不限)" size="8">
-<input name="expires_at" placeholder="过期日 2026-12-31" size="14">
-<button type="submit">创建</button>
-</form>
+{{if .Error}}<div class="ui-alert ui-alert-error" role="alert">{{.Error}}</div>{{end}}
+{{if .Msg}}<div class="ui-alert ui-alert-success" role="status">创建成功</div>{{end}}
+
+<div class="admin-types-layout">
+  <section class="admin-types-main">
+    <div class="admin-panel">
+      <div class="admin-table-wrap">
+        <table class="admin-table">
+          <thead>
+            <tr>
+              <th scope="col">ID</th>
+              <th scope="col">优惠码</th>
+              <th scope="col">类型</th>
+              <th scope="col">值</th>
+              <th scope="col">最低消费</th>
+              <th scope="col">次数</th>
+              <th scope="col">已用</th>
+              <th scope="col">过期时间</th>
+              <th scope="col">状态</th>
+            </tr>
+          </thead>
+          <tbody>
+            {{range .Rows}}
+            <tr>
+              <td class="td-id">{{.ID}}</td>
+              <td class="td-name">{{.Code}}</td>
+              <td>{{if eq .Type "percent"}}百分比{{else}}固定金额{{end}}</td>
+              <td>{{if eq .Type "percent"}}{{.Value}}%{{else}}￥{{.Value}}{{end}}</td>
+              <td>{{if .MinAmount}}￥{{.MinAmount}}{{else}}-{{end}}</td>
+              <td>{{if eq .UsageLimit 0}}不限{{else}}{{.UsageLimit}}{{end}}</td>
+              <td>{{.UsedCount}}</td>
+              <td>{{if .ExpiresAt}}{{.ExpiresAt.Format "2006-01-02"}}{{else}}永久{{end}}</td>
+              <td>{{if .Active}}<span class="badge badge-ok">启用</span>{{else}}<span class="badge badge-idle">停用</span>{{end}}</td>
+            </tr>
+            {{end}}
+            {{if not .Rows}}
+            <tr><td colspan="9" class="admin-table-empty">暂无优惠码</td></tr>
+            {{end}}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <aside class="admin-types-side">
+    <div class="admin-panel">
+      <div class="admin-panel-header">
+        <h2>新建优惠码</h2>
+      </div>
+      <div class="admin-panel-body">
+        <form method="post" action="/admin/coupons/save" class="stack-form">
+          <input type="hidden" name="_csrf" value="{{.CSRF}}">
+          <label for="coupon-code">优惠码（唯一）</label>
+          <input id="coupon-code" name="code" placeholder="如 NEW10" required>
+          <label for="coupon-type">折扣类型</label>
+          <select id="coupon-type" name="type">
+            <option value="percent">百分比（%）</option>
+            <option value="fixed">固定金额（元）</option>
+          </select>
+          <label for="coupon-value">折扣值</label>
+          <input id="coupon-value" name="value" placeholder="如 10 表示 10% 或 10 元">
+          <label for="coupon-min">最低消费（元）</label>
+          <input id="coupon-min" name="min_amount" placeholder="留空不限">
+          <label for="coupon-limit">使用次数</label>
+          <input id="coupon-limit" name="usage_limit" placeholder="0 为不限">
+          <label for="coupon-expires">过期日期</label>
+          <input id="coupon-expires" name="expires_at" placeholder="2026-12-31">
+          <button class="ui-btn" type="submit">创建优惠码 <span>→</span></button>
+        </form>
+      </div>
+    </div>
+  </aside>
+</div>
 {{end}}

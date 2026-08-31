@@ -1,17 +1,70 @@
 {{define "page"}}
-<h1 class="h3 mb-4">最近订单 <span class="ui-muted fw-normal">（50 条）</span></h1>
+<div class="admin-page-header">
+  <div class="admin-page-title">
+    <span class="eyebrow">COMMERCE / ORDERS</span>
+    <h1>订单管理</h1>
+    <p>查看最近 50 条订单与退款操作</p>
+  </div>
+  <div class="admin-page-actions">
+    <a href="/admin/refunds" class="admin-back-btn">查看退款记录 →</a>
+  </div>
+</div>
+
 {{if .Error}}<div class="ui-alert ui-alert-error" role="alert">{{.Error}}</div>{{end}}
-<div class="ui-table-wrap" aria-label="最近订单"><table><thead>
-<tr><th scope="col">ID</th><th scope="col">用户</th><th scope="col">金额</th><th scope="col">周期</th><th scope="col">状态</th><th scope="col">利润</th><th scope="col">退款</th></tr></thead><tbody>
-{{range .Rows}}<tr>
-<td>{{.ID}}</td><td>{{.A}}</td><td>￥{{.B}}</td><td>{{.C}}</td><td>{{.D}}</td><td>{{.E}}</td>
-<td><form method="post" action="/admin/orders/{{.ID}}/refund" class="ui-actions flex-nowrap">
-<input type="hidden" name="_csrf" value="{{$.CSRF}}">
-<label class="visually-hidden" for="refund-amount-{{.ID}}">退款金额</label><input class="form-control form-control-sm" id="refund-amount-{{.ID}}" name="amount" value="{{.B}}" size="6">
-<label class="visually-hidden" for="refund-method-{{.ID}}">退款方式</label><select class="form-select form-select-sm" id="refund-method-{{.ID}}" name="method"><option value="balance">退余额</option><option value="gateway">线下/手动（标记已退款）</option></select>
-<label class="visually-hidden" for="refund-reason-{{.ID}}">退款原因</label><input class="form-control form-control-sm" id="refund-reason-{{.ID}}" name="reason" placeholder="原因" size="8">
-<button class="ui-btn ui-btn-danger py-1 px-2" type="submit">退款</button>
-</form></td></tr>{{end}}
-</tbody></table></div>
-<div class="ui-card mt-3 d-flex justify-content-between align-items-center flex-wrap gap-2"><span>总毛利：<strong>{{.TotalProfit}}</strong> 元</span><a href="/admin/refunds">查看退款记录</a></div>
+
+<div class="admin-panel">
+  <div class="admin-panel-header">
+    <h2>订单列表</h2>
+    <span class="admin-total-badge">总毛利 <strong>￥{{.TotalProfit}}</strong></span>
+  </div>
+  <div class="admin-table-wrap">
+    <table class="admin-table">
+      <thead>
+        <tr>
+          <th scope="col">ID</th>
+          <th scope="col">用户</th>
+          <th scope="col">金额</th>
+          <th scope="col">周期</th>
+          <th scope="col">状态</th>
+          <th scope="col">利润</th>
+          <th scope="col" class="th-actions">退款操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .Rows}}
+        <tr>
+          <td class="td-id">{{.ID}}</td>
+          <td>{{.A}}</td>
+          <td class="td-price">￥{{.B}}</td>
+          <td>{{.C}}</td>
+          <td>
+            {{if eq .D "已支付"}}<span class="badge badge-ok">{{.D}}</span>
+            {{else if eq .D "未支付"}}<span class="badge badge-warn">{{.D}}</span>
+            {{else}}<span class="badge badge-idle">{{.D}}</span>{{end}}
+          </td>
+          <td>{{if .E}}￥{{.E}}{{else}}-{{end}}</td>
+          <td class="td-actions">
+            <form method="post" action="/admin/orders/{{.ID}}/refund" class="admin-refund-form">
+              <input type="hidden" name="_csrf" value="{{$.CSRF}}">
+              <label class="visually-hidden" for="refund-amount-{{.ID}}">退款金额</label>
+              <input class="admin-input-sm" id="refund-amount-{{.ID}}" name="amount" value="{{.B}}" placeholder="金额">
+              <label class="visually-hidden" for="refund-method-{{.ID}}">退款方式</label>
+              <select class="admin-select-sm" id="refund-method-{{.ID}}" name="method">
+                <option value="balance">退余额</option>
+                <option value="gateway">线下/手动</option>
+              </select>
+              <label class="visually-hidden" for="refund-reason-{{.ID}}">退款原因</label>
+              <input class="admin-input-sm" id="refund-reason-{{.ID}}" name="reason" placeholder="原因">
+              <button class="admin-row-btn is-danger" type="submit">退款</button>
+            </form>
+          </td>
+        </tr>
+        {{end}}
+        {{if not .Rows}}
+        <tr><td colspan="7" class="admin-table-empty">暂无订单</td></tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</div>
 {{end}}

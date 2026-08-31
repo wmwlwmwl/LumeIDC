@@ -9,31 +9,127 @@
 <link rel="stylesheet" href="/assets/css/lume.css">
 <script src="/assets/js/lume.js" defer></script>
 </head>
-<body>
+<body class="admin-body">
 <a class="ui-skip" href="#admin-main-content">跳到主要内容</a>
 <div class="admin-shell" data-admin-shell>
-<nav class="admin-nav" id="admin-nav" aria-label="后台导航">
-<div class="admin-brand">LumeIDC</div>
-<a href="/admin">概览</a>
-<a href="/admin/types">分类管理</a>
-<a href="/admin/products">产品管理</a>
-<a href="/admin/servers">上游服务器</a>
-<a href="/admin/services">服务管理</a>
-<a href="/admin/users">用户</a>
-<a href="/admin/orders">订单</a>
-<a href="/admin/refunds">退款记录</a>
-<a href="/admin/coupons">优惠码</a>
-<a href="/admin/announcements">公告</a>
-<a href="/admin/gateway">支付网关</a>
-<a href="/admin/settings">通知设置</a>
-<a href="/admin/totp">两步验证</a>
-<a href="/admin/logs">操作日志</a>
-<a href="/admin/password" style="margin-top:18px;border-top:1px solid #312e81;padding-top:14px">修改密码</a>
-</nav>
-<main class="admin-main" id="admin-main-content">
-<button class="admin-menu-toggle" type="button" data-admin-menu aria-controls="admin-nav" aria-expanded="false">后台菜单</button>
-<div class="admin-content">{{template "page" .}}</div>
-</main>
+  <aside class="admin-sidebar" id="admin-nav" aria-label="后台导航">
+    <div class="admin-brand-wrap">
+      <a class="admin-brand" href="/admin">
+        <span class="brand-mark">L</span>
+        <div class="admin-brand-text">
+          <span class="admin-brand-name">Lume<span class="brand-soft">IDC</span></span>
+          <span class="admin-brand-badge">CONSOLE</span>
+        </div>
+      </a>
+    </div>
+
+    <nav class="admin-menu-list">
+      <div class="admin-nav-group">
+        <span class="admin-nav-label">工作台</span>
+        <a href="/admin" class="admin-nav-item {{if eq .Page "admin_dashboard.html"}}is-active{{end}}">
+          <span class="admin-nav-bar"></span>
+          <span>概览看板</span>
+        </a>
+        <a href="/admin/types" class="admin-nav-item {{if eq .Page "admin_types.html"}}is-active{{end}}">
+          <span class="admin-nav-bar"></span>
+          <span>分类管理</span>
+        </a>
+        <a href="/admin/products" class="admin-nav-item {{if or (eq .Page "admin_products.html") (eq .Page "admin_product_form.html")}}is-active{{end}}">
+          <span class="admin-nav-bar"></span>
+          <span>产品管理</span>
+        </a>
+        <a href="/admin/servers" class="admin-nav-item {{if or (eq .Page "admin_servers.html") (eq .Page "admin_server_form.html") (eq .Page "admin_catalog.html")}}is-active{{end}}">
+          <span class="admin-nav-bar"></span>
+          <span>上游服务器</span>
+        </a>
+      </div>
+
+      <div class="admin-nav-group">
+        <span class="admin-nav-label">业务运营</span>
+        <a href="/admin/services" class="admin-nav-item {{if eq .Page "admin_services.html"}}is-active{{end}}">
+          <span class="admin-nav-bar"></span>
+          <span>服务实例</span>
+        </a>
+        <a href="/admin/users" class="admin-nav-item {{if or (eq .Page "admin_users.html") (eq .Page "admin_user_form.html")}}is-active{{end}}">
+          <span class="admin-nav-bar"></span>
+          <span>用户管理</span>
+        </a>
+        <a href="/admin/orders" class="admin-nav-item {{if eq .Page "admin_orders.html"}}is-active{{end}}">
+          <span class="admin-nav-bar"></span>
+          <span>订单管理</span>
+        </a>
+        <a href="/admin/refunds" class="admin-nav-item {{if eq .Page "admin_refunds.html"}}is-active{{end}}">
+          <span class="admin-nav-bar"></span>
+          <span>退款记录</span>
+        </a>
+        <a href="/admin/coupons" class="admin-nav-item {{if eq .Page "admin_coupons.html"}}is-active{{end}}">
+          <span class="admin-nav-bar"></span>
+          <span>优惠折扣</span>
+        </a>
+        <a href="/admin/announcements" class="admin-nav-item {{if or (eq .Page "admin_announcements.html") (eq .Page "admin_announcement_form.html")}}is-active{{end}}">
+          <span class="admin-nav-bar"></span>
+          <span>系统公告</span>
+        </a>
+      </div>
+
+      <div class="admin-nav-group">
+        <span class="admin-nav-label">系统设置</span>
+        <a href="/admin/gateway" class="admin-nav-item {{if eq .Page "admin_gateway.html"}}is-active{{end}}">
+          <span class="admin-nav-bar"></span>
+          <span>支付网关</span>
+        </a>
+        <a href="/admin/settings" class="admin-nav-item {{if eq .Page "admin_settings.html"}}is-active{{end}}">
+          <span class="admin-nav-bar"></span>
+          <span>通知设置</span>
+        </a>
+        <a href="/admin/totp" class="admin-nav-item {{if eq .Page "admin_totp.html"}}is-active{{end}}">
+          <span class="admin-nav-bar"></span>
+          <span>安全验证</span>
+        </a>
+        <a href="/admin/logs" class="admin-nav-item {{if eq .Page "admin_logs.html"}}is-active{{end}}">
+          <span class="admin-nav-bar"></span>
+          <span>审计日志</span>
+        </a>
+        <a href="/admin/password" class="admin-nav-item {{if eq .Page "admin_password.html"}}is-active{{end}}">
+          <span class="admin-nav-bar"></span>
+          <span>修改密码</span>
+        </a>
+      </div>
+    </nav>
+
+    <div class="admin-nav-footer">
+      <div class="admin-user-badge">
+        <span class="admin-avatar">A</span>
+        <div class="admin-user-info">
+          <strong>系统管理员</strong>
+          <small>在线运行中</small>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  <div class="admin-body-wrap">
+    <header class="admin-topbar">
+      <button class="admin-menu-toggle" type="button" data-admin-menu aria-controls="admin-nav" aria-expanded="false">
+        <span class="toggle-lines"><span></span><span></span><span></span></span>
+        <span class="toggle-text">菜单</span>
+      </button>
+      <div class="admin-topbar-breadcrumb">
+        <span class="admin-breadcrumb-item">管理后台</span>
+      </div>
+      <div class="admin-topbar-actions">
+        <a href="/" class="admin-header-btn">
+          <span>前台首页 ↗</span>
+        </a>
+      </div>
+    </header>
+
+    <main class="admin-main" id="admin-main-content">
+      <div class="admin-content-inner">
+        {{template "page" .}}
+      </div>
+    </main>
+  </div>
 </div>
 </body>
 </html>
