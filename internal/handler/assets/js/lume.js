@@ -5,18 +5,14 @@
   function openCatalogSubmenu(submenu) {
     if (!submenu) return;
     submenu.classList.add('is-open');
-    submenu.style.maxHeight = '0px';
-    requestAnimationFrame(function () {
-      submenu.style.maxHeight = submenu.scrollHeight + 'px';
-    });
+    submenu.style.maxHeight = 'none';
+    submenu.style.overflow = 'visible';
   }
   function closeCatalogSubmenu(submenu) {
     if (!submenu) return;
-    submenu.style.maxHeight = submenu.scrollHeight + 'px';
-    requestAnimationFrame(function () {
-      submenu.classList.remove('is-open');
-      submenu.style.maxHeight = '0px';
-    });
+    submenu.classList.remove('is-open');
+    submenu.style.removeProperty('max-height');
+    submenu.style.removeProperty('overflow');
   }
   function toggle(button, target, openClass) {
     if (!button || !target) return;
@@ -24,21 +20,16 @@
       var open = target.classList.toggle(openClass);
       button.setAttribute('aria-expanded', open ? 'true' : 'false');
     });
+    document.addEventListener('click', function (e) {
+      if (!target.classList.contains(openClass)) return;
+      if (e.target.closest('[data-site-menu]') || e.target.closest('[data-site-header]')) return;
+      target.classList.remove(openClass);
+      button.setAttribute('aria-expanded', 'false');
+    });
   }
   function catalogSearch() {
     var input = document.querySelector('#catalog-search-input');
-    var headerInput = document.querySelector('#site-search-input');
-    if (!input && headerInput) {
-      headerInput.addEventListener('keydown', function (event) {
-        if (event.key === 'Enter') window.location.href = '/products';
-      });
-      return;
-    }
     if (!input) return;
-    if (headerInput) headerInput.addEventListener('input', function () {
-      input.value = headerInput.value;
-      input.dispatchEvent(new Event('input'));
-    });
     input.addEventListener('input', function () {
       var query = input.value.trim().toLowerCase();
       document.querySelectorAll('[data-catalog-item]').forEach(function (item) {
@@ -52,9 +43,6 @@
           if (nested) openCatalogSubmenu(nested);
         }
       });
-    });
-    if (headerInput) headerInput.addEventListener('keydown', function (event) {
-      if (event.key === 'Enter') input.focus();
     });
   }
   function catalogMenu() {
@@ -150,6 +138,14 @@
 
   /* ---------- 表单提交：确认 + 防重复 ---------- */
   function bindFormBehavior() {
+    // 兼容供应商组件的旧式内联确认，统一接入本站确认弹窗。
+    document.querySelectorAll('form[onsubmit]').forEach(function (form) {
+      var inline = form.getAttribute('onsubmit') || '';
+      var match = inline.match(/confirm\(['"]([^'"]*)['"]\)/);
+      if (!match) return;
+      form.setAttribute('data-confirm', match[1]);
+      form.removeAttribute('onsubmit');
+    });
     // data-confirm：提交前弹出确认框
     document.addEventListener('submit', function (e) {
       var form = e.target;
@@ -300,9 +296,38 @@
     }, { passive: true });
   }
 
+  /* ---------- 后台抽屉（移动端）：遮罩点击关闭 + 菜单项点击收起 + 滚动锁定 ---------- */
+  function bindAdminDrawer() {
+    var shell = document.querySelector('[data-admin-shell]');
+    var btn = document.querySelector('[data-admin-menu]');
+    if (!shell || !btn) return;
+    var mq = window.matchMedia('(max-width: 800px)');
+    function setOpen(open) {
+      shell.classList.toggle('is-open', open);
+      btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+      document.body.classList.toggle('ui-modal-lock', open && mq.matches);
+    }
+    btn.addEventListener('click', function (e) {
+      e.stopPropagation();
+      setOpen(!shell.classList.contains('is-open'));
+    });
+    document.addEventListener('click', function (e) {
+      if (!shell.classList.contains('is-open')) return;
+      if (e.target.closest('.admin-sidebar') || e.target.closest('[data-admin-menu]')) return;
+      setOpen(false);
+    });
+    shell.querySelectorAll('.admin-nav-item').forEach(function (a) {
+      a.addEventListener('click', function () {
+        if (mq.matches) setOpen(false);
+      });
+    });
+    // 视口跨过断点时复位抽屉状态
+    mq.addEventListener('change', function () { if (!mq.matches) setOpen(false); });
+  }
+
   document.addEventListener('DOMContentLoaded', function () {
     toggle(document.querySelector('[data-site-menu]'), document.querySelector('[data-site-header]'), 'is-open');
-    toggle(document.querySelector('[data-admin-menu]'), document.querySelector('[data-admin-shell]'), 'is-open');
+    bindAdminDrawer();
     catalogSearch();
     catalogMenu();
     bindFormBehavior();

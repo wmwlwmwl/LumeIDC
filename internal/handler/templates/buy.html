@@ -39,10 +39,10 @@
           <label class="fx-cfg-label">{{.Name}}{{if .Unit}}（{{.Unit}}）{{end}}</label>
           {{if eq .Mode "range"}}
           <div class="fx-stepper">
+            <input id="rng_{{.Field}}" type="range" min="{{.Min}}" max="{{.Max}}" step="{{.Step}}" value="{{.Min}}" oninput="onRange(this)">
             <button type="button" class="fx-step-btn" onclick="stepVal('cfg_{{.Field}}', -1)" aria-label="减少">−</button>
             <input name="cfg_{{.Field}}" id="cfg_{{.Field}}" type="number" value="{{.Min}}" min="{{.Min}}" max="{{.Max}}" step="{{.Step}}" oninput="syncNum(this.id)" onchange="clampVal(this.id)">
             <button type="button" class="fx-step-btn" onclick="stepVal('cfg_{{.Field}}', 1)" aria-label="增加">+</button>
-            <input id="rng_{{.Field}}" type="range" min="{{.Min}}" max="{{.Max}}" step="{{.Step}}" value="{{.Min}}" oninput="onRange(this)">
           </div>
           <p class="fx-cfg-hint">范围 {{.Min}}~{{.Max}}{{if .Unit}} {{.Unit}}{{end}}</p>
           {{else}}

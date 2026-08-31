@@ -499,7 +499,9 @@ func (h *Pages) consoleAction(w http.ResponseWriter, r *http.Request) {
 	}
 	dest := "/services/" + strconv.FormatInt(serviceID, 10)
 	if err != nil {
-		dest += "?err=" + url.QueryEscape(err.Error())
+		if sess := middleware.FromSession(r.Context()); sess != nil {
+			sess.SetFlash("操作失败：" + err.Error())
+		}
 		h.Svc.AppendLog(r.Context(), serviceID, userID, opLabel(action), "失败："+err.Error())
 	} else if action == "crack_pass" || action == "rescue" {
 		// 新密码敏感，走一次性 flash 而非 URL 回显
@@ -512,7 +514,9 @@ func (h *Pages) consoleAction(w http.ResponseWriter, r *http.Request) {
 		}
 		h.Svc.AppendLog(r.Context(), serviceID, userID, opLabel(action), "成功")
 	} else {
-		dest += "?ok=" + url.QueryEscape(actionName(action))
+		if sess := middleware.FromSession(r.Context()); sess != nil {
+			sess.SetFlash(actionName(action))
+		}
 		h.Svc.AppendLog(r.Context(), serviceID, userID, opLabel(action), "成功")
 	}
 	http.Redirect(w, r, dest, http.StatusSeeOther)

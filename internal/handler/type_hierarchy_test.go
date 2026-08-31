@@ -98,7 +98,7 @@ func TestTemplatesParse(t *testing.T) {
 			t.Errorf("解析 %s: %v", name, err)
 		}
 	}
-	if _, err := template.ParseFS(siteFS, "templates/site.html", "templates/products.html"); err != nil {
+	if _, err := template.New("site").Funcs(template.FuncMap{"safeDescriptionHTML": safeDescriptionHTML}).ParseFS(siteFS, "templates/site.html", "templates/products.html"); err != nil {
 		t.Errorf("解析 products.html: %v", err)
 	}
 	// 带数据执行：捕获运行期字段缺失（如 typeRow 漏 ParentID 会让页面渲染中断）

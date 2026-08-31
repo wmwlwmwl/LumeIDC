@@ -1,11 +1,11 @@
 <div class="card provider-widget provider-easypanel" style="margin-top:16px">
-<h3 style="margin-top:0;font-size:1rem">实例管理</h3>
+<h3 class="ep-widget-title">实例管理</h3>
 <table style="font-size:.88rem">
 <tr><td class="muted" width="90">站点账号</td><td><b>{{.Name}}</b></td></tr>
 <tr><td class="muted">站点密码</td><td><span id="epPw" style="display:inline-block">{{.Password}}</span> <button class="cbtn" style="background:#4f46e5;font-size:.75rem;padding:2px 8px" onclick="copyText(this,document.getElementById('epPw').textContent)">复制</button></td></tr>
 {{if .PanelURL}}
 <tr><td class="muted">主机面板</td><td>
-<form method="post" action="{{.PanelURL}}" target="_blank" style="display:inline">
+<form class="ep-panel-login" method="post" action="{{.PanelURL}}" target="_blank">
 <input type="hidden" name="username" value="{{.Name}}">
 <input type="hidden" name="passwd" value="{{.Password}}">
 <button class="cbtn" style="background:#15803d;font-size:.8rem;padding:4px 12px">登录主机面板</button>
@@ -15,14 +15,14 @@
 {{end}}
 </table>
 
-<details style="margin-top:10px">
-<summary style="cursor:pointer;color:#4f46e5;font-size:.88rem">重置密码（站点/FTP/数据库同步）</summary>
+<section class="ep-operation-section"><h4>账户操作</h4>
+<details class="ep-operation-details"><summary>重置密码（站点/FTP/数据库同步）</summary>
 <form method="post" action="/services/{{.ServiceID}}/console" style="margin-top:8px;display:flex;gap:8px" onsubmit="return confirm('确认重置站点密码？站点、FTP、数据库密码将同步更换。')">
 <input type="hidden" name="_csrf" value="{{.CSRF}}"><input type="hidden" name="do" value="crack_pass">
 <input name="password" type="text" placeholder="留空自动生成" style="flex:1;padding:7px;border:1px solid #ccc;border-radius:6px">
 <button class="cbtn" style="background:#4f46e5">重置</button>
 </form>
-</details>
+</details></section>
 
 <h3 style="margin:16px 0 6px;font-size:.95rem">空间与数据库</h3>
 <table style="font-size:.88rem">

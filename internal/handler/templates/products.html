@@ -51,23 +51,31 @@
     </div>
     {{end}}{{end}}
 
+    {{$categoryDesc := ""}}
+    {{range .Types}}{{if eq (printf "%d" .ID) $.FID}}{{range .Children}}{{if eq (printf "%d" .ID) $.GID}}{{if .Description}}{{$categoryDesc = .Description}}{{end}}{{end}}{{end}}{{end}}{{end}}
+    {{if $categoryDesc}}
+    <div class="fx-category-description">{{safeDescriptionHTML $categoryDesc}}</div>
+    {{end}}
+
     <div class="fx-product-grid">
       {{range .Products}}
       <article class="fx-product-card">
         <div class="fx-product-body">
-          <h3>{{.Name}}</h3>
-          <p>{{.Desc}}</p>
+          <div class="fx-product-head">
+            <h3>{{.Name}}</h3>
+            {{if ne .Stock 0}}<span class="fx-product-stock">库存{{if eq .Stock -1}}不限{{else}}{{.Stock}}{{end}}</span>{{end}}
+          </div>
+          <div class="fx-product-description">{{safeDescriptionHTML .Desc}}</div>
         </div>
         <div class="fx-product-foot">
           <div class="fx-product-price">
             <strong>￥{{.Monthly}}</strong>
-            <span>/月</span>
-            <small>库存：{{if eq .Stock -1}}不限{{else if gt .Stock 0}}{{.Stock}}{{else}}已售罄{{end}}</small>
+            <span> 起/月</span>
           </div>
           {{if eq .Stock 0}}
           <span class="fx-soldout">已售罄</span>
           {{else}}
-          <a class="ui-btn fx-buy-btn" href="/buy/{{.ID}}">立即购买 <span>→</span></a>
+          <a class="ui-btn fx-buy-btn" href="/buy/{{.ID}}">立即购买</a>
           {{end}}
         </div>
       </article>

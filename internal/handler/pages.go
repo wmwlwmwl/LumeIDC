@@ -6,10 +6,13 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
+	"html"
 	"html/template"
 	"log"
 	"net/http"
+	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"lumeidc/internal/middleware"
@@ -101,7 +104,7 @@ var balanceRepo *repo.Balance
 func SetBalanceRepo(b *repo.Balance) { balanceRepo = b }
 
 func render(w http.ResponseWriter, r *http.Request, page string, data map[string]any) {
-	tpl, err := template.ParseFS(siteFS, "templates/site.html", "templates/"+page)
+	tpl, err := template.New(page).Funcs(template.FuncMap{"safeDescriptionHTML": safeDescriptionHTML}).ParseFS(siteFS, "templates/site.html", "templates/"+page)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
@@ -149,6 +152,58 @@ type productView struct {
 	Desc    string
 	Monthly string
 	Stock   int
+}
+
+var descriptionTagRe = regexp.MustCompile(`(?is)<!--.*?-->|</?\s*([a-z][a-z0-9]*)[^>]*>`)
+var descriptionClassRe = regexp.MustCompile(`(?i)\bclass\s*=\s*["']([a-z0-9_ -]+)["']`)
+var descriptionClassNameRe = regexp.MustCompile(`^[a-z0-9_-]+$`)
+var multiSpaceRe = regexp.MustCompile(`[\s\x{3000}]+`)
+var inlineBreakRe = regexp.MustCompile(`([^\s<>])\s*(<(?:b|strong)>)`)
+
+// normSpace 将连续空白（含全角空格）压缩为单个半角空格。
+func normSpace(s string) string {
+	return strings.TrimSpace(multiSpaceRe.ReplaceAllString(s, " "))
+}
+
+// safeDescriptionHTML 仅保留无属性的排版标签，避免描述成为脚本入口。
+func safeDescriptionHTML(s string) template.HTML {
+	s = html.UnescapeString(s)
+	allowed := map[string]bool{"p": true, "br": true, "strong": true, "b": true, "em": true, "i": true, "ul": true, "ol": true, "li": true, "span": true}
+	var b strings.Builder
+	last := 0
+	for _, m := range descriptionTagRe.FindAllStringSubmatchIndex(s, -1) {
+		b.WriteString(template.HTMLEscapeString(normSpace(s[last:m[0]])))
+		full := s[m[0]:m[1]]
+		if m[2] >= 0 && m[3] >= 0 {
+			tag := strings.ToLower(s[m[2]:m[3]])
+			trimmed := strings.TrimSpace(full)
+			if allowed[tag] && strings.HasPrefix(trimmed[1:], "/") {
+				b.WriteString("</" + tag + ">")
+			} else if allowed[tag] && tag == "br" {
+				b.WriteString("<br>")
+			} else if allowed[tag] {
+				class := ""
+				if cm := descriptionClassRe.FindStringSubmatch(full); len(cm) == 2 {
+					var names []string
+					for _, name := range strings.Fields(strings.ToLower(cm[1])) {
+						if descriptionClassNameRe.MatchString(name) {
+							names = append(names, name)
+						}
+					}
+					if len(names) > 0 {
+						class = ` class="` + template.HTMLEscapeString(strings.Join(names, " ")) + `"`
+					}
+				}
+				b.WriteString("<" + tag + class + ">")
+			}
+		}
+		last = m[1]
+	}
+	b.WriteString(template.HTMLEscapeString(normSpace(s[last:])))
+	out := b.String()
+	// 相邻 <b>/<strong> 无换行时自动插入 <br>（上游 "标签</b>值<b>标签" 格式）
+	out = inlineBreakRe.ReplaceAllString(out, "$1<br>$2")
+	return template.HTML(out)
 }
 
 // typeNav 前台分类导航（两级）。

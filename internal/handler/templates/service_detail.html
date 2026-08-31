@@ -1,13 +1,4 @@
 {{define "page"}}
-<div class="fx-page-head">
-  <div class="fx-page-title">
-    <a class="fx-back-link" href="/services">返回我的服务</a>
-    <span class="eyebrow">SERVICE DETAIL / #{{.Svc.ID}}</span>
-    <h1>{{.Svc.Name}}</h1>
-    <span class="badge {{if eq .Svc.StatusText "激活"}}badge-ok{{else if eq .Svc.StatusText "已停机"}}badge-warn{{else}}badge-idle{{end}}">{{.Svc.StatusText}}</span>
-  </div>
-</div>
-
 {{if eq .Svc.StatusText "待开通"}}
 <div class="ui-alert ui-alert-info" role="status">
   <strong>正在开通…</strong>
@@ -24,7 +15,15 @@
 {{end}}
 
 <div class="fx-detail-layout">
-  <div class="fx-detail-main">
+  <aside class="fx-detail-side">
+    <div class="fx-detail-identity">
+      <a class="fx-back-link" href="/services">返回我的服务</a>
+      <span class="eyebrow">SERVICE DETAIL / #{{.Svc.ID}}</span>
+      <h1>{{.Svc.Name}}</h1>
+      <span class="badge {{if eq .Svc.StatusText "激活"}}badge-ok{{else if eq .Svc.StatusText "已停机"}}badge-warn{{else}}badge-idle{{end}}">{{.Svc.StatusText}}</span>
+      <p>创建于 {{.Svc.CreatedAt.Format "2006-01-02"}}</p>
+    </div>
+
     <section class="fx-panel">
       <div class="fx-panel-head">
         <h2>付费信息</h2>
@@ -57,8 +56,6 @@
       </div>
     </section>
 
-    {{if .ProviderWidget}}{{.ProviderWidget}}{{end}}
-
     {{if .Svc.Configs}}
     <section class="fx-panel">
       <div class="fx-panel-head">
@@ -77,21 +74,20 @@
       </div>
     </section>
     {{end}}
+  </aside>
 
-    {{if and .Svc.UpstreamHost (not .ProviderWidget)}}
+  <main class="fx-detail-main">
+    {{if .ProviderWidget}}
+    {{.ProviderWidget}}
+    {{else if .Svc.UpstreamHost}}
     <div class="fx-panel fx-panel-plain">
       <p class="text-muted">该上游暂未提供独立详情面板。</p>
     </div>
+    {{else}}
+    <div class="fx-panel fx-panel-plain">
+      <p class="text-muted">服务详情将在开通后显示。</p>
+    </div>
     {{end}}
   </div>
-
-  <aside class="fx-detail-side">
-    <section class="fx-panel fx-side-card">
-      <span class="fx-side-mark">S</span>
-      <h2>{{.Svc.Name}}</h2>
-      <p>创建于 {{.Svc.CreatedAt.Format "2006-01-02"}}</p>
-      <div class="fx-side-id">服务 ID #{{.Svc.ID}}</div>
-    </section>
-  </aside>
 </div>
 {{end}}

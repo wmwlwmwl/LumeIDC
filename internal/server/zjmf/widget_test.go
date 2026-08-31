@@ -36,7 +36,7 @@ func TestDetailWidgetRendersAllSections(t *testing.T) {
 	for _, want := range []string{
 		"实例信息", "开机", "关机", "重启", "硬重启", "硬关机", "救援系统", "退出救援", "VNC 控制台",
 		"登录信息", "重置密码", "随机生成", "系统信息", "重装系统",
-		"监控图表", "echarts.min.js", "网络流量", "zjTrafficChart",
+        "监控图表", "网络流量", "zjTrafficChart", "echarts.min.js",
 		"快照/备份", "创建快照", "创建备份", "restoreSnap", "restoreBackup", "delSnap", "delBackup",
 		"NAT转发", "addNatAcl", "delNatAcl", "共享建站", "addNatWeb", "delNatWeb",
 		"安全组", "createSecurityGroup", "linkSecurityGroup", "delSecurityGroup", "新增策略", "createSecurityRule", "delSecurityRule",

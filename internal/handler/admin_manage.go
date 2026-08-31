@@ -6,12 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"html"
 	"html/template"
 	"log"
 	"net/http"
 	"net/url"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -797,13 +795,38 @@ func (m *AdminManage) ImportProducts(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// 只拉一次目录（内含全部商品的名称/分组/价格/库存/描述），
+	// 建 PID→商品 映射供各导入项复用，避免每导一个商品就全量拉一次目录——
+	// 旧逻辑 N×M 次上游请求易触发限流/拉黑。
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
+	prov, err := m.Providers.Get(sv.Provider)
+	if err != nil {
+		http.Redirect(w, r, fmt.Sprintf("/admin/servers/%d/catalog?err=%s", serverID,
+			url.QueryEscape("供应商错误")), http.StatusSeeOther)
+		return
+	}
+	list, err := prov.Catalog(ctx, serverConfig(sv))
+	if err != nil {
+		http.Redirect(w, r, fmt.Sprintf("/admin/servers/%d/catalog?err=%s", serverID,
+			url.QueryEscape("拉取目录失败: "+err.Error())), http.StatusSeeOther)
+		return
+	}
+	byPID := make(map[int]*server.UpstreamProduct, len(list))
+	for i := range list {
+		byPID[list[i].PID] = &list[i]
+	}
 	imported := 0
 	for _, pidStr := range r.PostForm["import"] {
 		pid, err := strconv.Atoi(pidStr)
 		if err != nil || pid <= 0 {
 			continue
 		}
-		if m.importUpstreamProduct(r.Context(), sv, serverID, pid, int16(profitType), profitValue, parentID) {
+		up := byPID[pid]
+		if up == nil {
+			continue
+		}
+		if m.importUpstreamProduct(r.Context(), sv, serverID, up, int16(profitType), profitValue, parentID) {
 			imported++
 		}
 	}
@@ -814,26 +837,14 @@ func (m *AdminManage) ImportProducts(w http.ResponseWriter, r *http.Request) {
 // importUpstreamProduct 幂等导入：已按 (server_id, upstream_pid) 对接则更新价格/绑定/配置项，
 // 否则新建分类+产品+价格+绑定+配置项。profitType/profitValue 仅对新建产品生效（不覆盖已有产品利润）。
 // parentID：新建产品的分类归属（0=上游分组建一级；>0=建为该一级下的二级）。
-func (m *AdminManage) importUpstreamProduct(ctx context.Context, sv *repo.Server, serverID int64, pid int, profitType int16, profitValue float64, parentID int64) bool {
+// up 由调用方一次性拉取目录后传入（本函数不再全量拉目录，避免导入 N 项触发 N×M 次上游请求）。
+func (m *AdminManage) importUpstreamProduct(ctx context.Context, sv *repo.Server, serverID int64, up *server.UpstreamProduct, profitType int16, profitValue float64, parentID int64) bool {
 	prov, err := m.Providers.Get(sv.Provider)
 	if err != nil {
 		return false
 	}
 	cfg := serverConfig(sv)
-	list, err := prov.Catalog(ctx, cfg)
-	if err != nil {
-		return false
-	}
-	var up *server.UpstreamProduct
-	for i := range list {
-		if list[i].PID == pid {
-			up = &list[i]
-			break
-		}
-	}
-	if up == nil {
-		return false
-	}
+	pid := up.PID
 	psID, _ := m.Products.DefaultPricesetID(ctx)
 	// 幂等：已对接则更新，未对接则新建
 	existingID, _ := findProductByUpstream(ctx, m.Products.DB, serverID, int64(pid))
@@ -885,21 +896,9 @@ func (m *AdminManage) importUpstreamProduct(ctx context.Context, sv *repo.Server
 	return true
 }
 
-// descTagRe 去除上游描述里的 HTML 标签（如 <br>、<span>）。
-var descTagRe = regexp.MustCompile(`<[^>]+>`)
-
-// cleanDesc 把上游带 HTML 实体的描述清洗为纯文本：反转义 + 去标签 + 压缩空白。
+// cleanDesc 保留上游描述的换行和安全 HTML，危险标签与属性由统一过滤器移除。
 func cleanDesc(s string) string {
-	s = html.UnescapeString(s)
-	s = descTagRe.ReplaceAllString(s, "")
-	var b strings.Builder
-	for _, f := range strings.Fields(s) {
-		if b.Len() > 0 {
-			b.WriteByte(' ')
-		}
-		b.WriteString(f)
-	}
-	return strings.TrimSpace(b.String())
+	return strings.TrimSpace(string(safeDescriptionHTML(s)))
 }
 
 // ensureType 按分组名取分类 id，不存在则创建。
