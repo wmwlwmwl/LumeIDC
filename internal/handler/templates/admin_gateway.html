@@ -13,7 +13,7 @@
 {{if .Error}}<div class="ui-alert ui-alert-error" role="alert">{{.Error}}</div>{{end}}
 {{if .Msg}}<div class="ui-alert ui-alert-success" role="status">{{.Msg}}</div>{{end}}
 
-<div class="ui-alert ui-alert-info">支持多个网关实例，排序数字越小越优先。回调地址：<code data-copy="/pay/notify/网关编码" title="点击复制">/pay/notify/网关编码</code></div>
+<div class="ui-alert ui-alert-info">支持多个网关实例，排序数字越小越优先。回调地址：<code data-copy="/pay/notify?code=网关编码" title="点击复制">/pay/notify?code=网关编码</code></div>
 
 <div class="admin-panel">
   <div class="admin-panel-header">
@@ -40,7 +40,7 @@
         {{range .Rows}}
         <tr>
           <td class="td-id">{{.Code}}</td>
-          <td>{{if eq .Driver "epay"}}易支付{{else}}模拟支付{{end}}</td>
+           <td>{{if eq .Driver "epay"}}易支付{{else if eq .Driver "alipay_f2f"}}支付宝当面付{{else}}模拟支付{{end}}</td>
           <td class="td-name">{{.Name}}</td>
           <td class="td-url">{{.APIURL}}</td>
           <td>{{.Sort}}</td>
@@ -54,18 +54,25 @@
                 <label for="driver-{{.Code}}">插件类型</label>
                 <select id="driver-{{.Code}}" name="driver">
                   <option value="epay" {{if eq .Driver "epay"}}selected{{end}}>易支付</option>
+                  <option value="alipay_f2f" {{if eq .Driver "alipay_f2f"}}selected{{end}}>支付宝当面付</option>
                   <option value="mock" {{if eq .Driver "mock"}}selected{{end}}>模拟支付</option>
                 </select>
                 <label for="name-{{.Code}}">显示名称</label>
                 <input id="name-{{.Code}}" name="name" value="{{.Name}}" placeholder="显示名称" required>
                 <label for="api-{{.Code}}">API 地址</label>
-                <input id="api-{{.Code}}" name="api_url" value="{{.APIURL}}" placeholder="API 地址">
+                <input id="api-{{.Code}}" name="api_url" value="{{.APIURL}}" placeholder="API 地址" data-gateway-field="api_url">
                 <label for="pid-{{.Code}}">商户 PID</label>
-                <input id="pid-{{.Code}}" name="pid" value="{{.PID}}" placeholder="商户 PID">
+                <input id="pid-{{.Code}}" name="pid" value="{{.PID}}" placeholder="商户 PID" data-gateway-field="pid">
                 <label for="key-{{.Code}}">密钥（留空保持不变）</label>
-                <input id="key-{{.Code}}" name="key" type="password" placeholder="密钥" autocomplete="new-password">
+                <input id="key-{{.Code}}" name="key" type="password" placeholder="密钥" autocomplete="new-password" data-gateway-field="key">
                 <label for="channel-{{.Code}}">支付渠道</label>
-                <input id="channel-{{.Code}}" name="channel" value="{{.Channel}}" placeholder="如 alipay/wxpay">
+                <input id="channel-{{.Code}}" name="channel" value="{{.Channel}}" placeholder="如 alipay/wxpay" data-gateway-field="channel">
+                <label for="app-{{.Code}}">支付宝应用 ID</label>
+                <input id="app-{{.Code}}" name="app_id" value="{{.AppID}}" placeholder="支付宝应用 ID" data-gateway-field="app_id">
+                <label for="private-{{.Code}}">应用私钥（留空保持不变）</label>
+                <textarea id="private-{{.Code}}" name="private_key" rows="3" placeholder="-----BEGIN PRIVATE KEY-----" data-gateway-field="private_key"></textarea>
+                <label for="public-{{.Code}}">支付宝公钥（用于回调验签）</label>
+                <textarea id="public-{{.Code}}" name="public_key" rows="3" placeholder="-----BEGIN PUBLIC KEY-----" data-gateway-field="public_key">{{.PublicKey}}</textarea>
                 <label for="sort-{{.Code}}">排序</label>
                 <input id="sort-{{.Code}}" name="sort" type="number" value="{{.Sort}}">
                 <label class="check-line"><input type="checkbox" name="enabled" value="1" {{if .Enabled}}checked{{end}}> 启用</label>
@@ -99,6 +106,7 @@
           <label for="new-driver">插件类型</label>
           <select id="new-driver" name="driver">
             <option value="epay">易支付</option>
+            <option value="alipay_f2f">支付宝当面付</option>
             <option value="mock">模拟支付（测试）</option>
           </select>
         </div>
@@ -110,11 +118,11 @@
       <label for="new-name">显示名称</label>
       <input id="new-name" name="name" placeholder="如 易支付主通道" required>
       <label for="new-api">API 地址</label>
-      <input id="new-api" name="api_url" placeholder="API 地址">
+      <input id="new-api" name="api_url" placeholder="API 地址" data-gateway-field="api_url">
       <div class="admin-form-row">
         <div class="admin-form-col">
           <label for="new-pid">商户 PID</label>
-          <input id="new-pid" name="pid" placeholder="商户 PID">
+          <input id="new-pid" name="pid" placeholder="商户 PID" data-gateway-field="pid">
         </div>
         <div class="admin-form-col">
           <label for="new-sort">排序</label>
@@ -122,12 +130,43 @@
         </div>
       </div>
       <label for="new-key">商户密钥</label>
-      <input id="new-key" name="key" type="password" placeholder="商户密钥" autocomplete="new-password">
+      <input id="new-key" name="key" type="password" placeholder="商户密钥" autocomplete="new-password" data-gateway-field="key">
       <label for="new-channel">支付渠道</label>
-      <input id="new-channel" name="channel" value="alipay" placeholder="支付渠道">
+      <input id="new-channel" name="channel" value="alipay" placeholder="支付渠道" data-gateway-field="channel">
+      <label for="new-app">支付宝应用 ID</label>
+      <input id="new-app" name="app_id" placeholder="支付宝应用 ID" data-gateway-field="app_id">
+      <label for="new-private">应用私钥</label>
+      <textarea id="new-private" name="private_key" rows="4" placeholder="-----BEGIN PRIVATE KEY-----" data-gateway-field="private_key"></textarea>
+      <label for="new-public">支付宝公钥（用于回调验签）</label>
+      <textarea id="new-public" name="public_key" rows="4" placeholder="-----BEGIN PUBLIC KEY-----" data-gateway-field="public_key"></textarea>
       <label class="check-line"><input type="checkbox" name="enabled" value="1" checked> 启用</label>
       <button class="ui-btn" type="submit">添加网关 <span>→</span></button>
     </form>
   </div>
 </div>
+
+<script>
+(function () {
+  var fields = {
+    epay: ['api_url', 'pid', 'key', 'channel'],
+    alipay_f2f: ['api_url', 'app_id', 'private_key', 'public_key'],
+    mock: []
+  };
+  document.querySelectorAll('form[action="/admin/gateway/save"]').forEach(function (form) {
+    var driver = form.querySelector('select[name="driver"]');
+    if (!driver) return;
+    function refresh() {
+      var visible = fields[driver.value] || [];
+      form.querySelectorAll('[data-gateway-field]').forEach(function (input) {
+        var show = visible.indexOf(input.dataset.gatewayField) >= 0;
+        input.hidden = !show;
+        var label = input.previousElementSibling;
+        if (label && label.tagName === 'LABEL') label.hidden = !show;
+      });
+    }
+    driver.addEventListener('change', refresh);
+    refresh();
+  });
+})();
+</script>
 {{end}}

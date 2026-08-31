@@ -2,6 +2,8 @@ package handler
 
 import (
 	"embed"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"html/template"
 	"log"
@@ -15,6 +17,8 @@ import (
 	"lumeidc/internal/middleware"
 	"lumeidc/internal/repo"
 	"lumeidc/internal/service"
+
+	qrcode "github.com/skip2/go-qrcode"
 )
 
 //go:embed templates/pay.html
@@ -32,12 +36,69 @@ type Pay struct {
 
 func (h *Pay) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /order", h.createOrder)
-	mux.HandleFunc("GET /pay/notify/{code}", h.notify)
+	// 网关编码使用查询参数，避免与 /pay/{invoiceID}/start 的通配符路由冲突。
+	mux.HandleFunc("GET /pay/notify", h.notify)
+	mux.HandleFunc("POST /pay/notify", h.notify)
 	mux.HandleFunc("POST /pay/{invoiceID}/start", h.start)
 	mux.HandleFunc("POST /pay/{invoiceID}/balance", h.payByBalance)
 	mux.HandleFunc("GET /pay/{invoiceID}", h.payPage)
+	mux.HandleFunc("GET /pay/{invoiceID}/status", h.paymentStatus)
+	mux.HandleFunc("GET /pay/alipay-f2f", h.alipayF2FPage)
 	mux.HandleFunc("GET /mock/pay/{no}", h.mockPayPage)
 	mux.HandleFunc("POST /mock/pay/{no}", h.mockConfirm)
+}
+
+// alipayF2FPage 在本站生成二维码，避免把支付码交给第三方图片服务。
+func (h *Pay) alipayF2FPage(w http.ResponseWriter, r *http.Request) {
+	userID, ok := middleware.RequireUser(w, r)
+	if !ok {
+		return
+	}
+	no := strings.TrimSpace(r.URL.Query().Get("invoice"))
+	qrText := r.URL.Query().Get("qr")
+	if no == "" || qrText == "" {
+		http.NotFound(w, r)
+		return
+	}
+	var id int64
+	var status int16
+	var driver string
+	if err := h.Payment.DB.QueryRowContext(r.Context(),
+		`SELECT i.id,i.status,g.driver FROM invoices i JOIN gateways g ON g.code=i.gateway WHERE i.no=$1 AND i.user_id=$2`, no, userID).
+		Scan(&id, &status, &driver); err != nil || status != 0 || driver != "alipay_f2f" {
+		http.NotFound(w, r)
+		return
+	}
+	pngBytes, err := qrcode.Encode(qrText, qrcode.Medium, 320)
+	if err != nil {
+		http.Error(w, "生成支付二维码失败", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	dataURI := "data:image/png;base64," + base64.StdEncoding.EncodeToString(pngBytes)
+	if _, err := fmt.Fprintf(w, `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>支付宝扫码支付</title><style>body{font-family:system-ui,sans-serif;background:#f6f8fb;color:#182230;text-align:center;padding:40px 16px}.card{max-width:440px;margin:auto;padding:32px 24px;background:#fff;border-radius:18px;box-shadow:0 10px 30px #12263d12}img{width:320px;max-width:100%%;height:auto}.amount{font-size:28px;font-weight:700;margin:12px}</style></head><body><main class="card"><h1>支付宝扫码支付</h1><p>账单号：%s</p><p class="amount">请使用支付宝扫一扫</p><img src="%s" alt="支付宝支付二维码"><p id="message" role="status">支付完成后页面会自动检查到账状态</p><p><a href="/pay/%d">返回账单页</a></p></main><script>(function(){var message=document.getElementById('message');function check(){fetch('/pay/%d/status',{credentials:'same-origin'}).then(function(response){if(!response.ok)throw new Error();return response.json()}).then(function(data){if(data.paid){message.textContent='支付成功，正在返回账单页';location.href='/pay/%d';return}setTimeout(check,4000)}).catch(function(){message.textContent='状态检查失败，正在重试';setTimeout(check,5000)})}check()})();</script></body></html>`, template.HTMLEscapeString(no), dataURI, id, id, id); err != nil {
+		log.Printf("[template] 支付宝二维码页面输出失败: %v", err)
+	}
+}
+
+func (h *Pay) paymentStatus(w http.ResponseWriter, r *http.Request) {
+	userID, ok := middleware.RequireUser(w, r)
+	if !ok {
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("invoiceID"), 10, 64)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	var status int16
+	var no string
+	if err := h.Payment.DB.QueryRowContext(r.Context(), `SELECT no,status FROM invoices WHERE id=$1 AND user_id=$2`, id, userID).Scan(&no, &status); err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	json.NewEncoder(w).Encode(map[string]bool{"paid": status == 1})
 }
 
 // createOrder POST product_id & cycle -> 创建订单+账单，跳转支付页
@@ -180,10 +241,12 @@ func (h *Pay) start(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "创建支付记录失败", 500)
 		return
 	}
+	notifyURL := h.BaseURL + "/pay/notify?" + url.Values{"code": {code}}.Encode()
 	u, err := impl.PayURL(r.Context(), gateway.PayRequest{InvoiceNo: no, Amount: amount, Title: "LumeIDC 账单 " + no,
-		NotifyURL: h.BaseURL + "/pay/notify/" + url.PathEscape(code), ReturnURL: h.BaseURL + "/pay/" + strconv.FormatInt(id, 10), Config: inst.Config})
+		NotifyURL: notifyURL, ReturnURL: h.BaseURL + "/pay/" + strconv.FormatInt(id, 10), Config: inst.Config})
 	if err != nil {
 		_ = h.GwRepo.MarkAttemptFailedByID(r.Context(), attemptID)
+		log.Printf("[payment] 网关 %s 生成支付链接失败，账单 %s: %v", code, no, err)
 		http.Error(w, "生成支付链接失败", http.StatusBadGateway)
 		return
 	}
@@ -199,7 +262,11 @@ func (h *Pay) ownsInvoice(r *http.Request, userID int64, no string) bool {
 
 // notify 由网关实例 code 分发到对应插件，账单核销保持统一。
 func (h *Pay) notify(w http.ResponseWriter, r *http.Request) {
-	code := r.PathValue("code")
+	code := strings.TrimSpace(r.URL.Query().Get("code"))
+	if code == "" || strings.ContainsAny(code, "/?#&") {
+		http.NotFound(w, r)
+		return
+	}
 	inst, err := h.GwRepo.Get(r.Context(), code)
 	impl, ok := h.Gateways[inst.Driver]
 	if err != nil || !inst.Enabled || !ok {

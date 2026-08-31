@@ -49,7 +49,7 @@ func ParsePositive(s string, maxCents int64) (string, int64, error) {
 	if cents <= 0 || cents > maxCents {
 		return "", 0, ErrInvalid
 	}
-	return strconv.FormatInt(cents/100, 10) + "." + strconv.FormatInt(cents%100, 10), cents, nil
+	return strconv.FormatFloat(float64(cents)/100, 'f', 2, 64), cents, nil
 }
 
 func FiniteNonNegative(v float64) bool { return !math.IsNaN(v) && !math.IsInf(v, 0) && v >= 0 }

@@ -18,10 +18,10 @@ type AdminGateway struct {
 }
 
 type adminGatewayRow struct {
-	ID                                       int64
-	Code, Driver, Name, APIURL, PID, Channel string
-	Enabled                                  bool
-	Sort                                     int
+	ID                                                                     int64
+	Code, Driver, Name, APIURL, PID, Channel, AppID, PrivateKey, PublicKey string
+	Enabled                                                                bool
+	Sort                                                                   int
 }
 
 func (g *AdminGateway) Register(mux *http.ServeMux) {
@@ -51,7 +51,7 @@ func (g *AdminGateway) form(w http.ResponseWriter, r *http.Request) {
 	rows := make([]adminGatewayRow, 0, len(list))
 	for _, v := range list {
 		rows = append(rows, adminGatewayRow{ID: v.ID, Code: v.Code, Driver: v.Driver, Name: v.Name,
-			APIURL: v.Config["api_url"], PID: v.Config["pid"], Channel: v.Config["channel"], Enabled: v.Enabled, Sort: v.Sort})
+			APIURL: v.Config["api_url"], PID: v.Config["pid"], Channel: v.Config["channel"], AppID: v.Config["app_id"], PrivateKey: v.Config["private_key"], PublicKey: v.Config["public_key"], Enabled: v.Enabled, Sort: v.Sort})
 	}
 	renderAdmin(w, "admin_gateway.html", AdminData{Rows: rows, CSRF: csrfOf(adminSessions, w, r), Error: r.URL.Query().Get("err"), Msg: r.URL.Query().Get("msg")})
 }
@@ -78,9 +78,12 @@ func (g *AdminGateway) save(w http.ResponseWriter, r *http.Request) {
 	}
 	sort, _ := strconv.Atoi(r.PostFormValue("sort"))
 	cfg := map[string]string{
-		"api_url": strings.TrimSpace(r.PostFormValue("api_url")),
-		"pid":     strings.TrimSpace(r.PostFormValue("pid")),
-		"channel": strings.TrimSpace(r.PostFormValue("channel")),
+		"api_url":     strings.TrimSpace(r.PostFormValue("api_url")),
+		"pid":         strings.TrimSpace(r.PostFormValue("pid")),
+		"channel":     strings.TrimSpace(r.PostFormValue("channel")),
+		"app_id":      strings.TrimSpace(r.PostFormValue("app_id")),
+		"private_key": strings.TrimSpace(r.PostFormValue("private_key")),
+		"public_key":  strings.TrimSpace(r.PostFormValue("public_key")),
 	}
 	old, oldErr := g.GwRepo.Get(r.Context(), code)
 	key := strings.TrimSpace(r.PostFormValue("key"))
@@ -88,6 +91,17 @@ func (g *AdminGateway) save(w http.ResponseWriter, r *http.Request) {
 		key = old.Config["key"]
 	}
 	cfg["key"] = key
+	if oldErr == nil {
+		for _, name := range []string{"private_key", "public_key"} {
+			if cfg[name] == "" {
+				cfg[name] = old.Config[name]
+			}
+		}
+	}
+	if driver == "alipay_f2f" && cfg["private_key"] == "" {
+		http.Redirect(w, r, "/admin/gateway?err="+url.QueryEscape("支付宝当面付必须填写应用私钥"), http.StatusSeeOther)
+		return
+	}
 	enabled := r.PostFormValue("enabled") == "1"
 	if err := g.GwRepo.SaveConfig(r.Context(), code, driver, name, cfg, enabled, sort); err != nil {
 		http.Redirect(w, r, "/admin/gateway?err="+url.QueryEscape("保存失败"), http.StatusSeeOther)

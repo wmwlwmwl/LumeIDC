@@ -73,8 +73,9 @@ func Build(cfg *config.Config) (*App, error) {
 	serversRepo := &repo.Servers{DB: database}
 	auth := &handler.Auth{Users: users, Sessions: store, Lockout: &repo.LoginAttempts{DB: database}}
 	gateways := map[string]gateway.Gateway{
-		"epay": gateway.Epay{},
-		"mock": gateway.Mock{},
+		"epay":       gateway.Epay{},
+		"alipay_f2f": gateway.AlipayF2F{},
+		"mock":       gateway.Mock{},
 	}
 	balanceRepo := &repo.Balance{DB: database}
 	handler.SetBalanceRepo(balanceRepo)

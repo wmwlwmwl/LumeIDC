@@ -19,6 +19,15 @@ func TestParsePositive(t *testing.T) {
 	}
 }
 
+func TestParsePositiveKeepsTwoDecimalPlaces(t *testing.T) {
+	for in, want := range map[string]string{"0.01": "0.01", "0.10": "0.10", "12.5": "12.50"} {
+		got, _, err := ParsePositive(in, 999999999999)
+		if err != nil || got != want {
+			t.Fatalf("ParsePositive(%q) = %q, %v; want %q", in, got, err, want)
+		}
+	}
+}
+
 func TestFiniteNonNegative(t *testing.T) {
 	if !FiniteNonNegative(0) || !FiniteNonNegative(1.2) || FiniteNonNegative(-1) {
 		t.Fatal("finite non-negative validation failed")
