@@ -89,7 +89,7 @@
                   <button class="ui-btn ui-btn-small" type="submit">保存修改</button>
                 </form>
               </details>
-              <form method="post" action="/admin/types/{{.ID}}/delete" onsubmit="return confirm('确认删除该分类？')">
+              <form method="post" action="/admin/types/{{.ID}}/delete" data-confirm="确认删除分类「{{.Name}}」？删除后无法恢复。">
                 <input type="hidden" name="_csrf" value="{{$.CSRF}}">
                 <button class="admin-row-btn is-danger" type="submit">删除</button>
               </form>

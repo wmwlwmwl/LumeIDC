@@ -16,8 +16,15 @@
 <div class="admin-types-layout">
   <section class="admin-types-main">
     <div class="admin-panel">
+      <div class="admin-panel-header">
+        <h2>优惠码列表</h2>
+        <label class="list-filter" for="filter-coupons">
+          <span class="fx-search-icon" aria-hidden="true"></span>
+          <input id="filter-coupons" type="search" data-table-filter="#tblCoupons" placeholder="搜索优惠码">
+        </label>
+      </div>
       <div class="admin-table-wrap">
-        <table class="admin-table">
+        <table class="admin-table" id="tblCoupons">
           <thead>
             <tr>
               <th scope="col">ID</th>
@@ -35,7 +42,7 @@
             {{range .Rows}}
             <tr>
               <td class="td-id">{{.ID}}</td>
-              <td class="td-name">{{.Code}}</td>
+              <td class="td-name" data-copy="{{.Code}}" title="点击复制优惠码">{{.Code}}</td>
               <td>{{if eq .Type "percent"}}百分比{{else}}固定金额{{end}}</td>
               <td>{{if eq .Type "percent"}}{{.Value}}%{{else}}￥{{.Value}}{{end}}</td>
               <td>{{if .MinAmount}}￥{{.MinAmount}}{{else}}-{{end}}</td>

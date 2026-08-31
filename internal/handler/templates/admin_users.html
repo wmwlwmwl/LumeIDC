@@ -11,8 +11,15 @@
 </div>
 
 <div class="admin-panel">
+  <div class="admin-panel-header">
+    <h2>用户列表</h2>
+    <label class="list-filter" for="filter-users">
+      <span class="fx-search-icon" aria-hidden="true"></span>
+      <input id="filter-users" type="search" data-table-filter="#tblUsers" placeholder="搜索邮箱 / 姓名">
+    </label>
+  </div>
   <div class="admin-table-wrap">
-    <table class="admin-table">
+    <table class="admin-table" id="tblUsers">
       <thead>
         <tr>
           <th scope="col">ID</th>

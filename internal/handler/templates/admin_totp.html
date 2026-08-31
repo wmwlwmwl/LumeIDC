@@ -31,7 +31,7 @@
 <div class="admin-panel admin-form-narrow">
   <div class="admin-panel-body">
     <p class="text-muted">扫描下方密钥到 Google Authenticator / 1Password 等，再输入 6 位验证码启用：</p>
-    <div class="admin-secret-block">
+    <div class="admin-secret-block" data-copy="{{.Secret}}" title="点击复制密钥">
       <code>{{.Secret}}</code>
     </div>
     <p class="text-muted small">{{index .ServersList "URI"}}</p>

@@ -14,8 +14,15 @@
 {{if .Msg}}<div class="ui-alert ui-alert-success" role="status">{{.Msg}}</div>{{end}}
 
 <div class="admin-panel">
+  <div class="admin-panel-header">
+    <h2>产品列表</h2>
+    <label class="list-filter" for="filter-products">
+      <span class="fx-search-icon" aria-hidden="true"></span>
+      <input id="filter-products" type="search" data-table-filter="#tblProducts" placeholder="搜索产品 / 分类 / 上游">
+    </label>
+  </div>
   <div class="admin-table-wrap">
-    <table class="admin-table">
+    <table class="admin-table" id="tblProducts">
       <thead>
         <tr>
           <th scope="col">ID</th>
@@ -44,7 +51,7 @@
           <td>{{if eq .D "隐藏"}}<span class="badge badge-warn">隐藏</span>{{else}}<span class="badge badge-ok">显示</span>{{end}}</td>
           <td class="td-actions">
             <a href="/admin/products/{{.ID}}/edit" class="admin-row-btn">编辑</a>
-            <form method="post" action="/admin/products/{{.ID}}/delete" class="inline-form" onsubmit="return confirm('确认删除该产品？')">
+            <form method="post" action="/admin/products/{{.ID}}/delete" class="inline-form" data-confirm="确认删除产品「{{.A}}」？删除后无法恢复。">
               <input type="hidden" name="_csrf" value="{{$.CSRF}}">
               <button class="admin-row-btn is-danger" type="submit">删除</button>
             </form>

@@ -6,15 +6,22 @@
     <p>查看所有退款处理记录</p>
   </div>
   <div class="admin-page-actions">
-    <a href="/admin/orders" class="admin-back-btn">← 返回订单</a>
+    <a href="/admin/orders" class="admin-back-btn">返回订单</a>
   </div>
 </div>
 
 {{if .Msg}}<div class="ui-alert ui-alert-success">操作成功</div>{{end}}
 
 <div class="admin-panel">
+  <div class="admin-panel-header">
+    <h2>退款记录</h2>
+    <label class="list-filter" for="filter-refunds">
+      <span class="fx-search-icon" aria-hidden="true"></span>
+      <input id="filter-refunds" type="search" data-table-filter="#tblRefunds" placeholder="搜索用户 / 订单 / 原因">
+    </label>
+  </div>
   <div class="admin-table-wrap">
-    <table class="admin-table">
+    <table class="admin-table" id="tblRefunds">
       <thead>
         <tr>
           <th scope="col">ID</th>

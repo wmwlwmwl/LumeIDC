@@ -11,8 +11,15 @@
 </div>
 
 <div class="admin-panel">
+  <div class="admin-panel-header">
+    <h2>操作记录</h2>
+    <label class="list-filter" for="filter-logs">
+      <span class="fx-search-icon" aria-hidden="true"></span>
+      <input id="filter-logs" type="search" data-table-filter="#tblLogs" placeholder="搜索动作 / 对象 / IP">
+    </label>
+  </div>
   <div class="admin-table-wrap">
-    <table class="admin-table">
+    <table class="admin-table" id="tblLogs">
       <thead>
         <tr>
           <th scope="col">ID</th>

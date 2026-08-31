@@ -13,8 +13,15 @@
 {{if .Error}}<div class="ui-alert ui-alert-error" role="alert">{{.Error}}</div>{{end}}
 
 <div class="admin-panel">
+  <div class="admin-panel-header">
+    <h2>服务器列表</h2>
+    <label class="list-filter" for="filter-servers">
+      <span class="fx-search-icon" aria-hidden="true"></span>
+      <input id="filter-servers" type="search" data-table-filter="#tblServers" placeholder="搜索名称 / 类型 / 地址">
+    </label>
+  </div>
   <div class="admin-table-wrap">
-    <table class="admin-table">
+    <table class="admin-table" id="tblServers">
       <thead>
         <tr>
           <th scope="col">ID</th>
@@ -38,7 +45,7 @@
             <a href="/admin/servers/{{.ID}}/catalog" class="admin-row-btn">浏览商品</a>
             <a href="#" onclick="testConn({{.ID}}, this);return false" class="admin-row-btn is-success">测试</a>
             <span class="testmsg text-muted small"></span>
-            <form method="post" action="/admin/servers/{{.ID}}/delete" class="inline-form">
+            <form method="post" action="/admin/servers/{{.ID}}/delete" class="inline-form" data-confirm="确认删除服务器「{{.A}}」？仍有产品绑定时无法删除。">
               <input type="hidden" name="_csrf" value="{{$.CSRF}}">
               <button class="admin-row-btn is-danger" type="submit">删除</button>
             </form>

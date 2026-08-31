@@ -6,7 +6,7 @@
     <p>查看最近 50 条订单与退款操作</p>
   </div>
   <div class="admin-page-actions">
-    <a href="/admin/refunds" class="admin-back-btn">查看退款记录 →</a>
+    <a href="/admin/refunds" class="admin-fwd-btn">查看退款记录</a>
   </div>
 </div>
 
@@ -15,10 +15,13 @@
 <div class="admin-panel">
   <div class="admin-panel-header">
     <h2>订单列表</h2>
-    <span class="admin-total-badge">总毛利 <strong>￥{{.TotalProfit}}</strong></span>
+    <label class="list-filter" for="filter-orders">
+      <span class="fx-search-icon" aria-hidden="true"></span>
+      <input id="filter-orders" type="search" data-table-filter="#tblOrders" placeholder="搜索用户 / 状态 / 周期">
+    </label>
   </div>
   <div class="admin-table-wrap">
-    <table class="admin-table">
+    <table class="admin-table" id="tblOrders">
       <thead>
         <tr>
           <th scope="col">ID</th>
@@ -44,7 +47,7 @@
           </td>
           <td>{{if .E}}￥{{.E}}{{else}}-{{end}}</td>
           <td class="td-actions">
-            <form method="post" action="/admin/orders/{{.ID}}/refund" class="admin-refund-form">
+            <form method="post" action="/admin/orders/{{.ID}}/refund" class="admin-refund-form" data-confirm="确认对订单 #{{.ID}}（{{.A}}）执行退款？退款操作会记录流水且不可撤销。">
               <input type="hidden" name="_csrf" value="{{$.CSRF}}">
               <label class="visually-hidden" for="refund-amount-{{.ID}}">退款金额</label>
               <input class="admin-input-sm" id="refund-amount-{{.ID}}" name="amount" value="{{.B}}" placeholder="金额">
@@ -65,6 +68,9 @@
         {{end}}
       </tbody>
     </table>
+  <div class="admin-panel-footer">
+    <span class="admin-total-badge">总毛利 <strong>￥{{.TotalProfit}}</strong></span>
+    <a href="/admin/refunds" class="admin-fwd-btn">查看退款记录</a>
   </div>
 </div>
 {{end}}

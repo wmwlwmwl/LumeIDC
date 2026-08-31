@@ -1,7 +1,7 @@
 {{define "page"}}
 <div class="fx-page-head">
   <div class="fx-page-title">
-    <a class="fx-back-link" href="/services">← 返回我的服务</a>
+    <a class="fx-back-link" href="/services">返回我的服务</a>
     <span class="eyebrow">SERVICE DETAIL / #{{.Svc.ID}}</span>
     <h1>{{.Svc.Name}}</h1>
     <span class="badge {{if eq .Svc.StatusText "激活"}}badge-ok{{else if eq .Svc.StatusText "已停机"}}badge-warn{{else}}badge-idle{{end}}">{{.Svc.StatusText}}</span>

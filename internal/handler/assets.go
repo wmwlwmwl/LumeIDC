@@ -11,6 +11,8 @@ import (
 var assetsFS embed.FS
 
 // AssetsHandler serves only the files embedded in the application binary.
+// vendor/ 目录内容随二进制固定不变，可长缓存；
+// 自有 css/js 会随版本更新，用协商缓存保证变更后立即生效。
 func AssetsHandler() http.Handler {
 	root, err := fs.Sub(assetsFS, "assets")
 	if err != nil {
@@ -18,11 +20,14 @@ func AssetsHandler() http.Handler {
 	}
 	files := http.FileServer(http.FS(root))
 	return http.StripPrefix("/assets/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// All UI assets are versioned or immutable application files.
-		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 		if strings.Contains(r.URL.Path, "..") {
 			http.NotFound(w, r)
 			return
+		}
+		if strings.HasPrefix(r.URL.Path, "vendor/") {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		} else {
+			w.Header().Set("Cache-Control", "no-cache")
 		}
 		files.ServeHTTP(w, r)
 	}))

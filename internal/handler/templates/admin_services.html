@@ -13,6 +13,13 @@
 {{if .Error}}<div class="ui-alert ui-alert-error" role="alert">{{.Error}}</div>{{end}}
 
 <div class="admin-panel">
+  <div class="admin-panel-header">
+    <h2>服务实例</h2>
+    <label class="list-filter" for="filter-services">
+      <span class="fx-search-icon" aria-hidden="true"></span>
+      <input id="filter-services" type="search" data-table-filter="#svTbody" placeholder="搜索用户 / 产品 / 状态">
+    </label>
+  </div>
   <div class="admin-table-wrap">
     <table class="admin-table" id="svTbody">
       <thead>
@@ -52,20 +59,20 @@
             </form>
             {{end}}
             {{if eq .C "激活"}}
-            <form method="post" action="/admin/services/{{.ID}}/action" class="inline-form">
+            <form method="post" action="/admin/services/{{.ID}}/action" class="inline-form" data-confirm="确认停机服务 #{{.ID}}（{{.B}}）？停机后用户将无法使用该实例。">
               <input type="hidden" name="_csrf" value="{{$.CSRF}}">
               <input type="hidden" name="do" value="suspend">
               <button class="admin-row-btn is-warn" type="submit">停机</button>
             </form>
             {{end}}
             {{if eq .C "已停机"}}
-            <form method="post" action="/admin/services/{{.ID}}/action" class="inline-form">
+            <form method="post" action="/admin/services/{{.ID}}/action" class="inline-form" data-confirm="确认解除服务 #{{.ID}}（{{.B}}）的停机状态？">
               <input type="hidden" name="_csrf" value="{{$.CSRF}}">
               <input type="hidden" name="do" value="unsuspend">
               <button class="admin-row-btn is-success" type="submit">解除</button>
             </form>
             {{end}}
-            <form method="post" action="/admin/services/{{.ID}}/action" class="inline-form" onsubmit="return confirm('确认删除该服务？')">
+            <form method="post" action="/admin/services/{{.ID}}/action" class="inline-form" data-confirm="确认删除服务 #{{.ID}}？已绑定上游时会同步销毁，操作不可恢复。">
               <input type="hidden" name="_csrf" value="{{$.CSRF}}">
               <input type="hidden" name="do" value="terminate">
               <button class="admin-row-btn is-danger" type="submit">删除</button>

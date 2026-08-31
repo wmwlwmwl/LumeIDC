@@ -6,7 +6,7 @@
     <p>{{with .ServersList}}{{.Name}}{{end}} · 选择商品导入本地目录</p>
   </div>
   <div class="admin-page-actions">
-    <a href="/admin/servers" class="admin-back-btn">← 返回服务器</a>
+    <a href="/admin/servers" class="admin-back-btn">返回服务器</a>
   </div>
 </div>
 
@@ -43,7 +43,7 @@
       <table class="admin-table">
         <thead>
           <tr>
-            <th scope="col"><span class="visually-hidden">选择</span></th>
+            <th scope="col"><input type="checkbox" id="selectAllImport" aria-label="全选未对接商品"></th>
             <th scope="col">PID</th>
             <th scope="col">名称</th>
             <th scope="col">分组</th>

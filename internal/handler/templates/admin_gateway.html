@@ -13,11 +13,18 @@
 {{if .Error}}<div class="ui-alert ui-alert-error" role="alert">{{.Error}}</div>{{end}}
 {{if .Msg}}<div class="ui-alert ui-alert-success" role="status">{{.Msg}}</div>{{end}}
 
-<div class="ui-alert ui-alert-info">支持多个网关实例，排序数字越小越优先。回调地址：<code>/pay/notify/网关编码</code></div>
+<div class="ui-alert ui-alert-info">支持多个网关实例，排序数字越小越优先。回调地址：<code data-copy="/pay/notify/网关编码" title="点击复制">/pay/notify/网关编码</code></div>
 
 <div class="admin-panel">
+  <div class="admin-panel-header">
+    <h2>网关实例</h2>
+    <label class="list-filter" for="filter-gateway">
+      <span class="fx-search-icon" aria-hidden="true"></span>
+      <input id="filter-gateway" type="search" data-table-filter="#tblGateway" placeholder="搜索编码 / 名称">
+    </label>
+  </div>
   <div class="admin-table-wrap">
-    <table class="admin-table">
+    <table class="admin-table" id="tblGateway">
       <thead>
         <tr>
           <th scope="col">编码</th>
@@ -65,7 +72,7 @@
                 <button class="ui-btn ui-btn-small" type="submit">保存修改</button>
               </form>
             </details>
-            <form method="post" action="/admin/gateway/{{.Code}}/delete" class="inline-form">
+            <form method="post" action="/admin/gateway/{{.Code}}/delete" class="inline-form" data-confirm="确认删除网关「{{.Name}}」？用户将无法使用该通道支付。">
               <input type="hidden" name="_csrf" value="{{$.CSRF}}">
               <button class="admin-row-btn is-danger" type="submit">删除</button>
             </form>
