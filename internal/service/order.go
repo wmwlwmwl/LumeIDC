@@ -66,6 +66,11 @@ func (o *Orders) CreateOrder(ctx context.Context, userID, productID, pricesetID 
 	if err != nil || base < 0 {
 		return 0, 0, "", fmt.Errorf("商品价格无效")
 	}
+	// 周期可售性：仅月付无条件可售；季/年付要求该周期基础价>0（与购买页 showQ/showY 展示口径一致）。
+	// 防止改 POST 周期绕过前端，用未配置价格的季/年付以 0 元下单（原价产品 0 元购路径之一）。
+	if (cycle == "quarterly" || cycle == "yearly") && base <= 0 {
+		return 0, 0, "", fmt.Errorf("该产品未提供所选计费周期")
+	}
 
 	// 服务端权威计价：只认产品声明的配置项，防篡改
 	opts, err := o.Products.GetConfigOptions(ctx, productID)
@@ -107,6 +112,12 @@ func (o *Orders) CreateOrder(ctx context.Context, userID, productID, pricesetID 
 		couponID = cid
 		couponDiscount = discount
 		finalAmount = subtractAmount(finalAmount, discount)
+	}
+	// 0 元订单：仅当产品该周期真实起步价（基础价+最低配置价，DisplayPrice）也为 0 时才是“纯免费产品”，
+	// 放行并交给下单处自动核销开通；否则 0 元说明计价配置被绕过（未提交必填/计价的 CPU、内存等）
+	// 或优惠过度，属于 0 元购漏洞，一律拒绝。
+	if finalAmount == "0.00" && DisplayPrice(base, opts, profitType, profitValue) > 0 {
+		return 0, 0, "", fmt.Errorf("订单金额为 0，无法下单：所选配置或计费周期无有效价格")
 	}
 
 	// 毛利 = 加成额（优惠前口径），下单时落库，后续改比例不影响历史订单。

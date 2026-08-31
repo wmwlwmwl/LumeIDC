@@ -34,8 +34,11 @@ type ConfigValue struct {
 }
 
 // Price returns the surcharge for a billing cycle. Legacy "annually" data is
-// normalized for the local "yearly" cycle; missing non-monthly prices do not
-// silently fall back to monthly because that undercharges quarterly/yearly orders.
+// normalized for the local "yearly" cycle; a missing quarterly/yearly price
+// falls back to the monthly price, keeping the backend quote identical to the
+// frontend priceOf() display. (Previously it returned 0, which let quarterly/
+// yearly orders get every config surcharge for free and charged less than the
+// price shown on the buy page.)
 func (v ConfigValue) Price(cycle string) float64 {
 	if v.Pricing == nil {
 		return 0
@@ -44,15 +47,13 @@ func (v ConfigValue) Price(cycle string) float64 {
 		if p, ok := v.Pricing["yearly"]; ok {
 			return p
 		}
-		return v.Pricing["annually"]
-	}
-	if p, ok := v.Pricing[cycle]; ok {
+		if p, ok := v.Pricing["annually"]; ok {
+			return p
+		}
+	} else if p, ok := v.Pricing[cycle]; ok {
 		return p
 	}
-	if cycle == "" || cycle == "monthly" {
-		return v.Pricing["monthly"]
-	}
-	return 0
+	return v.Pricing["monthly"]
 }
 
 // GetConfigOptions reads product configoption JSON. Returns empty slice when unset.

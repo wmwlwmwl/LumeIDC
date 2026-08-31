@@ -129,9 +129,25 @@ func (h *Pay) createOrder(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	coupon := strings.TrimSpace(r.PostFormValue("coupon"))
-	_, invID, _, err := h.Orders.CreateOrder(r.Context(), userID, productID, psID, cycle, selection, coupon)
+	orderID, invID, amount, err := h.Orders.CreateOrder(r.Context(), userID, productID, psID, cycle, selection, coupon)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	// 0 元订单（纯免费产品）：创建即自动核销并开通，跳过支付页。余额/真实网关都无法处理 0 金额。
+	if amount == "0.00" {
+		var no string
+		if err := h.Payment.DB.QueryRowContext(r.Context(), `SELECT no FROM invoices WHERE id=$1`, invID).Scan(&no); err != nil {
+			log.Printf("[0元购] 读取账单号失败 invoice=%d: %v", invID, err)
+			http.Error(w, "免费订单开通失败，请联系管理员", http.StatusInternalServerError)
+			return
+		}
+		if perr := h.Payment.MarkPaid(r.Context(), no, "FREE-"+strconv.FormatInt(invID, 10), "balance"); perr != nil {
+			log.Printf("[0元购] 订单 %d 自动核销失败: %v", orderID, perr)
+			http.Error(w, "免费订单开通失败，请联系管理员", http.StatusInternalServerError)
+			return
+		}
+		http.Redirect(w, r, "/services", http.StatusSeeOther)
 		return
 	}
 	http.Redirect(w, r, "/pay/"+strconv.FormatInt(invID, 10), http.StatusSeeOther)

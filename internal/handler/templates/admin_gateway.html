@@ -46,11 +46,18 @@
           <td>{{.Sort}}</td>
           <td>{{if .Enabled}}<span class="badge badge-ok">启用</span>{{else}}<span class="badge badge-idle">停用</span>{{end}}</td>
           <td class="td-actions">
-            <details class="admin-action-pop">
-              <summary>编辑</summary>
-              <form method="post" action="/admin/gateway/save" class="admin-pop-form admin-pop-form-wide">
+            <button class="admin-row-btn" type="button" data-gateway-edit="gateway-modal-{{.Code}}">编辑</button>
+            <dialog class="admin-gateway-modal" id="gateway-modal-{{.Code}}" aria-labelledby="gateway-modal-title-{{.Code}}">
+              <form method="post" action="/admin/gateway/save" class="admin-modal-card">
                 <input type="hidden" name="_csrf" value="{{$.CSRF}}">
                 <input type="hidden" name="code" value="{{.Code}}">
+                <div class="admin-modal-head">
+                  <div>
+                    <span class="eyebrow">PAYMENT GATEWAY</span>
+                    <h3 id="gateway-modal-title-{{.Code}}">编辑支付网关</h3>
+                  </div>
+                  <button class="admin-modal-close" type="button" data-gateway-close aria-label="关闭弹窗">×</button>
+                </div>
                 <label for="driver-{{.Code}}">插件类型</label>
                 <select id="driver-{{.Code}}" name="driver">
                   <option value="epay" {{if eq .Driver "epay"}}selected{{end}}>易支付</option>
@@ -76,9 +83,12 @@
                 <label for="sort-{{.Code}}">排序</label>
                 <input id="sort-{{.Code}}" name="sort" type="number" value="{{.Sort}}">
                 <label class="check-line"><input type="checkbox" name="enabled" value="1" {{if .Enabled}}checked{{end}}> 启用</label>
-                <button class="ui-btn ui-btn-small" type="submit">保存修改</button>
+                <div class="admin-modal-actions">
+                  <button class="admin-row-btn" type="button" data-gateway-close>取消</button>
+                  <button class="ui-btn ui-btn-small" type="submit">保存修改</button>
+                </div>
               </form>
-            </details>
+            </dialog>
             <form method="post" action="/admin/gateway/{{.Code}}/delete" class="inline-form" data-confirm="确认删除网关「{{.Name}}」？用户将无法使用该通道支付。">
               <input type="hidden" name="_csrf" value="{{$.CSRF}}">
               <button class="admin-row-btn is-danger" type="submit">删除</button>
@@ -166,6 +176,28 @@
     }
     driver.addEventListener('change', refresh);
     refresh();
+  });
+  document.querySelectorAll('[data-gateway-edit]').forEach(function (button) {
+    var modal = document.getElementById(button.dataset.gatewayEdit);
+    if (!modal) return;
+    button.addEventListener('click', function () {
+      if (typeof modal.showModal === 'function') modal.showModal();
+      else modal.setAttribute('open', '');
+    });
+  });
+  document.querySelectorAll('[data-gateway-close]').forEach(function (button) {
+    button.addEventListener('click', function () {
+      var modal = button.closest('dialog');
+      if (modal && typeof modal.close === 'function') modal.close();
+      else if (modal) modal.removeAttribute('open');
+    });
+  });
+  document.querySelectorAll('.admin-gateway-modal').forEach(function (modal) {
+    modal.addEventListener('click', function (event) {
+      if (event.target !== modal) return;
+      if (typeof modal.close === 'function') modal.close();
+      else modal.removeAttribute('open');
+    });
   });
 })();
 </script>

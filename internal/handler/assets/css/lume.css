@@ -1180,6 +1180,30 @@ textarea { padding: 10px 12px; min-height: 80px; resize: vertical; }
 .admin-modal-card .admin-form-row { margin-bottom: 12px; }
 .admin-modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
 
+/* ---- 支付网关编辑弹窗 ---- */
+.admin-gateway-modal {
+  width: min(620px, calc(100% - 32px));
+  max-height: min(860px, calc(100% - 32px));
+  padding: 0;
+  border: 0;
+  border-radius: 14px;
+  background: transparent;
+  overflow: visible;
+}
+.admin-gateway-modal::backdrop { background: rgba(16,24,40,.52); backdrop-filter: blur(3px); }
+.admin-gateway-modal .admin-modal-card {
+  max-height: min(860px, calc(100vh - 32px));
+  overflow-y: auto;
+}
+.admin-modal-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
+.admin-modal-head h3 { margin: 5px 0 0; }
+.admin-modal-close {
+  width: 32px; height: 32px; flex: 0 0 auto; border: 1px solid var(--ui-line); border-radius: 7px;
+  background: #fff; color: #667085; font-size: 22px; line-height: 1; cursor: pointer;
+}
+.admin-modal-close:hover { border-color: #b8cdf0; color: var(--ui-brand); background: var(--ui-brand-soft); }
+.admin-gateway-modal textarea { width: 100%; min-height: 80px; padding: 8px 10px; border: 1px solid #d5dbe5; border-radius: 6px; font: 12px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; resize: vertical; }
+
 /* ---- 后台空状态 ---- */
 .admin-empty-state { padding: 56px 20px; text-align: center; }
 .empty-state-icon {
