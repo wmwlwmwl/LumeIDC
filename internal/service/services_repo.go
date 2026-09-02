@@ -27,13 +27,32 @@ type ServiceRow struct {
 	Monthly      string    `json:"-"`    // 月售价（含配置+利润）
 	ConfigDesc   string    `json:"-"`    // 配置摘要（如 "CPU 2核 · 内存 4G"）
 	DaysLeft     int       `json:"-"`    // 距到期天数
+	// 内存计价数据（一次查询带回，避免逐行 N 次远程查询）
+	ConfigSnap        []byte // coalesce(sv.config_snapshot, o.config_snapshot)
+	ConfigOpts        []byte // products.configoption
+	MonthlyBase       string // 默认价格组月价
+	QuarterlyBase     string
+	YearlyBase        string
+	ProfitType        int16
+	ProfitValue       float64
+	ServerProfitType  int16
+	ServerProfitValue float64
 }
 
 type ServicesRepo struct{ db *sql.DB }
 
 func (s *ServicesRepo) ListByUser(ctx context.Context, userID int64) ([]ServiceRow, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id,name,status,coalesce(expires_at,created_at),product_id,coalesce(hostname,'') FROM services WHERE user_id=$1 AND status<3 ORDER BY id DESC`,
+		`SELECT sv.id, sv.name, sv.status, coalesce(sv.expires_at,sv.created_at), sv.product_id, coalesce(sv.hostname,''),
+		        coalesce(sv.config_snapshot, o.config_snapshot),
+		        coalesce(p.configoption::text,'[]'),
+		        coalesce(pp.monthly::text,'0'), coalesce(pp.quarterly::text,'0'), coalesce(pp.yearly::text,'0'),
+		        p.profit_type, p.profit_value, coalesce(s.profit_type,0), coalesce(s.profit_value,0)
+		 FROM services sv JOIN products p ON p.id=sv.product_id
+		 LEFT JOIN servers s ON s.id=p.server_id
+		 LEFT JOIN orders o ON o.id=sv.order_id
+		 LEFT JOIN product_prices pp ON pp.product_id=p.id AND pp.priceset_id=(SELECT min(id) FROM pricesets)
+		 WHERE sv.user_id=$1 AND sv.status<3 ORDER BY sv.id DESC`,
 		userID)
 	if err != nil {
 		return nil, err
@@ -42,7 +61,9 @@ func (s *ServicesRepo) ListByUser(ctx context.Context, userID int64) ([]ServiceR
 	var out []ServiceRow
 	for rows.Next() {
 		var sr ServiceRow
-		if err := rows.Scan(&sr.ID, &sr.Name, &sr.Status, &sr.ExpiresAt, &sr.ProductID, &sr.Hostname); err != nil {
+		if err := rows.Scan(&sr.ID, &sr.Name, &sr.Status, &sr.ExpiresAt, &sr.ProductID, &sr.Hostname,
+			&sr.ConfigSnap, &sr.ConfigOpts, &sr.MonthlyBase, &sr.QuarterlyBase, &sr.YearlyBase,
+			&sr.ProfitType, &sr.ProfitValue, &sr.ServerProfitType, &sr.ServerProfitValue); err != nil {
 			return nil, err
 		}
 		out = append(out, sr)
