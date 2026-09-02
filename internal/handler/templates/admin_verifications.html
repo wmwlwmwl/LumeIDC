@@ -1,5 +1,5 @@
 {{define "page"}}
-<div class="admin-page-header"><div class="admin-page-title"><span class="eyebrow">IDENTITY REVIEW</span><h1>实名审核</h1><p>仅显示待人工处理的申请。</p></div></div>
+<div class="admin-page-header"><div class="admin-page-title"><h1>实名审核</h1><p>仅显示待人工处理的申请。</p></div></div>
 {{if .Error}}<div class="ui-alert ui-alert-error" role="alert">{{.Error}}</div>{{end}}
 {{if .Msg}}<div class="ui-alert ui-alert-success" role="status">{{.Msg}}</div>{{end}}
 <div class="admin-panel"><div class="admin-table-wrap"><table class="admin-table"><thead><tr><th scope="col">申请 ID</th><th scope="col">用户</th><th scope="col">手机号</th><th scope="col">提交时间</th><th scope="col">状态</th><th scope="col">操作</th></tr></thead><tbody>

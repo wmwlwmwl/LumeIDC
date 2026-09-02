@@ -2,7 +2,7 @@
 <div class="fx-buy-page">
   <div class="fx-buy-header">
     <a class="fx-back-link" href="/services/{{.Svc.ID}}">返回服务详情</a>
-    <span class="eyebrow">UPGRADE SERVICE</span>
+    
     <h1>服务升降级</h1>
     <p>{{.Svc.Name}} · 当前周期 {{.Svc.Cycle}}</p>
   </div>
@@ -15,7 +15,7 @@
         <h3>当前套餐</h3>
         <p>服务 #{{.Svc.ID}}</p>
         <div class="fx-summary-product">
-          <span class="fx-summary-mark">U</span>
+          
           <div>
             <strong>{{.Svc.Name}}</strong>
             <small>当前月价 ￥{{.CurrentMonthly}}</small>
@@ -94,7 +94,7 @@
       <div class="fx-summary-label">UPGRADE SUMMARY</div>
       <h2>升降级摘要</h2>
       <div class="fx-summary-product">
-        <span class="fx-summary-mark">U</span>
+        
         <div>
           <strong>{{if .TargetName}}{{.TargetName}}{{else}}未选择目标{{end}}</strong>
           <small>目标配置实时计价</small>

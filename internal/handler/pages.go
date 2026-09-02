@@ -444,7 +444,6 @@ func (h *Pages) myServices(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	statusText := map[int16]string{0: "待开通", 1: "激活", 2: "已停机"}
-	psID, _ := h.Products.DefaultPricesetID(r.Context())
 	soon := time.Now().AddDate(0, 0, 14)
 	var wg sync.WaitGroup
 	for i := range list {
@@ -452,45 +451,50 @@ func (h *Pages) myServices(w http.ResponseWriter, r *http.Request) {
 		svc.StatusText = statusText[svc.Status]
 		svc.ExpiringSoon = svc.ExpiresAt.Before(soon)
 		svc.DaysLeft = int(time.Until(svc.ExpiresAt).Hours() / 24)
-		if pr, err := h.Products.Price(r.Context(), svc.ProductID, psID); err == nil {
-			svc.ShowQ = priceVal(pr.Quarterly) > 0
-			svc.ShowY = priceVal(pr.Yearly) > 0
+		svc.ShowQ = priceVal(svc.QuarterlyBase) > 0
+		svc.ShowY = priceVal(svc.YearlyBase) > 0
+		// 配置摘要 + 月价：主查询带回的数据在内存计算（不逐行查库）
+		var sel map[string]string
+		if len(svc.ConfigSnap) > 0 {
+			var saved struct {
+				Selection map[string]string `json:"selection"`
+			}
+			if json.Unmarshal(svc.ConfigSnap, &saved) == nil {
+				sel = saved.Selection
+			}
 		}
-		// 本地：配置摘要 + 月售价（含配置与利润）
-		sel := h.Svc.ConfigSelection(r.Context(), svc.ID)
-		svc.ConfigDesc = buildConfigDesc(r.Context(), h.Products, svc.ProductID, sel)
-		if m, err := service.MonthlySellPrice(r.Context(), h.Products, svc.ProductID, sel); err == nil {
-			svc.Monthly = fmt.Sprintf("%.2f", m)
+		var opts []repo.ConfigOption
+		_ = json.Unmarshal(svc.ConfigOpts, &opts)
+		svc.ConfigDesc = configDescFromOpts(opts, sel)
+		if base, err := strconv.ParseFloat(svc.MonthlyBase, 64); err == nil {
+			pt, pv := svc.ProfitType, svc.ProfitValue
+			if pv <= 0 {
+				pt, pv = svc.ServerProfitType, svc.ServerProfitValue
+			}
+			svc.Monthly = fmt.Sprintf("%.2f", service.SellPriceFromData(base, opts, pt, pv, sel))
 		}
-		// 上游实时 IP/系统：best-effort 并行拉取（失败置空，不阻塞列表）
-		wg.Add(1)
-		go func(svc *service.ServiceRow) {
-			defer wg.Done()
-			cctx, cancel := context.WithTimeout(r.Context(), 4*time.Second)
-			defer cancel()
-			if d, derr := h.Console.HostDetail(cctx, userID, svc.ID); derr == nil {
-				svc.IP = d.IP
-				if d.OSName != "" {
-					svc.OS = d.OSName
-					if d.OSVersion != "" {
-						svc.OS += "-" + d.OSVersion
+		// 上游实时 IP/系统：仅激活/停机服务 best-effort 并行拉取（缩短超时；待开通/本地跳过）
+		if svc.Status == 1 || svc.Status == 2 {
+			wg.Add(1)
+			go func(svc *service.ServiceRow) {
+				defer wg.Done()
+				cctx, cancel := context.WithTimeout(r.Context(), 2500*time.Millisecond)
+				defer cancel()
+				if d, derr := h.Console.HostDetail(cctx, userID, svc.ID); derr == nil {
+					svc.IP = d.IP
+					if d.OSName != "" {
+						svc.OS = d.OSName
+						if d.OSVersion != "" {
+							svc.OS += "-" + d.OSVersion
+						}
 					}
 				}
-			}
-		}(svc)
+			}(svc)
+		}
 	}
 	wg.Wait()
 	h.render(w, r, "service_list.html", map[string]any{
 		"Services": list, "CSRF": h.pageCSRF(w, r)})
-}
-
-// buildConfigDesc 从配置选择生成可读摘要（如 "CPU 2核 · 内存 4G"），供列表卡片展示。
-func buildConfigDesc(ctx context.Context, products *repo.Products, productID int64, selection map[string]string) string {
-	opts, err := products.GetConfigOptions(ctx, productID)
-	if err != nil {
-		return ""
-	}
-	return configDescFromOpts(opts, selection)
 }
 
 // configDescFromOpts 内存版配置摘要（opts 已随主查询带回，避免逐行查询）。

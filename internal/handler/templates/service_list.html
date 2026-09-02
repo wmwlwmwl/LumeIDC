@@ -1,7 +1,7 @@
 {{define "page"}}
 <div class="fx-page-head">
   <div class="fx-page-title">
-    <span class="eyebrow">SERVICE CONSOLE</span>
+    
     <h1>我的服务</h1>
     <p>查看和管理你已部署的所有服务实例</p>
   </div>
@@ -15,7 +15,7 @@
   {{range .Services}}
   <article class="fx-service-card">
     <div class="fx-service-card-head">
-      <span class="fx-service-mark">S</span>
+      
       <div class="fx-service-name-wrap">
         <a class="fx-service-name" href="/services/{{.ID}}">{{.Name}}</a>
         {{if .ConfigDesc}}<small>{{.ConfigDesc}}</small>{{else}}<small>ID #{{.ID}}</small>{{end}}

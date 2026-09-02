@@ -38,7 +38,7 @@
     {{if .Products}}
     <div class="fx-purchase-head">
       <div class="fx-purchase-title">
-        <span class="eyebrow">PRODUCT CATALOG</span>
+        
         <h2>{{range .Types}}{{if eq (printf "%d" .ID) $.FID}}{{.Name}}{{end}}{{end}}</h2>
         <p>选择产品，开始配置部署</p>
       </div>

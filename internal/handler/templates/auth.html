@@ -12,8 +12,8 @@
 <body class="site-body">
 <a class="ui-skip" href="#auth-main">跳到主要内容</a>
 <main class="auth-layout" id="auth-main">
-<section class="auth-visual"><a class="brand" href="/"><span class="brand-mark">{{.SiteMark}}</span><span>{{.SiteName}}</span></a><div class="auth-visual-copy"><span class="eyebrow">CLOUD PLATFORM</span><h1>稳定的基础设施，<br>从一个账户开始。</h1><p>集中管理你的云服务、订单和资源。</p></div><small class="auth-visual-foot">© {{.SiteName}} · Cloud made simple</small></section>
-<section class="auth-panel"><div class="auth-box"><a class="auth-mobile-brand brand" href="/"><span class="brand-mark">{{.SiteMark}}</span><span>{{.SiteName}}</span></a><div class="auth-box-heading"><span class="eyebrow">{{if .IsRegister}}CREATE ACCOUNT{{else if .IsAdmin}}ADMIN ACCESS{{else}}WELCOME BACK{{end}}</span>
+<section class="auth-visual"><a class="brand" href="/"><span class="brand-mark">{{.SiteMark}}</span><span>{{.SiteName}}</span></a><div class="auth-visual-copy"><h1>稳定的基础设施，<br>从一个账户开始。</h1><p>集中管理你的云服务、订单和资源。</p></div><small class="auth-visual-foot">© {{.SiteName}} · Cloud made simple</small></section>
+<section class="auth-panel"><div class="auth-box"><a class="auth-mobile-brand brand" href="/"><span class="brand-mark">{{.SiteMark}}</span><span>{{.SiteName}}</span></a><div class="auth-box-heading">
 {{if .Error}}<div class="ui-alert ui-alert-error" role="alert">{{.Error}}</div>{{end}}
 
 {{if .IsAdmin}}

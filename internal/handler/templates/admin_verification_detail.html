@@ -1,5 +1,5 @@
 {{define "page"}}
-<div class="admin-page-header"><div class="admin-page-title"><span class="eyebrow">IDENTITY REVIEW / DETAIL</span><h1>实名申请详情</h1><p>审核完成后不可重复处理。</p></div><div class="admin-page-actions"><a href="/admin/verifications" class="admin-back-btn">返回审核列表</a></div></div>
+<div class="admin-page-header"><div class="admin-page-title"><h1>实名申请详情</h1><p>审核完成后不可重复处理。</p></div><div class="admin-page-actions"><a href="/admin/verifications" class="admin-back-btn">返回审核列表</a></div></div>
 {{if .Error}}<div class="ui-alert ui-alert-error" role="alert">{{.Error}}</div>{{end}}
 {{if .Msg}}<div class="ui-alert ui-alert-success" role="status">{{.Msg}}</div>{{end}}
 <div class="admin-types-layout"><section class="admin-types-main"><div class="admin-panel"><div class="admin-panel-header"><h2>申请资料</h2></div><div class="admin-panel-body">
