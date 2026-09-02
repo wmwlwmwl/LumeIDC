@@ -61,6 +61,14 @@ func (p *Payment) MarkPaidByBalance(ctx context.Context, invoiceNo string, userI
 	if kind == "recharge" {
 		return fmt.Errorf("充值账单不能使用余额支付")
 	}
+	var pending bool
+	if err := tx.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM payment_attempts WHERE invoice_id=$1 AND status=0)`, invID).Scan(&pending); err != nil {
+		return err
+	}
+	if pending {
+		return errors.New("账单已有支付进行中")
+	}
 	var amountStr string
 	var orderID, productID int64
 	var cycle string
@@ -84,8 +92,9 @@ func (p *Payment) MarkPaidByBalance(ctx context.Context, invoiceNo string, userI
 		return err
 	}
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE invoices SET status=1, paid_at=now(), gateway='balance', trade_no=$2 WHERE id=$1`,
-		invID, "BALANCE-"+invoiceNo); err != nil {
+		`UPDATE invoices SET status=1, paid_at=now(), gateway='balance', trade_no=$2,
+			paid_amount=$3, fee_percent=0, fee_amount=0 WHERE id=$1`,
+		invID, "BALANCE-"+invoiceNo, amountStr); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx,
@@ -203,7 +212,7 @@ func (p *Payment) enqueueFulfillment(ctx context.Context, tx *sql.Tx, serviceID,
 }
 
 // MarkPaid 原子核销账单并开通/续期服务。幂等：重复调用返回 ErrAlreadyPaid。
-func (p *Payment) MarkPaid(ctx context.Context, invoiceNo, tradeNo, gatewayCode string) error {
+func (p *Payment) MarkPaid(ctx context.Context, invoiceNo, tradeNo, gatewayCode string, attemptIDs ...int64) error {
 	tx, err := p.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -229,6 +238,24 @@ func (p *Payment) MarkPaid(ctx context.Context, invoiceNo, tradeNo, gatewayCode 
 		return fmt.Errorf("账单不可支付")
 	}
 	now := time.Now().UTC()
+	var attemptID int64
+	var paidAmount, feePercent, feeAmount string
+	if gatewayCode == "balance" {
+		if err := tx.QueryRowContext(ctx, `SELECT amount::text FROM invoices WHERE id=$1`, invID).Scan(&paidAmount); err != nil {
+			return err
+		}
+		feePercent, feeAmount = "0.00", "0.00"
+	} else {
+		if len(attemptIDs) != 1 {
+			return fmt.Errorf("支付记录不存在")
+		}
+		if err := tx.QueryRowContext(ctx,
+			`SELECT id,amount::text,fee_percent::text,fee_amount::text FROM payment_attempts
+			 WHERE id=$1 AND invoice_id=$2 AND gateway_code=$3 AND status=0 FOR UPDATE`,
+			attemptIDs[0], invID, gatewayCode).Scan(&attemptID, &paidAmount, &feePercent, &feeAmount); err != nil {
+			return fmt.Errorf("支付记录不存在或已处理")
+		}
+	}
 	if kind == "recharge" {
 		var amount string
 		if err := tx.QueryRowContext(ctx, `SELECT amount::text FROM invoices WHERE id=$1`, invID).Scan(&amount); err != nil {
@@ -249,15 +276,18 @@ func (p *Payment) MarkPaid(ctx context.Context, invoiceNo, tradeNo, gatewayCode 
 			return err
 		}
 		if _, err := tx.ExecContext(ctx,
-			`UPDATE invoices SET status=1,paid_at=$2,gateway=$3,trade_no=$4 WHERE id=$1`,
-			invID, now, gatewayCode, tradeNo); err != nil {
+			`UPDATE invoices SET status=1,paid_at=$2,gateway=$3,trade_no=$4,paid_amount=$5,fee_percent=$6,fee_amount=$7 WHERE id=$1`,
+			invID, now, gatewayCode, tradeNo, paidAmount, feePercent, feeAmount); err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx,
-			`UPDATE payment_attempts SET status=1,provider_trade_no=$2,paid_at=$3
-			 WHERE id=(SELECT id FROM payment_attempts WHERE invoice_id=$1 AND gateway_code=$4 AND status=0 ORDER BY id DESC LIMIT 1)`,
-			invID, tradeNo, now, gatewayCode); err != nil {
+		res, err := tx.ExecContext(ctx,
+			`UPDATE payment_attempts SET status=1,provider_trade_no=$2,paid_at=$3 WHERE id=$1`,
+			attemptID, tradeNo, now)
+		if err != nil {
 			return err
+		}
+		if n, err := res.RowsAffected(); err != nil || n != 1 {
+			return fmt.Errorf("支付记录不存在或已处理")
 		}
 		if err := tx.Commit(); err != nil {
 			return err
@@ -285,16 +315,19 @@ func (p *Payment) MarkPaid(ctx context.Context, invoiceNo, tradeNo, gatewayCode 
 		}
 	}
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE invoices SET status=1,paid_at=$2,gateway=$3,trade_no=$4 WHERE id=$1`,
-		invID, now, gatewayCode, tradeNo); err != nil {
+		`UPDATE invoices SET status=1,paid_at=$2,gateway=$3,trade_no=$4,paid_amount=$5,fee_percent=$6,fee_amount=$7 WHERE id=$1`,
+		invID, now, gatewayCode, tradeNo, paidAmount, feePercent, feeAmount); err != nil {
 		return err
 	}
 	// 只结束本次网关实例最近的一条支付尝试，保留同一账单切换网关的历史记录。
-	if _, err := tx.ExecContext(ctx,
-		`UPDATE payment_attempts SET status=1,provider_trade_no=$2,paid_at=$3
-		 WHERE id=(SELECT id FROM payment_attempts WHERE invoice_id=$1 AND gateway_code=$4 AND status=0 ORDER BY id DESC LIMIT 1)`,
-		invID, tradeNo, now, gatewayCode); err != nil {
+	res, err := tx.ExecContext(ctx,
+		`UPDATE payment_attempts SET status=1,provider_trade_no=$2,paid_at=$3 WHERE id=$1`,
+		attemptID, tradeNo, now)
+	if err != nil {
 		return err
+	}
+	if n, err := res.RowsAffected(); err != nil || n != 1 {
+		return fmt.Errorf("支付记录不存在或已处理")
 	}
 	if err := tx.QueryRowContext(ctx,
 		`UPDATE orders SET status=1,paid_at=$2 WHERE id=$1 AND status=0 RETURNING id`, orderID, now).Scan(&orderID); err != nil && !errors.Is(err, sql.ErrNoRows) {

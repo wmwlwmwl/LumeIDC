@@ -109,7 +109,15 @@
             <option value="1" {{if and .Product .Product.Hidden}}selected{{end}}>隐藏</option>
           </select>
         </div>
+        <div class="admin-form-col admin-form-col-sm">
+          <label for="product-identity">购买实名认证</label>
+          <select id="product-identity" name="requires_identity">
+            <option value="0" {{if or (not .Product) (not .Product.RequiresIdentity)}}selected{{end}}>不需要实名</option>
+            <option value="1" {{if and .Product .Product.RequiresIdentity}}selected{{end}}>需要实名</option>
+          </select>
+        </div>
       </div>
+      <p class="text-muted small">开启后，用户必须通过人工或已配置实名插件后才能购买或续费此产品。</p>
     </div>
 
     <div class="admin-form-section">

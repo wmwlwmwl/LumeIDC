@@ -122,7 +122,7 @@ func (j *Jobs) notifyExpiringSoon(ctx context.Context) {
 		return
 	}
 	rows, err := j.DB.QueryContext(ctx,
-		`SELECT sv.id, sv.user_id, u.email, sv.expires_at
+		`SELECT sv.id, sv.user_id, coalesce(u.email,''), sv.expires_at
 		 FROM services sv JOIN users u ON u.id=sv.user_id
 		 WHERE sv.status=1 AND sv.expire_warn_sent=false
 		   AND sv.expires_at BETWEEN now() AND now() + interval '3 days'`)

@@ -333,8 +333,8 @@ func parseChart(raw json.RawMessage, typ string) (server.ChartSeries, error) {
 	}
 	// 形态1：{unit,label,list:[[...],[...]]} —— 真实上游形态（多系列）
 	var obj struct {
-		Unit  string               `json:"unit"`
-		Label []string             `json:"label"`
+		Unit  string                         `json:"unit"`
+		Label []string                       `json:"label"`
 		List  [][]map[string]json.RawMessage `json:"list"`
 	}
 	if json.Unmarshal(raw, &obj) == nil && len(obj.List) > 0 {

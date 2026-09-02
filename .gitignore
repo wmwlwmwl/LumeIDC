@@ -8,6 +8,9 @@ config.yaml
 # 临时/本地数据
 real263.json
 
+# 运行时数据（用户上传图片等）
+/data/
+
 # 排查诊断草稿
 /tmpcheck/
 

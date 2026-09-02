@@ -32,7 +32,7 @@ func TestMinConfigMonthly(t *testing.T) {
 				{OptionType: 6, Subs: []cfgSubField{{Pricings: []pricingEntry{{Monthly: 1.5}, {Monthly: 3}}}, {Pricings: []pricingEntry{{Monthly: 2.5}}}}}, // CPU 最低 1.5
 				{OptionType: 8, Subs: []cfgSubField{{Pricings: []pricingEntry{{Monthly: 2.5}}}, {Pricings: []pricingEntry{{Monthly: 5}}}}},                 // 内存最低 2.5
 				{OptionType: 5, Subs: []cfgSubField{{Pricings: []pricingEntry{{Monthly: 8}}}}},                                                             // OS 不计价
-				{Hidden: 1, Subs: []cfgSubField{{Pricings: []pricingEntry{{Monthly: 99}}}}},                                                             // 隐藏不计
+				{Hidden: 1, Subs: []cfgSubField{{Pricings: []pricingEntry{{Monthly: 99}}}}},                                                                // 隐藏不计
 				{OptionType: 4, Subs: []cfgSubField{{Pricings: []pricingEntry{{Monthly: 0}}}, {Pricings: []pricingEntry{{Monthly: 10}}}}},                  // 有免费档，最低 0
 			}}},
 			want: 4.0, // 1.5+2.5+0

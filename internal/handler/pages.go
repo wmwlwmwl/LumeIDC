@@ -21,7 +21,7 @@ import (
 )
 
 //go:embed templates/site.html templates/products.html templates/service_list.html templates/buy.html templates/user_recharge.html
-//go:embed templates/user_home.html templates/user_invoices.html templates/user_password.html templates/service_detail.html
+//go:embed templates/user_home.html templates/user_invoices.html templates/user_password.html templates/service_detail.html templates/user_profile.html templates/user_verification.html
 //go:embed templates/user_notifications.html
 var siteFS embed.FS
 

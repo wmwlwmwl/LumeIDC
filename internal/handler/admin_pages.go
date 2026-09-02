@@ -66,6 +66,7 @@ type adminRow struct {
 	ID         int64
 	A, B, C, D string // 通用多列展示，避免为每张表写模板
 	E          string // 扩展列（如订单利润）
+	F          string // 支付实付/手续费等审计信息
 }
 
 func (a *Admin) dashboard(w http.ResponseWriter, r *http.Request) {
@@ -91,8 +92,8 @@ func (a *Admin) adminOrders(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rows, err := a.DB.QueryContext(r.Context(),
-		`SELECT o.id,u.email,o.amount,o.cycle,CASE o.status WHEN 0 THEN '未支付' WHEN 1 THEN '已支付' ELSE '取消' END,coalesce(o.profit,'0')
-		 FROM orders o JOIN users u ON u.id=o.user_id ORDER BY o.id DESC LIMIT 50`)
+		`SELECT o.id,coalesce(u.email,''),o.amount,coalesce(i.paid_amount,0)::text,coalesce(i.fee_amount,0)::text,o.cycle,CASE o.status WHEN 0 THEN '未支付' WHEN 1 THEN '已支付' ELSE '取消' END,coalesce(o.profit,'0')
+		 FROM orders o JOIN users u ON u.id=o.user_id LEFT JOIN invoices i ON i.order_id=o.id ORDER BY o.id DESC LIMIT 50`)
 	if err != nil {
 		http.Error(w, "查询失败", 500)
 		return
@@ -102,11 +103,14 @@ func (a *Admin) adminOrders(w http.ResponseWriter, r *http.Request) {
 	var total float64
 	for rows.Next() {
 		var rw adminRow
-		var profit string
-		if err := rows.Scan(&rw.ID, &rw.A, &rw.B, &rw.C, &rw.D, &profit); err != nil {
+		var profit, paidAmount, feeAmount string
+		if err := rows.Scan(&rw.ID, &rw.A, &rw.B, &paidAmount, &feeAmount, &rw.C, &rw.D, &profit); err != nil {
 			continue
 		}
 		rw.E = profit
+		if paidAmount != "0" && paidAmount != "0.00" {
+			rw.F = paidAmount + "（手续费 " + feeAmount + "）"
+		}
 		if pf, perr := strconv.ParseFloat(profit, 64); perr == nil {
 			total += pf
 		}
@@ -260,13 +264,59 @@ func (a *Admin) adminSettings(w http.ResponseWriter, r *http.Request) {
 		v, _ := s.Get(r.Context(), k)
 		return v
 	}
+	manualRequiresPhone := get("manual_identity_requires_verified_phone")
+	if manualRequiresPhone == "" {
+		manualRequiresPhone = "1"
+	}
 	cfg := map[string]string{
-		"smtp_host":            get("smtp_host"),
-		"smtp_port":            get("smtp_port"),
-		"smtp_user":            get("smtp_user"),
-		"smtp_pass":            get("smtp_pass"),
-		"smtp_from":            get("smtp_from"),
-		"notify_email_enabled": get("notify_email_enabled"),
+		"smtp_host":                                 get("smtp_host"),
+		"smtp_port":                                 get("smtp_port"),
+		"smtp_user":                                 get("smtp_user"),
+		"smtp_pass":                                 get("smtp_pass"),
+		"smtp_from":                                 get("smtp_from"),
+		"notify_email_enabled":                      get("notify_email_enabled"),
+		"sms_provider":                              get("sms_provider"),
+		"sms_endpoint":                              get("sms_endpoint"),
+		"sms_access_key":                            get("sms_access_key"),
+		"sms_username":                              get("sms_username"),
+		"sms_api_key":                               "",
+		"sms_sign_name":                             get("sms_sign_name"),
+		"sms_template_code":                         get("sms_template_code"),
+		"captcha_provider":                          get("captcha_provider"),
+		"captcha_geetest_id":                        get("captcha_geetest_id"),
+		"captcha_vaptcha_vid":                       get("captcha_vaptcha_vid"),
+		"captcha_corptcha_site_key":                 get("captcha_corptcha_site_key"),
+		"verification_provider":                     get("verification_provider"),
+		"verification_endpoint":                     get("verification_endpoint"),
+		"verification_token":                        "",
+		"verification_baidu_api_key":                get("verification_baidu_api_key"),
+		"verification_baidu_plan_id":                get("verification_baidu_plan_id"),
+		"verification_leaf_app_id":                  get("verification_leaf_app_id"),
+		"verification_leaf_api_base":                get("verification_leaf_api_base"),
+		"verification_smapi_api_url":                get("verification_smapi_api_url"),
+		"verification_smapi_product_code":           get("verification_smapi_product_code"),
+		"verification_stay33_api_url":               get("verification_stay33_api_url"),
+		"verification_stay33_biz_code":              get("verification_stay33_biz_code"),
+		"manual_identity_requires_verified_phone":   manualRequiresPhone,
+		"manual_identity_enabled":                   get("manual_identity_enabled"),
+		"registration_email_enabled":                get("registration_email_enabled"),
+		"registration_phone_enabled":                get("registration_phone_enabled"),
+		"registration_email_verification_required":  get("registration_email_verification_required"),
+		"registration_phone_verification_required":  get("registration_phone_verification_required"),
+		"registration_show_all_methods":             get("registration_show_all_methods"),
+		"login_email_enabled":                       get("login_email_enabled"),
+		"login_phone_enabled":                       get("login_phone_enabled"),
+		"login_phone_otp_enabled":                   get("login_phone_otp_enabled"),
+		"captcha_enabled":                           get("captcha_enabled"),
+		"captcha_register_enabled":                  get("captcha_register_enabled"),
+		"captcha_login_enabled":                     get("captcha_login_enabled"),
+		"captcha_admin_login_enabled":               get("captcha_admin_login_enabled"),
+		"captcha_email_code_enabled":                get("captcha_email_code_enabled"),
+		"captcha_phone_code_enabled":                get("captcha_phone_code_enabled"),
+		"captcha_password_reset_enabled":            get("captcha_password_reset_enabled"),
+		"external_captcha_register_enabled":         get("external_captcha_register_enabled"),
+		"external_captcha_login_enabled":            get("external_captcha_login_enabled"),
+		"external_captcha_phone_login_code_enabled": get("external_captcha_phone_login_code_enabled"),
 	}
 	renderAdmin(w, "admin_settings.html", AdminData{
 		CSRF:        csrfOf(adminSessions, w, r),
@@ -281,25 +331,97 @@ func (a *Admin) adminSettingsSave(w http.ResponseWriter, r *http.Request) {
 	if !a.require(w, r) {
 		return
 	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "表单解析失败", http.StatusBadRequest)
+		return
+	}
 	s := &repo.Settings{DB: a.DB}
 	set := func(k, v string) {
 		if err := s.Set(r.Context(), k, v); err != nil {
 			log.Printf("[settings] 保存 %s 失败: %v", k, err)
 		}
 	}
+	section := r.PostFormValue("settings_section")
+	setFlag := func(key string) {
+		if r.PostFormValue(key) == "1" {
+			set(key, "1")
+		} else {
+			set(key, "0")
+		}
+	}
+	if section == "registration" {
+		for _, key := range []string{"registration_email_enabled", "registration_phone_enabled", "registration_email_verification_required", "registration_phone_verification_required", "registration_show_all_methods", "login_phone_otp_enabled"} {
+			setFlag(key)
+		}
+		http.Redirect(w, r, "/admin/settings?ok=1", http.StatusSeeOther)
+		return
+	}
+	if section == "captcha" {
+		for _, key := range []string{"captcha_enabled", "captcha_register_enabled", "captcha_login_enabled", "captcha_admin_login_enabled", "captcha_email_code_enabled", "captcha_phone_code_enabled", "captcha_password_reset_enabled"} {
+			setFlag(key)
+		}
+		http.Redirect(w, r, "/admin/settings?ok=1", http.StatusSeeOther)
+		return
+	}
+	if section == "sms" {
+		set("sms_provider", strings.TrimSpace(r.PostFormValue("sms_provider")))
+		set("sms_access_key", strings.TrimSpace(r.PostFormValue("sms_access_key")))
+		set("sms_username", strings.TrimSpace(r.PostFormValue("sms_username")))
+		set("sms_sign_name", strings.TrimSpace(r.PostFormValue("sms_sign_name")))
+		set("sms_template_code", strings.TrimSpace(r.PostFormValue("sms_template_code")))
+		set("sms_endpoint", strings.TrimSpace(r.PostFormValue("sms_endpoint")))
+		if secret := strings.TrimSpace(r.PostFormValue("sms_secret_key")); secret != "" {
+			set("sms_secret_key", secret)
+			set("sms_token", secret)
+		}
+		http.Redirect(w, r, "/admin/settings?ok=1", http.StatusSeeOther)
+		return
+	}
+	if section == "manual_identity" {
+		setFlag("manual_identity_enabled")
+		setFlag("manual_identity_requires_verified_phone")
+		http.Redirect(w, r, "/admin/settings?ok=1", http.StatusSeeOther)
+		return
+	}
+	if section == "external_captcha" {
+		provider := strings.ToLower(strings.TrimSpace(r.PostFormValue("captcha_provider")))
+		if provider != "" && provider != "geetest" && provider != "vaptcha" && provider != "corptcha" {
+			http.Redirect(w, r, "/admin/settings?err="+url.QueryEscape("外部验证码 provider 无效"), http.StatusSeeOther)
+			return
+		}
+		isOn := func(key string) bool { value, _ := s.Get(r.Context(), key); return value == "1" }
+		localRegister := isOn("captcha_enabled") && isOn("captcha_register_enabled")
+		localLogin := isOn("captcha_enabled") && isOn("captcha_login_enabled")
+		localPhone := isOn("captcha_enabled") && isOn("captcha_phone_code_enabled")
+		if (r.PostFormValue("external_captcha_register_enabled") == "1" && localRegister) || (r.PostFormValue("external_captcha_login_enabled") == "1" && localLogin) || (r.PostFormValue("external_captcha_phone_login_code_enabled") == "1" && localPhone) {
+			http.Redirect(w, r, "/admin/settings?err="+url.QueryEscape("同一普通场景不能同时启用本地和外部验证码"), http.StatusSeeOther)
+			return
+		}
+		set("captcha_provider", provider)
+		set("captcha_geetest_id", strings.TrimSpace(r.PostFormValue("captcha_geetest_id")))
+		set("captcha_vaptcha_vid", strings.TrimSpace(r.PostFormValue("captcha_vaptcha_vid")))
+		set("captcha_corptcha_site_key", strings.TrimSpace(r.PostFormValue("captcha_corptcha_site_key")))
+		for _, key := range []string{"captcha_geetest_key", "captcha_vaptcha_key", "captcha_corptcha_secret"} {
+			if value := strings.TrimSpace(r.PostFormValue(key)); value != "" {
+				set(key, value)
+			}
+		}
+		for _, key := range []string{"external_captcha_register_enabled", "external_captcha_login_enabled", "external_captcha_phone_login_code_enabled"} {
+			setFlag(key)
+		}
+		http.Redirect(w, r, "/admin/settings?ok=1", http.StatusSeeOther)
+		return
+	}
+
+	// 兼容旧版未带 settings_section 的 SMTP/综合表单。
 	set("smtp_host", strings.TrimSpace(r.PostFormValue("smtp_host")))
 	set("smtp_port", strings.TrimSpace(r.PostFormValue("smtp_port")))
 	set("smtp_user", strings.TrimSpace(r.PostFormValue("smtp_user")))
-	// 密码框浏览器不回显；留空表示沿用已保存的密码，避免误清空导致发信失败。
-	if p := r.PostFormValue("smtp_pass"); p != "" {
-		set("smtp_pass", p)
+	if pass := r.PostFormValue("smtp_pass"); pass != "" {
+		set("smtp_pass", pass)
 	}
 	set("smtp_from", strings.TrimSpace(r.PostFormValue("smtp_from")))
-	en := "0"
-	if r.PostFormValue("notify_email_enabled") == "1" {
-		en = "1"
-	}
-	set("notify_email_enabled", en)
+	setFlag("notify_email_enabled")
 	http.Redirect(w, r, "/admin/settings?ok=1", http.StatusSeeOther)
 }
 

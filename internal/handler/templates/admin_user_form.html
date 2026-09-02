@@ -22,17 +22,39 @@
       <div class="admin-panel-body">
         <div class="admin-info-grid">
           <div class="admin-info-item">
-            <span>邮箱</span>
-            <strong>{{index .ServersList "A"}}</strong>
+            <span>当前邮箱</span>
+            <strong>{{index .ServersList "Email"}}</strong>
           </div>
           <div class="admin-info-item">
-            <span>姓名</span>
+            <span>当前手机号</span>
+            <strong>{{if index .ServersList "PhoneMasked"}}{{index .ServersList "PhoneMasked"}}{{else}}未绑定{{end}}</strong>
+          </div>
+          <div class="admin-info-item">
+            <span>用户姓名</span>
             <strong>{{if index .ServersList "B"}}{{index .ServersList "B"}}{{else}}-{{end}}</strong>
+          </div>
+          <div class="admin-info-item">
+            <span>邮箱验证</span>
+            <strong>{{index .ServersList "EmailStatus"}}</strong>
+          </div>
+          <div class="admin-info-item">
+            <span>手机号验证</span>
+            <strong>{{index .ServersList "PhoneStatus"}}</strong>
           </div>
           <div class="admin-info-item">
             <span>当前余额</span>
             <strong class="text-brand">￥{{index .ServersList "C"}}</strong>
           </div>
+        </div>
+
+        <div class="admin-form-section">
+          <h3>联系方式</h3>
+          <label for="user-email">邮箱</label>
+          <input id="user-email" name="email" type="email" value="{{index .ServersList "Email"}}" maxlength="254" autocomplete="email">
+          <p class="text-muted small">修改邮箱后需要重新完成邮箱验证。</p>
+          <label for="user-phone">手机号</label>
+          <input id="user-phone" name="phone" type="tel" value="{{index .ServersList "Phone"}}" maxlength="20" inputmode="tel" autocomplete="tel">
+          <p class="text-muted small">填写大陆手机号后将重置为未验证；留空表示解绑。</p>
         </div>
 
         <div class="admin-form-section">

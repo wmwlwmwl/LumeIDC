@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"lumeidc/internal/middleware"
+	moneyutil "lumeidc/internal/money"
 	"lumeidc/internal/repo"
 	"lumeidc/internal/server"
 	"lumeidc/internal/service"
@@ -30,6 +31,7 @@ type AdminManage struct {
 	Payment   *service.Payment
 	Providers *server.Registry
 	Settings  *repo.Settings
+	Identity  *repo.IdentityStore
 }
 
 func (m *AdminManage) require(w http.ResponseWriter, r *http.Request) bool {
@@ -234,11 +236,12 @@ func checkCSRF(r *http.Request, tok string) bool {
 // ---------- 产品管理 ----------
 
 type adminProductRow struct {
-	ID          int64
-	A, B, C     string // 名称 / 分类 / 月付价
-	D           string // 显示状态
-	ServerName  string
-	UpstreamPID int64
+	ID               int64
+	A, B, C          string // 名称 / 分类 / 月付价
+	D                string // 显示状态
+	ServerName       string
+	UpstreamPID      int64
+	RequiresIdentity bool
 }
 
 func (m *AdminManage) ProductsList(w http.ResponseWriter, r *http.Request) {
@@ -263,7 +266,7 @@ func (m *AdminManage) ProductsList(w http.ResponseWriter, r *http.Request) {
 		}
 		rows = append(rows, adminProductRow{
 			ID: p.ID, A: p.Name, B: p.TypeName, C: mn, D: h,
-			ServerName: p.ServerName, UpstreamPID: p.UpstreamPID,
+			ServerName: p.ServerName, UpstreamPID: p.UpstreamPID, RequiresIdentity: p.RequiresIdentity,
 		})
 	}
 	renderAdmin(w, "admin_products.html", AdminData{
@@ -409,6 +412,7 @@ func (m *AdminManage) ProductSave(w http.ResponseWriter, r *http.Request) {
 	desc := strings.TrimSpace(r.PostFormValue("description"))
 	stock, _ := strconv.Atoi(r.PostFormValue("stock"))
 	hidden := r.PostFormValue("hidden") == "1"
+	requiresIdentity := r.PostFormValue("requires_identity") == "1"
 	var typeID sql.NullInt64
 	if v := r.PostFormValue("type_id"); v != "" {
 		id, _ := strconv.ParseInt(v, 10, 64)
@@ -486,6 +490,9 @@ func (m *AdminManage) ProductSave(w http.ResponseWriter, r *http.Request) {
 		if err == nil {
 			err = m.Products.SetProfit(r.Context(), pid, int16(profitType), profitValue)
 		}
+		if err == nil {
+			err = m.Products.SetRequiresIdentity(r.Context(), pid, requiresIdentity)
+		}
 		if err != nil {
 			http.Redirect(w, r, "/admin/products?err="+err.Error(), http.StatusSeeOther)
 			return
@@ -505,6 +512,9 @@ func (m *AdminManage) ProductSave(w http.ResponseWriter, r *http.Request) {
 		}
 		if err == nil {
 			err = m.Products.SetProfit(r.Context(), id, int16(profitType), profitValue)
+		}
+		if err == nil {
+			err = m.Products.SetRequiresIdentity(r.Context(), id, requiresIdentity)
 		}
 		if err != nil {
 			http.Redirect(w, r, "/admin/products?err="+err.Error(), http.StatusSeeOther)
@@ -546,6 +556,24 @@ func (m *AdminManage) UsersList(w http.ResponseWriter, r *http.Request) {
 	renderAdmin(w, "admin_users.html", AdminData{Rows: rows})
 }
 
+func validAdminBalanceAdjustment(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return true
+	}
+	if strings.HasPrefix(raw, "+") || strings.HasPrefix(raw, "-") {
+		raw = raw[1:]
+	}
+	if raw == "" {
+		return false
+	}
+	_, _, err := moneyutil.ParsePositive(raw, 999999999999)
+	return err == nil
+}
+
+func userEditError(w http.ResponseWriter, r *http.Request, id int64, msg string) {
+	http.Redirect(w, r, "/admin/users/"+itoa(id)+"/edit?err="+url.QueryEscape(msg), http.StatusSeeOther)
+}
 func normalizeAmount(s string) string {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -968,7 +996,7 @@ func (m *AdminManage) ServicesList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rows, err := m.Svc.DB.QueryContext(r.Context(),
-		`SELECT sv.id, u.email, coalesce(sv.name,''), 
+		`SELECT sv.id, coalesce(u.email,''), coalesce(sv.name,''),
 			CASE sv.status WHEN 0 THEN '待开通' WHEN 1 THEN '激活' WHEN 2 THEN '已停机' ELSE '已删除' END,
 			to_char(coalesce(sv.expires_at, sv.created_at),'YYYY-MM-DD'),
 			sv.upstream_host_id, coalesce(sv.provision_error,''),
@@ -1059,32 +1087,50 @@ func (m *AdminManage) ServiceAction(w http.ResponseWriter, r *http.Request) {
 
 // ---------- 用户管理操作 ----------
 
-// UserEdit GET /admin/users/{id}/edit — 用户管理表单（余额/状态/重置密码）。
+// UserEdit GET /admin/users/{id}/edit — 用户管理表单（联系方式、余额/状态/重置密码）。
 func (m *AdminManage) UserEdit(w http.ResponseWriter, r *http.Request) {
 	if !m.require(w, r) {
 		return
 	}
-	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	var email, name string
-	var status int16
-	var balance float64
-	err := m.Svc.DB.QueryRowContext(r.Context(),
-		`SELECT email,name,status,balance::float8 FROM users WHERE id=$1`, id).
-		Scan(&email, &name, &status, &balance)
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
+	user, err := m.Users.AdminUserByID(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, repo.ErrNotFound) {
+			http.NotFound(w, r)
+			return
+		}
+		log.Printf("[admin] 用户查询失败 id=%d: %v", id, err)
+		http.Error(w, "查询失败", http.StatusInternalServerError)
+		return
+	}
+	phoneStatus := "未绑定"
+	if user.Phone != "" {
+		phoneStatus = "未验证"
+		if user.PhoneVerified {
+			phoneStatus = "已验证"
+		}
+	}
+	emailStatus := "未验证"
+	if user.EmailVerified {
+		emailStatus = "已验证"
+	}
 	renderAdmin(w, "admin_user_form.html", AdminData{
-		CSRF: csrfOf(adminSessions, w, r),
+		CSRF:  csrfOf(adminSessions, w, r),
+		Error: r.URL.Query().Get("err"),
 		ServersList: map[string]any{
-			"ID": id, "A": email, "B": name,
-			"C": fmt.Sprintf("%.2f", balance), "D": itoa(int64(status)),
+			"ID": id, "Email": user.Email, "A": user.Email, "B": user.Name,
+			"C": fmt.Sprintf("%.2f", user.Balance), "D": itoa(int64(user.Status)),
+			"Phone": user.Phone, "PhoneMasked": service.MaskPhone(user.Phone),
+			"PhoneStatus": phoneStatus, "EmailStatus": emailStatus,
 		},
 	})
 }
 
-// UserSave POST /admin/users/{id}/save — 状态/密码/余额调整。
+// UserSave POST /admin/users/{id}/save — 联系方式、状态/密码/余额调整。
 func (m *AdminManage) UserSave(w http.ResponseWriter, r *http.Request) {
 	if !m.require(w, r) {
 		return
@@ -1092,38 +1138,158 @@ func (m *AdminManage) UserSave(w http.ResponseWriter, r *http.Request) {
 	if !m.requireCSRF(w, r) {
 		return
 	}
-	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	// 状态
-	status := r.PostFormValue("status")
-	if status == "0" || status == "1" {
-		if err := m.Users.SetStatus(r.Context(), id, status == "1"); err != nil {
-			http.Redirect(w, r, "/admin/users/"+itoa(id)+"/edit?err="+url.QueryEscape("保存状态失败"), http.StatusSeeOther)
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		userEditError(w, r, id, "表单解析失败")
+		return
+	}
+	current, err := m.Users.AdminUserByID(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, repo.ErrNotFound) {
+			http.NotFound(w, r)
+			return
+		}
+		log.Printf("[admin] 用户查询失败 id=%d: %v", id, err)
+		userEditError(w, r, id, "读取用户失败，请稍后重试")
+		return
+	}
+
+	email := strings.TrimSpace(r.PostFormValue("email"))
+	if email != "" {
+		email, err = repo.NormalizeEmail(email)
+		if err != nil {
+			userEditError(w, r, id, "邮箱格式不正确")
 			return
 		}
 	}
-	// 重置密码（可选填写）
-	if adminSessions != nil {
+	if email != "" && email != current.Email {
+		taken, checkErr := m.Users.EmailTaken(r.Context(), email, id)
+		if checkErr != nil {
+			userEditError(w, r, id, "检查邮箱失败，请稍后重试")
+			return
+		}
+		if taken {
+			userEditError(w, r, id, "邮箱已被占用")
+			return
+		}
+	}
+
+	phoneInput := strings.TrimSpace(r.PostFormValue("phone"))
+	phone := ""
+	if phoneInput != "" {
+		phone, err = service.NormalizePhone(phoneInput)
+		if err != nil {
+			userEditError(w, r, id, "手机号格式不正确")
+			return
+		}
+		if m.Identity == nil {
+			userEditError(w, r, id, "手机号服务未配置")
+			return
+		}
+		taken, checkErr := m.Identity.PhoneTaken(r.Context(), phone, id)
+		if checkErr != nil {
+			userEditError(w, r, id, "检查手机号失败，请稍后重试")
+			return
+		}
+		if taken {
+			userEditError(w, r, id, "手机号已被占用")
+			return
+		}
+	}
+
+	if email == "" && phoneInput == "" {
+		userEditError(w, r, id, "邮箱或手机号至少填写一个")
+		return
+	}
+
+	status := r.PostFormValue("status")
+	if status != "0" && status != "1" {
+		userEditError(w, r, id, "账号状态无效")
+		return
+	}
+	password := r.PostFormValue("new_password")
+	if password != "" && len(password) < 8 {
+		userEditError(w, r, id, "密码至少8位")
+		return
+	}
+	balanceAdjust := strings.TrimSpace(r.PostFormValue("balance_adjust"))
+	if !validAdminBalanceAdjustment(balanceAdjust) {
+		userEditError(w, r, id, "余额调整金额无效")
+		return
+	}
+
+	emailChanged := email != current.Email
+	phoneChanged := phone != current.Phone
+	if phoneChanged && m.Identity == nil {
+		userEditError(w, r, id, "手机号服务未配置")
+		return
+	}
+	if emailChanged {
+		if err := m.Users.UpdateEmail(r.Context(), id, email); err != nil {
+			userEditError(w, r, id, "保存邮箱失败，请稍后重试")
+			return
+		}
+	}
+	if phoneChanged {
+		changed, err := m.Identity.AdminSetPhone(r.Context(), id, phone, time.Now())
+		if err != nil {
+			if errors.Is(err, repo.ErrPhoneInUse) {
+				userEditError(w, r, id, "手机号已被占用")
+			} else {
+				userEditError(w, r, id, "保存手机号失败，请稍后重试")
+			}
+			return
+		}
+		phoneChanged = changed
+	}
+	statusChanged := (status == "1") != (current.Status == 1)
+	if statusChanged {
+		if err := m.Users.SetStatus(r.Context(), id, status == "1"); err != nil {
+			userEditError(w, r, id, "保存状态失败")
+			return
+		}
+	}
+	if password != "" {
+		if err := m.Users.ResetPassword(r.Context(), id, password); err != nil {
+			userEditError(w, r, id, "重置密码失败")
+			return
+		}
+	}
+	if balanceAdjust != "" {
+		if err := m.Balance.AdminAdjust(r.Context(), id, balanceAdjust, "管理员调整"); err != nil {
+			userEditError(w, r, id, "余额调整失败")
+			return
+		}
+	}
+
+	if adminSessions != nil && (emailChanged || phoneChanged || password != "" || status == "0") {
 		adminSessions.RevokeUser(id)
 	}
-	if pw := r.PostFormValue("new_password"); pw != "" {
-		if len(pw) < 8 {
-			http.Redirect(w, r, "/admin/users/"+itoa(id)+"/edit?err=密码至少8位", http.StatusSeeOther)
-			return
-		}
-		if err := m.Users.ResetPassword(r.Context(), id, pw); err != nil {
-			http.Redirect(w, r, "/admin/users/"+itoa(id)+"/edit?err="+url.QueryEscape("重置密码失败"), http.StatusSeeOther)
-			return
+	changes := make([]string, 0, 5)
+	if emailChanged {
+		changes = append(changes, "email_changed=true")
+	}
+	if phoneChanged {
+		if phone == "" {
+			changes = append(changes, "phone_cleared=true")
+		} else {
+			changes = append(changes, "phone_changed=true,phone_verified=false")
 		}
 	}
-	// 余额调整（可选填写）
-	if amtStr := strings.TrimSpace(r.PostFormValue("balance_adjust")); amtStr != "" {
-		note := "管理员调整"
-		if err := m.Balance.AdminAdjust(r.Context(), id, amtStr, note); err != nil {
-			http.Redirect(w, r, "/admin/users/"+itoa(id)+"/edit?err="+err.Error(), http.StatusSeeOther)
-			return
-		}
+	if statusChanged {
+		changes = append(changes, "status_changed=true")
 	}
-	m.audit(r, "user_update", "user", id, "status="+status)
+	if password != "" {
+		changes = append(changes, "password_reset=true")
+	}
+	if balanceAdjust != "" {
+		changes = append(changes, "balance_adjusted=true")
+	}
+	m.audit(r, "user_update", "user", id, strings.Join(changes, ","))
 	http.Redirect(w, r, "/admin/users", http.StatusSeeOther)
 }
 

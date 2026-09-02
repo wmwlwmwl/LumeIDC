@@ -183,13 +183,13 @@ type tableRow struct {
 }
 
 var (
-	trRE      = regexp.MustCompile(`(?s)<tr[^>]*>(.*?)</tr>`)
-	cellRE    = regexp.MustCompile(`(?s)<t[dh][^>]*>(.*?)</t[dh]>`)
-	idRE      = regexp.MustCompile(`data-id="(\d+)"`)
-	tagRE     = regexp.MustCompile(`<[^>]+>`)
-	selRE     = regexp.MustCompile(`(?s)<select[^>]*id="([a-z]+)"[^>]*>(.*?)</select>`)
-	optRE     = regexp.MustCompile(`(?s)<option[^>]*value="([^"]*)"[^>]*>(.*?)</option>`)
-	scriptRE  = regexp.MustCompile(`(?s)<script[^>]*>.*?</script>`)
+	trRE     = regexp.MustCompile(`(?s)<tr[^>]*>(.*?)</tr>`)
+	cellRE   = regexp.MustCompile(`(?s)<t[dh][^>]*>(.*?)</t[dh]>`)
+	idRE     = regexp.MustCompile(`data-id="(\d+)"`)
+	tagRE    = regexp.MustCompile(`<[^>]+>`)
+	selRE    = regexp.MustCompile(`(?s)<select[^>]*id="([a-z]+)"[^>]*>(.*?)</select>`)
+	optRE    = regexp.MustCompile(`(?s)<option[^>]*value="([^"]*)"[^>]*>(.*?)</option>`)
+	scriptRE = regexp.MustCompile(`(?s)<script[^>]*>.*?</script>`)
 )
 
 // parseTableRows 解析 HTML 表格所有行（先剥掉 script，避免 JS 模板串被当成行）。

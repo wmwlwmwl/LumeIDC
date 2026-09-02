@@ -15,7 +15,9 @@
         <tr>
           <th scope="col">类型</th>
           <th scope="col">账单号</th>
-          <th scope="col">金额</th>
+          <th scope="col">本金</th>
+          <th scope="col">手续费</th>
+          <th scope="col">实付</th>
           <th scope="col">状态</th>
           <th scope="col">时间</th>
           <th scope="col">操作</th>
@@ -27,6 +29,8 @@
           <td>{{if eq .Kind "recharge"}}<span class="fx-type-tag">充值</span>{{else}}<span class="fx-type-tag is-order">订单</span>{{end}}</td>
           <td class="fx-td-mono" data-copy="{{.No}}" title="点击复制账单号">{{.No}}</td>
           <td class="fx-td-price">￥{{.Amount}}</td>
+          <td class="fx-td-price">{{if eq .FeeAmount "0.00"}}—{{else}}￥{{.FeeAmount}}{{end}}</td>
+          <td class="fx-td-price">{{if eq .Status "已支付"}}￥{{.PaidAmount}}{{else}}—{{end}}</td>
           <td>
             {{if eq .Status "未支付"}}<span class="badge badge-warn">{{.Status}}</span>
             {{else if eq .Status "已支付"}}<span class="badge badge-ok">{{.Status}}</span>

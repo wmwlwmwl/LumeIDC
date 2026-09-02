@@ -8,10 +8,10 @@ import (
 
 func TestAssetsHandler(t *testing.T) {
 	tests := []struct {
-		name        string
-		path        string
-		want        int
-		wantCache   string
+		name      string
+		path      string
+		want      int
+		wantCache string
 	}{
 		{name: "own css negotiable", path: "/assets/css/lume.css", want: 200, wantCache: "no-cache"},
 		{name: "own js negotiable", path: "/assets/js/lume.js", want: 200, wantCache: "no-cache"},

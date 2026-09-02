@@ -75,6 +75,7 @@
         </div>
       </div>
       <p class="fx-summary-stock" id="stockMsg">当前库存充足，可直接提交账单。</p>
+      {{if .Product.RequiresIdentity}}<p class="fx-summary-note">此产品购买和续费需要先通过实名认证。</p>{{end}}
       <table class="fx-summary-lines"><tbody id="cfgLines"></tbody></table>
       <div class="fx-summary-row"><span>基础价格</span><span id="basePrice"></span></div>
       <div class="fx-summary-total">

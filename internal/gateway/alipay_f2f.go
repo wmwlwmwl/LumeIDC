@@ -138,7 +138,9 @@ func verifyAlipay(params map[string]string, signature string, key *rsa.PublicKey
 	for name, value := range params {
 		values.Set(name, value)
 	}
+	// 与支付宝 rsaCheckV1 一致：验签内容剔除 sign 与 sign_type
 	values.Del("sign")
+	values.Del("sign_type")
 	raw, err := base64.StdEncoding.DecodeString(signature)
 	if err != nil {
 		return err

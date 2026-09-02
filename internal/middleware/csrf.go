@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"net/http"
+	"strings"
 )
 
 // CSRF protects state-changing requests via double-submit token bound to session.
@@ -15,10 +16,19 @@ func CSRF(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
+		// 支付平台服务器通知没有浏览器 session；notify 自身必须做网关签名、金额、幂等校验。
+		if r.URL.Path == "/pay/notify" {
+			next.ServeHTTP(w, r)
+			return
+		}
 		s := FromSession(r.Context())
 		if s == nil {
 			http.Error(w, "会话无效", http.StatusUnauthorized)
 			return
+		}
+		// 在读取 multipart 表单前限制请求体，避免 CSRF 校验触发解析时接收超大上传。
+		if strings.HasPrefix(strings.ToLower(r.Header.Get("Content-Type")), "multipart/") {
+			r.Body = http.MaxBytesReader(w, r.Body, 12<<20)
 		}
 		tok := r.Header.Get("X-CSRF-Token")
 		if tok == "" {

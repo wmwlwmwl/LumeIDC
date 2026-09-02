@@ -57,6 +57,9 @@ button { cursor: pointer; }
 .ui-btn-secondary, a.ui-btn-secondary { border-color: var(--ui-line); background: #fff; color: #344054; }
 .ui-btn-secondary:hover, a.ui-btn-secondary:hover { border-color: #b2ccf8; background: var(--ui-brand-soft); color: var(--ui-brand-dark); }
 .ui-btn-danger { border-color: var(--ui-danger); background: var(--ui-danger); }
+.captcha-hint { margin-top: 8px; font-size: 13px; min-height: 20px; }
+.captcha-hint.is-error { color: var(--ui-danger); }
+.external-captcha button:disabled { opacity: .45; cursor: not-allowed; }
 
 .ui-alert { margin-bottom: 16px; padding: 11px 14px; border: 1px solid; border-radius: 6px; transition: opacity .35s ease, transform .35s ease; }
 .ui-alert-error { border-color: #f0c9ce; background: #fff5f6; color: var(--ui-danger); }

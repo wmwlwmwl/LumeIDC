@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"time"
 
+	"lumeidc/internal/captcha"
 	"lumeidc/internal/middleware"
 	"lumeidc/internal/repo"
 	"lumeidc/internal/totp"
@@ -16,6 +17,7 @@ type Admin struct {
 	DB            *sql.DB
 	Lockout       *repo.LoginAttempts
 	Announcements *repo.Announcements
+	LocalCaptcha  *captcha.Service
 }
 
 // GwRepo 网关配置存储；AdminPages 用。
@@ -43,7 +45,18 @@ func (a *Admin) Register(mux *http.ServeMux) {
 }
 
 func (a *Admin) loginForm(w http.ResponseWriter, r *http.Request) {
-	renderAuth(w, map[string]any{"IsAdmin": true, "CSRF": csrfOf(adminSessions, w, r)})
+	data := map[string]any{"IsAdmin": true, "CaptchaScene": "admin_login", "CSRF": csrfOf(adminSessions, w, r)}
+	if a.LocalCaptcha != nil {
+		data["CaptchaAdminLoginEnabled"] = a.LocalCaptcha.Enabled(r.Context(), "admin_login")
+	}
+	renderAuth(w, data)
+}
+
+func (a *Admin) captchaCheck(r *http.Request) error {
+	if a.LocalCaptcha == nil || !a.LocalCaptcha.Enabled(r.Context(), "admin_login") {
+		return nil
+	}
+	return a.LocalCaptcha.Verify(r.Context(), "admin_login", r.PostFormValue("captcha_id"), r.PostFormValue("captcha_answer"), requestIP(r))
 }
 
 // adminLoginLabel 区分管理员登录表单文案：管理员用用户名而非邮箱。
@@ -59,12 +72,16 @@ func (a *Admin) loginSubmit(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "服务器内部错误", 500)
 		return
 	}
+	if err := a.captchaCheck(r); err != nil {
+		http.Error(w, "请完成图形验证码后再登录", http.StatusUnauthorized)
+		return
+	}
 	email := r.PostFormValue("email")
 	// 登录锁定：达阈值后临时拒绝，阻断爆破。
 	if a.Lockout != nil {
 		if locked, lerr := a.Lockout.Locked(r.Context(), email); lerr == nil && locked {
 			w.WriteHeader(http.StatusTooManyRequests)
-			renderAuth(w, map[string]any{"IsAdmin": true, "Error": "尝试次数过多，账户已临时锁定，请 15 分钟后再试"})
+			renderAuth(w, map[string]any{"IsAdmin": true, "CaptchaScene": "admin_login", "CaptchaAdminLoginEnabled": true, "CSRF": csrfOf(adminSessions, w, r), "Error": "尝试次数过多，账户已临时锁定，请 15 分钟后再试"})
 			return
 		}
 	}
@@ -74,7 +91,7 @@ func (a *Admin) loginSubmit(w http.ResponseWriter, r *http.Request) {
 			_ = a.Lockout.Fail(r.Context(), email)
 		}
 		w.WriteHeader(http.StatusUnauthorized)
-		renderAuth(w, map[string]any{"IsAdmin": true, "Error": "用户名或密码错误"})
+		renderAuth(w, map[string]any{"IsAdmin": true, "CaptchaScene": "admin_login", "CaptchaAdminLoginEnabled": true, "CSRF": csrfOf(adminSessions, w, r), "Error": "用户名或密码错误"})
 		return
 	}
 	// 两步验证（若已启用）
@@ -85,7 +102,7 @@ func (a *Admin) loginSubmit(w http.ResponseWriter, r *http.Request) {
 					_ = a.Lockout.Fail(r.Context(), email)
 				}
 				w.WriteHeader(http.StatusUnauthorized)
-				renderAuth(w, map[string]any{"IsAdmin": true, "Error": "两步验证码错误"})
+				renderAuth(w, map[string]any{"IsAdmin": true, "CaptchaScene": "admin_login", "CaptchaAdminLoginEnabled": true, "CSRF": csrfOf(adminSessions, w, r), "Error": "两步验证码错误"})
 				return
 			}
 		}
@@ -135,7 +152,7 @@ func (a *Admin) passwordSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if adminSessions != nil {
-		adminSessions.RevokeUser(sess.UserID)
+		adminSessions.RevokeAdmin(sess.UserID)
 	}
 	http.Redirect(w, r, "/admin/login?ok="+url.QueryEscape("密码已修改，请重新登录"), http.StatusSeeOther)
 }

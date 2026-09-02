@@ -4,6 +4,7 @@ import (
 	"embed"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html/template"
 	"log"
@@ -15,6 +16,7 @@ import (
 
 	"lumeidc/internal/gateway"
 	"lumeidc/internal/middleware"
+	moneyutil "lumeidc/internal/money"
 	"lumeidc/internal/repo"
 	"lumeidc/internal/service"
 
@@ -62,10 +64,15 @@ func (h *Pay) alipayF2FPage(w http.ResponseWriter, r *http.Request) {
 	}
 	var id int64
 	var status int16
-	var driver string
+	var driver, gatewayCode, baseAmount string
 	if err := h.Payment.DB.QueryRowContext(r.Context(),
-		`SELECT i.id,i.status,g.driver FROM invoices i JOIN gateways g ON g.code=i.gateway WHERE i.no=$1 AND i.user_id=$2`, no, userID).
-		Scan(&id, &status, &driver); err != nil || status != 0 || driver != "alipay_f2f" {
+		`SELECT i.id,i.status,g.driver,i.gateway,i.amount::text FROM invoices i JOIN gateways g ON g.code=i.gateway WHERE i.no=$1 AND i.user_id=$2`, no, userID).
+		Scan(&id, &status, &driver, &gatewayCode, &baseAmount); err != nil || status != 0 || driver != "alipay_f2f" {
+		http.NotFound(w, r)
+		return
+	}
+	attempt, err := h.GwRepo.LatestAttempt(r.Context(), no, gatewayCode, true)
+	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
@@ -76,7 +83,7 @@ func (h *Pay) alipayF2FPage(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	dataURI := "data:image/png;base64," + base64.StdEncoding.EncodeToString(pngBytes)
-	if _, err := fmt.Fprintf(w, `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>支付宝扫码支付</title><style>body{font-family:system-ui,sans-serif;background:#f6f8fb;color:#182230;text-align:center;padding:40px 16px}.card{max-width:440px;margin:auto;padding:32px 24px;background:#fff;border-radius:18px;box-shadow:0 10px 30px #12263d12}img{width:320px;max-width:100%%;height:auto}.amount{font-size:28px;font-weight:700;margin:12px}</style></head><body><main class="card"><h1>支付宝扫码支付</h1><p>账单号：%s</p><p class="amount">请使用支付宝扫一扫</p><img src="%s" alt="支付宝支付二维码"><p id="message" role="status">支付完成后页面会自动检查到账状态</p><p><a href="/pay/%d">返回账单页</a></p></main><script>(function(){var message=document.getElementById('message');function check(){fetch('/pay/%d/status',{credentials:'same-origin'}).then(function(response){if(!response.ok)throw new Error();return response.json()}).then(function(data){if(data.paid){message.textContent='支付成功，正在返回账单页';location.href='/pay/%d';return}setTimeout(check,4000)}).catch(function(){message.textContent='状态检查失败，正在重试';setTimeout(check,5000)})}check()})();</script></body></html>`, template.HTMLEscapeString(no), dataURI, id, id, id); err != nil {
+	if _, err := fmt.Fprintf(w, `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>支付宝扫码支付</title><style>body{font-family:system-ui,sans-serif;background:#f6f8fb;color:#182230;text-align:center;padding:40px 16px}.card{max-width:440px;margin:auto;padding:32px 24px;background:#fff;border-radius:18px;box-shadow:0 10px 30px #12263d12}img{width:320px;max-width:100%%;height:auto}.amount{font-size:28px;font-weight:700;margin:12px}</style></head><body><main class="card"><h1>支付宝扫码支付</h1><p>账单号：%s</p><p class="amount">应付金额：￥%s</p><p>账单金额：￥%s</p><img src="%s" alt="支付宝支付二维码"><p id="message" role="status">支付完成后页面会自动检查到账状态</p><p><a href="/pay/%d">返回账单页</a></p></main><script>(function(){var message=document.getElementById('message');function check(){fetch('/pay/%d/status',{credentials:'same-origin'}).then(function(response){if(!response.ok)throw new Error();return response.json()}).then(function(data){if(data.paid){message.textContent='支付成功，正在返回账单页';location.href='/pay/%d';return}setTimeout(check,4000)}).catch(function(){message.textContent='状态检查失败，正在重试';setTimeout(check,5000)})}check()})();</script></body></html>`, template.HTMLEscapeString(no), attempt.Amount, baseAmount, dataURI, id, id, id); err != nil {
 		log.Printf("[template] 支付宝二维码页面输出失败: %v", err)
 	}
 }
@@ -131,6 +138,10 @@ func (h *Pay) createOrder(w http.ResponseWriter, r *http.Request) {
 	coupon := strings.TrimSpace(r.PostFormValue("coupon"))
 	orderID, invID, amount, err := h.Orders.CreateOrder(r.Context(), userID, productID, psID, cycle, selection, coupon)
 	if err != nil {
+		if errors.Is(err, service.ErrIdentityRequired) {
+			http.Redirect(w, r, "/user/verification?err="+url.QueryEscape(err.Error()), http.StatusSeeOther)
+			return
+		}
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -167,7 +178,18 @@ type payPageData struct {
 	Recharge    bool
 }
 
-type payGatewayView struct{ Code, Name string }
+type payGatewayView struct {
+	Code, Name, FeePercent, FeeAmount, Amount string
+}
+
+func quoteGateway(amount string, cfg map[string]string) (feePercent, feeAmount, payable string, err error) {
+	feePercent, _, err = moneyutil.ParsePercent(cfg["fee_percent"])
+	if err != nil {
+		return "", "", "", err
+	}
+	feeAmount, payable, err = moneyutil.AddPercent(amount, feePercent)
+	return feePercent, feeAmount, payable, err
+}
 
 func (h *Pay) loadInvoice(r *http.Request, invoiceID int64) (no string, amount string, status int16, gatewayCode string, err error) {
 	row := h.Payment.DB.QueryRowContext(r.Context(),
@@ -204,9 +226,15 @@ func (h *Pay) payPage(w http.ResponseWriter, r *http.Request) {
 		if h.GwRepo != nil {
 			if list, lerr := h.GwRepo.Enabled(r.Context()); lerr == nil {
 				for _, v := range list {
-					if _, ok := h.Gateways[v.Driver]; ok {
-						data.Gateways = append(data.Gateways, payGatewayView{Code: v.Code, Name: v.Name})
+					if _, ok := h.Gateways[v.Driver]; !ok {
+						continue
 					}
+					feePercent, feeAmount, payable, qerr := quoteGateway(amount, v.Config)
+					if qerr != nil {
+						log.Printf("[payment] 网关 %s 手续费配置无效: %v", v.Code, qerr)
+						continue
+					}
+					data.Gateways = append(data.Gateways, payGatewayView{Code: v.Code, Name: v.Name, FeePercent: feePercent, FeeAmount: feeAmount, Amount: payable})
 				}
 			}
 		}
@@ -252,13 +280,18 @@ func (h *Pay) start(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "支付网关不可用", http.StatusBadRequest)
 		return
 	}
-	attemptID, err := h.GwRepo.BindAttempt(r.Context(), id, code, amount)
+	feePercent, feeAmount, payable, err := quoteGateway(amount, inst.Config)
+	if err != nil {
+		http.Error(w, "支付网关手续费配置无效", http.StatusBadRequest)
+		return
+	}
+	attemptID, err := h.GwRepo.BindAttempt(r.Context(), id, code, payable, feePercent, feeAmount)
 	if err != nil {
 		http.Error(w, "创建支付记录失败", 500)
 		return
 	}
 	notifyURL := h.BaseURL + "/pay/notify?" + url.Values{"code": {code}}.Encode()
-	u, err := impl.PayURL(r.Context(), gateway.PayRequest{InvoiceNo: no, Amount: amount, Title: "LumeIDC 账单 " + no,
+	u, err := impl.PayURL(r.Context(), gateway.PayRequest{InvoiceNo: no, Amount: payable, Title: "LumeIDC 账单 " + no,
 		NotifyURL: notifyURL, ReturnURL: h.BaseURL + "/pay/" + strconv.FormatInt(id, 10), Config: inst.Config})
 	if err != nil {
 		_ = h.GwRepo.MarkAttemptFailedByID(r.Context(), attemptID)
@@ -283,56 +316,87 @@ func (h *Pay) notify(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	log.Printf("[notify] 收到支付回调 code=%s 来源=%s", code, r.RemoteAddr)
 	inst, err := h.GwRepo.Get(r.Context(), code)
-	impl, ok := h.Gateways[inst.Driver]
-	if err != nil || !inst.Enabled || !ok {
+	if err != nil {
+		log.Printf("[notify] 网关 %s 不存在: %v", code, err)
 		http.NotFound(w, r)
 		return
 	}
-	r.ParseForm()
+	impl, ok := h.Gateways[inst.Driver]
+	if !ok {
+		log.Printf("[notify] 网关 %s 驱动 %s 未注册", code, inst.Driver)
+		http.NotFound(w, r)
+		return
+	}
+	// 网关回调不是浏览器请求，但仍限制原始 body，避免无界表单解析。
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	if err := r.ParseForm(); err != nil {
+		log.Printf("[notify] 网关 %s 表单解析失败: %v", code, err)
+		w.Write([]byte("fail"))
+		return
+	}
 	params := map[string]string{}
 	for k := range r.Form {
 		params[k] = r.Form.Get(k)
 	}
 	result, err := impl.VerifyNotify(params, inst.Config)
 	if err != nil {
+		log.Printf("[notify] 网关 %s 校验失败: %v (out_trade_no=%s trade_no=%s trade_status=%s)", code, err, params["out_trade_no"], params["trade_no"], params["trade_status"])
 		w.Write([]byte("fail"))
 		return
 	}
 	if !result.Successful {
+		log.Printf("[notify] 网关 %s 交易未成功: out_trade_no=%s trade_status=%s", code, result.InvoiceNo, params["trade_status"])
 		w.Write([]byte("success"))
 		return
 	}
-	var expected string
-	if err := h.Payment.DB.QueryRowContext(r.Context(), `SELECT amount::text FROM invoices WHERE no=$1 AND gateway=$2`, result.InvoiceNo, code).Scan(&expected); err != nil || !equalAmount(result.Amount, expected) {
+	attempt, err := h.GwRepo.LatestAttempt(r.Context(), result.InvoiceNo, code, true)
+	if err != nil || !equalAmount(result.Amount, attempt.Amount) {
+		log.Printf("[notify] 网关 %s 账单/金额不匹配: invoice=%s 通知金额=%s 记录金额=%v err=%v", code, result.InvoiceNo, result.Amount, func() string {
+			if err == nil {
+				return attempt.Amount
+			}
+			return "无记录"
+		}(), err)
+		// A duplicate callback for the already completed attempt is harmless,
+		// but it must still match the recorded trade and paid amount exactly.
+		var status int16
+		var tradeNo, paidAmount, invoiceGateway string
+		if qerr := h.Payment.DB.QueryRowContext(r.Context(),
+			`SELECT status,gateway,trade_no,paid_amount::text FROM invoices WHERE no=$1`, result.InvoiceNo).
+			Scan(&status, &invoiceGateway, &tradeNo, &paidAmount); qerr == nil && status == 1 &&
+			invoiceGateway == code && tradeNo == result.TradeNo && equalAmount(result.Amount, paidAmount) {
+			w.Write([]byte("success"))
+			return
+		}
 		w.Write([]byte("fail"))
 		return
 	}
-	if err := h.Payment.MarkPaid(r.Context(), result.InvoiceNo, result.TradeNo, code); err != nil &&
-		err != service.ErrAlreadyPaid {
-		w.Write([]byte("fail"))
-		return
+	if err := h.Payment.MarkPaid(r.Context(), result.InvoiceNo, result.TradeNo, code, attempt.ID); err != nil {
+		if err != service.ErrAlreadyPaid {
+			log.Printf("[notify] 网关 %s 核销失败 账单 %s: %v", code, result.InvoiceNo, err)
+			w.Write([]byte("fail"))
+			return
+		}
+		var storedTrade, storedGateway, storedAmount string
+		var status int16
+		if qerr := h.Payment.DB.QueryRowContext(r.Context(),
+			`SELECT status,gateway,trade_no,paid_amount::text FROM invoices WHERE no=$1`, result.InvoiceNo).
+			Scan(&status, &storedGateway, &storedTrade, &storedAmount); qerr != nil || status != 1 ||
+			storedGateway != code || storedTrade != result.TradeNo || !equalAmount(storedAmount, result.Amount) {
+			w.Write([]byte("fail"))
+			return
+		}
 	}
+	log.Printf("[notify] 网关 %s 核销成功 账单 %s trade_no=%s 金额=%s", code, result.InvoiceNo, result.TradeNo, result.Amount)
 	w.Write([]byte("success"))
 }
 
 func equalAmount(a, b string) bool {
-	parse := func(s string) (int64, bool) {
-		parts := strings.SplitN(strings.TrimSpace(s), ".", 2)
-		if len(parts) == 1 {
-			parts = append(parts, "")
-		}
-		if len(parts[1]) > 2 {
-			return 0, false
-		}
-		frac := parts[1] + strings.Repeat("0", 2-len(parts[1]))
-		whole, err1 := strconv.ParseInt(parts[0], 10, 64)
-		cents, err2 := strconv.ParseInt(frac, 10, 64)
-		return whole*100 + cents, err1 == nil && err2 == nil && whole >= 0
-	}
-	x, okX := parse(a)
-	y, okY := parse(b)
-	return okX && okY && x == y
+	_, x, errX := moneyutil.ParsePositive(a, 999999999999)
+	_, y, errY := moneyutil.ParsePositive(b, 999999999999)
+	return errX == nil && errY == nil && x == y
 }
 
 // payByBalance 余额支付账单。
@@ -375,30 +439,28 @@ func (h *Pay) mockPayPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	inst, err := h.GwRepo.Get(r.Context(), code)
-	impl, exists := h.Gateways[inst.Driver]
-	if err != nil || !inst.Enabled || !exists || inst.Driver != "mock" {
+	if err != nil || !inst.Enabled || inst.Driver != "mock" {
 		http.NotFound(w, r)
 		return
 	}
-	var pending bool
-	if err := h.Payment.DB.QueryRowContext(r.Context(),
-		`SELECT EXISTS(SELECT 1 FROM payment_attempts WHERE invoice_id=$1 AND gateway_code=$2 AND status=0 AND amount=$3::numeric)`, invoiceID, code, amount).Scan(&pending); err != nil || !pending {
+	attempt, err := h.GwRepo.LatestAttempt(r.Context(), no, code, true)
+	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
-	_ = impl
-	csrf := csrfOf(sessionsStore, w, r)
+	_ = invoiceID
+	cs := csrfOf(sessionsStore, w, r)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	fmt.Fprintf(w, `<!doctype html><html><head><meta charset="utf-8"><title>模拟支付</title></head>
 <body style="font-family:system-ui;padding:40px">
 <h2>模拟支付（测试网关）</h2>
-<p>账单号：%s</p><p>金额：¥%s</p>
+<p>账单号：%s</p><p>账单金额：¥%s</p><p>手续费：¥%s</p><p>应付金额：¥%s</p>
 <form method="post" action="/mock/pay/%s">
 <input type="hidden" name="_csrf" value="%s">
 <button type="submit" style="padding:8px 20px">确认到账</button>
 </form>
 <p style="color:#888;font-size:13px">该网关仅用于测试，不会产生真实交易。</p>
-</body></html>`, no, amount, no, csrf)
+</body></html>`, no, amount, attempt.FeeAmount, attempt.Amount, no, cs)
 }
 
 // mockConfirm POST /mock/pay/{no} — 确认模拟支付，核销账单（受全局 CSRF 中间件保护）。
@@ -422,13 +484,12 @@ func (h *Pay) mockConfirm(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	var pending bool
-	if err := h.Payment.DB.QueryRowContext(r.Context(),
-		`SELECT EXISTS(SELECT 1 FROM payment_attempts WHERE invoice_id=$1 AND gateway_code=$2 AND status=0 AND amount=$3::numeric)`, invoiceID, code, amount).Scan(&pending); err != nil || !pending {
+	attempt, err := h.GwRepo.LatestAttempt(r.Context(), no, code, true)
+	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
-	if err := h.Payment.MarkPaid(r.Context(), no, "MOCK-"+strconv.FormatInt(time.Now().UnixNano(), 10), code); err != nil && err != service.ErrAlreadyPaid {
+	if err := h.Payment.MarkPaid(r.Context(), no, "MOCK-"+strconv.FormatInt(time.Now().UnixNano(), 10), code, attempt.ID); err != nil && err != service.ErrAlreadyPaid {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}

@@ -5,7 +5,9 @@ package crypto
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -64,4 +66,16 @@ func (c *Cryptor) Decrypt(enc string) (string, error) {
 		return "", fmt.Errorf("解密失败（密钥不符或密文损坏）: %w", err)
 	}
 	return string(plain), nil
+}
+
+// DeriveKey 通过用途域分离从主密钥派生独立密钥，兼容旧安装迁移。
+func DeriveKey(masterB64, purpose string) (string, error) {
+	master, err := base64.StdEncoding.DecodeString(masterB64)
+	if err != nil || len(master) < 32 {
+		return "", errors.New("主密钥无效")
+	}
+	mac := hmac.New(sha256.New, master)
+	mac.Write([]byte("lumeidc key derivation v1:"))
+	mac.Write([]byte(purpose))
+	return base64.StdEncoding.EncodeToString(mac.Sum(nil)), nil
 }

@@ -94,13 +94,23 @@ func (h *Installer) submit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	key := make([]byte, 32)
-	rand.Read(key)
+	if _, err := rand.Read(key); err != nil {
+		fail("生成会话密钥失败")
+		return
+	}
+	piiKey := make([]byte, 32)
+	if _, err := rand.Read(piiKey); err != nil {
+		fail("生成实名资料密钥失败")
+		return
+	}
 	cfgYAML := fmt.Sprintf(`listen: %q
 db_dsn: %q
 secret_key: %q
+pii_key: %q
+private_data_dir: %q
 base_url: %q
 allow_insecure_db: true
-`, listenEnv(), dsn, base64.StdEncoding.EncodeToString(key), f.BaseURL)
+`, listenEnv(), dsn, base64.StdEncoding.EncodeToString(key), base64.StdEncoding.EncodeToString(piiKey), "data/private", f.BaseURL)
 	if err := atomicWriteFile(h.ConfigPath, []byte(cfgYAML), 0o600); err != nil {
 		fail("写入 config.yaml 失败（需要当前目录可写权限）: " + err.Error())
 		return

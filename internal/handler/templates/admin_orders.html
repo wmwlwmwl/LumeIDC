@@ -27,6 +27,7 @@
           <th scope="col">ID</th>
           <th scope="col">用户</th>
           <th scope="col">金额</th>
+          <th scope="col">实付</th>
           <th scope="col">周期</th>
           <th scope="col">状态</th>
           <th scope="col">利润</th>
@@ -39,6 +40,7 @@
           <td class="td-id">{{.ID}}</td>
           <td>{{.A}}</td>
           <td class="td-price">￥{{.B}}</td>
+          <td class="td-price">{{if .F}}￥{{.F}}{{else}}—{{end}}</td>
           <td>{{.C}}</td>
           <td>
             {{if eq .D "已支付"}}<span class="badge badge-ok">{{.D}}</span>
@@ -64,7 +66,7 @@
         </tr>
         {{end}}
         {{if not .Rows}}
-        <tr><td colspan="7" class="admin-table-empty">暂无订单</td></tr>
+        <tr><td colspan="8" class="admin-table-empty">暂无订单</td></tr>
         {{end}}
       </tbody>
     </table>

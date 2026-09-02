@@ -18,7 +18,7 @@
     <h1>{{if .Recharge}}余额充值{{else}}账单支付{{end}}</h1>
     <p class="fx-pay-invoice">{{.InvoiceNo}}</p>
 
-    <div class="fx-pay-amount">￥{{.Amount}}</div>
+    <div class="fx-pay-amount">账单金额 ￥{{.Amount}}</div>
 
     {{if .Status}}
     <div class="ui-alert ui-alert-info" role="status">{{.Status}}</div>
@@ -33,7 +33,7 @@
         <input type="hidden" name="_csrf" value="{{$.CSRF}}">
         <input type="hidden" name="gateway" value="{{.Code}}">
         <button class="fx-pay-method-btn" type="submit">
-          <span>在线支付 · {{.Name}}</span>
+          <span>在线支付 · {{.Name}}<small>手续费 {{.FeePercent}}%（￥{{.FeeAmount}}），应付 ￥{{.Amount}}</small></span>
           <span class="fx-pay-arrow">→</span>
         </button>
       </form>
@@ -42,7 +42,7 @@
       <form method="post" action="/pay/{{.InvoiceID}}/balance">
         <input type="hidden" name="_csrf" value="{{.CSRF}}">
         <button class="fx-pay-method-btn is-balance" type="submit">
-          <span>使用账户余额支付</span>
+          <span>使用账户余额支付<small>扣款 ￥{{$.Amount}}（不收手续费）</small></span>
           <span class="fx-pay-arrow">→</span>
         </button>
       </form>

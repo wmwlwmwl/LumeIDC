@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"html/template"
@@ -40,7 +41,7 @@ func (h *Pages) stats(r *http.Request, userID int64) userStats {
 		`SELECT count(*),count(*) FILTER (WHERE status=1) FROM services WHERE user_id=$1 AND status<3`, userID).
 		Scan(&s.ServiceCount, &s.ActiveCount)
 	_ = db.QueryRowContext(r.Context(),
-		`SELECT coalesce(sum(amount),0) FROM invoices WHERE user_id=$1 AND status=1`, userID).
+		`SELECT coalesce(sum(coalesce(paid_amount,amount)),0) FROM invoices WHERE user_id=$1 AND status=1`, userID).
 		Scan(&s.PaidTotal)
 	_ = db.QueryRowContext(r.Context(),
 		`SELECT count(*) FROM invoices WHERE user_id=$1 AND status=0`, userID).
@@ -91,12 +92,14 @@ func (h *Pages) rechargeSubmit(w http.ResponseWriter, r *http.Request) {
 }
 
 type invoiceRow struct {
-	ID        int64
-	No        string
-	Amount    string
-	Kind      string
-	Status    string
-	CreatedAt string
+	ID         int64
+	No         string
+	Amount     string
+	PaidAmount string
+	FeeAmount  string
+	Kind       string
+	Status     string
+	CreatedAt  string
 }
 
 func (h *Pages) userInvoices(w http.ResponseWriter, r *http.Request) {
@@ -105,7 +108,7 @@ func (h *Pages) userInvoices(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rows, err := h.Svc.DB.QueryContext(r.Context(),
-		`SELECT id,no,amount,kind,status,to_char(created_at,'YYYY-MM-DD HH24:MI') FROM invoices WHERE user_id=$1 ORDER BY id DESC LIMIT 100`,
+		`SELECT id,no,amount,coalesce(paid_amount,0),coalesce(fee_amount,0),kind,status,to_char(created_at,'YYYY-MM-DD HH24:MI') FROM invoices WHERE user_id=$1 ORDER BY id DESC LIMIT 100`,
 		userID)
 	if err != nil {
 		http.Error(w, "查询失败", 500)
@@ -116,7 +119,7 @@ func (h *Pages) userInvoices(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var inv invoiceRow
 		var status int16
-		if err := rows.Scan(&inv.ID, &inv.No, &inv.Amount, &inv.Kind, &status, &inv.CreatedAt); err != nil {
+		if err := rows.Scan(&inv.ID, &inv.No, &inv.Amount, &inv.PaidAmount, &inv.FeeAmount, &inv.Kind, &status, &inv.CreatedAt); err != nil {
 			continue
 		}
 		switch status {
@@ -174,6 +177,10 @@ func (h *Pages) serviceRenew(w http.ResponseWriter, r *http.Request) {
 	cycle := r.PostFormValue("cycle")
 	_, invID, _, err := h.Orders.CreateRenewOrder(r.Context(), userID, serviceID, cycle)
 	if err != nil {
+		if errors.Is(err, service.ErrIdentityRequired) {
+			http.Redirect(w, r, "/user/verification?err="+url.QueryEscape(err.Error()), http.StatusSeeOther)
+			return
+		}
 		h.Svc.AppendLog(r.Context(), serviceID, userID, "续费下单", "失败："+err.Error())
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return

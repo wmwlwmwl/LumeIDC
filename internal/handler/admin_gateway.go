@@ -9,6 +9,7 @@ import (
 
 	"lumeidc/internal/gateway"
 	"lumeidc/internal/middleware"
+	moneyutil "lumeidc/internal/money"
 	"lumeidc/internal/repo"
 )
 
@@ -20,6 +21,7 @@ type AdminGateway struct {
 type adminGatewayRow struct {
 	ID                                                                     int64
 	Code, Driver, Name, APIURL, PID, Channel, AppID, PrivateKey, PublicKey string
+	FeePercent                                                             string
 	Enabled                                                                bool
 	Sort                                                                   int
 }
@@ -50,8 +52,12 @@ func (g *AdminGateway) form(w http.ResponseWriter, r *http.Request) {
 	}
 	rows := make([]adminGatewayRow, 0, len(list))
 	for _, v := range list {
+		feePercent, _, feeErr := moneyutil.ParsePercent(v.Config["fee_percent"])
+		if feeErr != nil {
+			feePercent = v.Config["fee_percent"]
+		}
 		rows = append(rows, adminGatewayRow{ID: v.ID, Code: v.Code, Driver: v.Driver, Name: v.Name,
-			APIURL: v.Config["api_url"], PID: v.Config["pid"], Channel: v.Config["channel"], AppID: v.Config["app_id"], PrivateKey: v.Config["private_key"], PublicKey: v.Config["public_key"], Enabled: v.Enabled, Sort: v.Sort})
+			APIURL: v.Config["api_url"], PID: v.Config["pid"], Channel: v.Config["channel"], AppID: v.Config["app_id"], PrivateKey: v.Config["private_key"], PublicKey: v.Config["public_key"], FeePercent: feePercent, Enabled: v.Enabled, Sort: v.Sort})
 	}
 	renderAdmin(w, "admin_gateway.html", AdminData{Rows: rows, CSRF: csrfOf(adminSessions, w, r), Error: r.URL.Query().Get("err"), Msg: r.URL.Query().Get("msg")})
 }
@@ -77,6 +83,11 @@ func (g *AdminGateway) save(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sort, _ := strconv.Atoi(r.PostFormValue("sort"))
+	feePercent, _, feeErr := moneyutil.ParsePercent(strings.TrimSpace(r.PostFormValue("fee_percent")))
+	if feeErr != nil {
+		http.Redirect(w, r, "/admin/gateway?err="+url.QueryEscape("手续费率无效（请输入 0 到 100 之间、最多两位小数的百分比）"), http.StatusSeeOther)
+		return
+	}
 	cfg := map[string]string{
 		"api_url":     strings.TrimSpace(r.PostFormValue("api_url")),
 		"pid":         strings.TrimSpace(r.PostFormValue("pid")),
@@ -84,6 +95,7 @@ func (g *AdminGateway) save(w http.ResponseWriter, r *http.Request) {
 		"app_id":      strings.TrimSpace(r.PostFormValue("app_id")),
 		"private_key": strings.TrimSpace(r.PostFormValue("private_key")),
 		"public_key":  strings.TrimSpace(r.PostFormValue("public_key")),
+		"fee_percent": feePercent,
 	}
 	old, oldErr := g.GwRepo.Get(r.Context(), code)
 	key := strings.TrimSpace(r.PostFormValue("key"))

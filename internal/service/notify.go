@@ -56,9 +56,9 @@ func (n *Notifier) Notify(ctx context.Context, userID int64, title, body string)
 		log.Printf("[notify] 站内信写入失败 user=%d: %v", userID, err)
 	}
 	if n.Settings != nil {
-		var email string
-		if err := n.DB.QueryRowContext(ctx, `SELECT email FROM users WHERE id=$1`, userID).Scan(&email); err == nil && email != "" {
-			if err := n.sendEmail(ctx, email, title, body); err != nil {
+		var email sql.NullString
+		if err := n.DB.QueryRowContext(ctx, `SELECT email FROM users WHERE id=$1`, userID).Scan(&email); err == nil && email.Valid && email.String != "" {
+			if err := n.sendEmail(ctx, email.String, title, body); err != nil {
 				log.Printf("[notify] 邮件发送失败 user=%d: %v", userID, err)
 			}
 		}

@@ -10,15 +10,15 @@ import (
 )
 
 type ServiceRow struct {
-	ID         int64     `json:"id"`
-	Name       string    `json:"name"`
-	Status     int16     `json:"status"`
-	StatusText string    `json:"-"`
-	ExpiresAt  time.Time `json:"expires_at"`
-	ProductID  int64     `json:"product_id"`
-	ShowQ      bool      `json:"-"`
-	ShowY      bool      `json:"-"`
-	ExpiringSoon bool    `json:"-"` // 14 天内到期（列表提醒用）
+	ID           int64     `json:"id"`
+	Name         string    `json:"name"`
+	Status       int16     `json:"status"`
+	StatusText   string    `json:"-"`
+	ExpiresAt    time.Time `json:"expires_at"`
+	ProductID    int64     `json:"product_id"`
+	ShowQ        bool      `json:"-"`
+	ShowY        bool      `json:"-"`
+	ExpiringSoon bool      `json:"-"` // 14 天内到期（列表提醒用）
 }
 
 type ServicesRepo struct{ DB *sql.DB }

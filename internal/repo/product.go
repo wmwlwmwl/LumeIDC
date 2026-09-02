@@ -11,32 +11,34 @@ import (
 )
 
 type Product struct {
-	ID            int64
-	TypeID        sql.NullInt64
-	ServerID      sql.NullInt64
-	UpstreamPID   int64
-	UpstreamCycle string
-	Name          string
-	Description   string
-	Stock         int
-	Hidden        bool
-	ProfitType    int16   // 0百分比 1固定金额（对齐 ZJMF 上游利润方式）
-	ProfitValue   float64 // 百分比或固定金额
+	ID               int64
+	TypeID           sql.NullInt64
+	ServerID         sql.NullInt64
+	UpstreamPID      int64
+	UpstreamCycle    string
+	Name             string
+	Description      string
+	Stock            int
+	Hidden           bool
+	ProfitType       int16   // 0百分比 1固定金额（对齐 ZJMF 上游利润方式）
+	ProfitValue      float64 // 百分比或固定金额
+	RequiresIdentity bool    // 购买该产品是否必须已通过实名认证
 }
 
 // AdminProductRow 是后台产品列表一次查询所需的展示数据。
 // 配置项在这里解析，避免列表模板为每个产品再次访问数据库。
 type AdminProductRow struct {
-	ID          int64
-	Name        string
-	TypeName    string
-	ServerName  string
-	UpstreamPID int64
-	Monthly     string
-	Hidden      bool
-	Options     []ConfigOption
-	ProfitType  int16
-	ProfitValue float64
+	ID               int64
+	Name             string
+	TypeName         string
+	ServerName       string
+	UpstreamPID      int64
+	Monthly          string
+	Hidden           bool
+	Options          []ConfigOption
+	ProfitType       int16
+	ProfitValue      float64
+	RequiresIdentity bool
 }
 
 type ProductType struct {
@@ -50,11 +52,11 @@ type ProductType struct {
 
 type Products struct{ DB *sql.DB }
 
-const productCols = `SELECT id,type_id,server_id,upstream_pid,upstream_cycle,name,description,stock,hidden,profit_type,profit_value`
+const productCols = `SELECT id,type_id,server_id,upstream_pid,upstream_cycle,name,description,stock,hidden,profit_type,profit_value,requires_identity`
 
 func scanProduct(rows *sql.Rows, pr *Product) error {
 	return rows.Scan(&pr.ID, &pr.TypeID, &pr.ServerID, &pr.UpstreamPID, &pr.UpstreamCycle,
-		&pr.Name, &pr.Description, &pr.Stock, &pr.Hidden, &pr.ProfitType, &pr.ProfitValue)
+		&pr.Name, &pr.Description, &pr.Stock, &pr.Hidden, &pr.ProfitType, &pr.ProfitValue, &pr.RequiresIdentity)
 }
 
 // ListAll 后台用：包含隐藏产品
@@ -84,7 +86,7 @@ func (p *Products) ListAdmin(ctx context.Context, pricesetID int64) ([]AdminProd
 		            THEN parent.name || '/' || t.name
 		            ELSE coalesce(t.name, '') END,
 		       coalesce(s.name, ''), p.upstream_pid,
-		       coalesce(pp.monthly::text, ''), p.hidden,
+		       coalesce(pp.monthly::text, ''), p.hidden, p.requires_identity,
 		       coalesce(p.configoption::text, '[]'),
 		       p.profit_type, p.profit_value,
 		       coalesce(s.profit_type, 0), coalesce(s.profit_value, 0)
@@ -105,7 +107,7 @@ func (p *Products) ListAdmin(ctx context.Context, pricesetID int64) ([]AdminProd
 		var raw string
 		var productProfitType, serverProfitType int16
 		var productProfitValue, serverProfitValue float64
-		if err := rows.Scan(&row.ID, &row.Name, &row.TypeName, &row.ServerName, &row.UpstreamPID, &row.Monthly, &row.Hidden,
+		if err := rows.Scan(&row.ID, &row.Name, &row.TypeName, &row.ServerName, &row.UpstreamPID, &row.Monthly, &row.Hidden, &row.RequiresIdentity,
 			&raw, &productProfitType, &productProfitValue, &serverProfitType, &serverProfitValue); err != nil {
 			return nil, err
 		}
@@ -161,7 +163,7 @@ func (p *Products) Get(ctx context.Context, id int64) (*Product, error) {
 	err := p.DB.QueryRowContext(ctx,
 		productCols+` FROM products WHERE id=$1`, id).
 		Scan(&pr.ID, &pr.TypeID, &pr.ServerID, &pr.UpstreamPID, &pr.UpstreamCycle,
-			&pr.Name, &pr.Description, &pr.Stock, &pr.Hidden, &pr.ProfitType, &pr.ProfitValue)
+			&pr.Name, &pr.Description, &pr.Stock, &pr.Hidden, &pr.ProfitType, &pr.ProfitValue, &pr.RequiresIdentity)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -171,9 +173,15 @@ func (p *Products) Get(ctx context.Context, id int64) (*Product, error) {
 func (p *Products) Create(ctx context.Context, typeID sql.NullInt64, name, description string, stock int) (int64, error) {
 	var id int64
 	err := p.DB.QueryRowContext(ctx,
-		`INSERT INTO products(type_id,name,description,stock) VALUES($1,$2,$3,$4) RETURNING id`,
+		`INSERT INTO products(type_id,name,description,stock,requires_identity) VALUES($1,$2,$3,$4,false) RETURNING id`,
 		typeID, name, description, stock).Scan(&id)
 	return id, err
+}
+
+// SetRequiresIdentity 设置产品购买前是否必须通过实名。
+func (p *Products) SetRequiresIdentity(ctx context.Context, productID int64, required bool) error {
+	_, err := p.DB.ExecContext(ctx, `UPDATE products SET requires_identity=$2 WHERE id=$1`, productID, required)
+	return err
 }
 
 func (p *Products) Update(ctx context.Context, id int64, typeID sql.NullInt64, name, description string, stock int, hidden bool) error {

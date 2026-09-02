@@ -18,6 +18,9 @@ type Orders struct {
 	DB       *sql.DB
 	Products *repo.Products
 	Coupons  *repo.Coupons
+	Identity interface {
+		IsApproved(context.Context, int64) (bool, error)
+	}
 }
 
 var cycleCol = map[string]string{
@@ -39,10 +42,23 @@ func (o *Orders) CreateOrder(ctx context.Context, userID, productID, pricesetID 
 	defer tx.Rollback()
 
 	var stock int
-	err = tx.QueryRowContext(ctx, `SELECT p.stock FROM products p JOIN product_types t ON t.id=p.type_id
-		WHERE p.id=$1 AND p.hidden=false AND t.hidden=false AND (t.parent_id=0 OR EXISTS (SELECT 1 FROM product_types parent WHERE parent.id=t.parent_id AND parent.hidden=false)) FOR UPDATE`, productID).Scan(&stock)
+	var requiresIdentity bool
+	err = tx.QueryRowContext(ctx, `SELECT p.stock,p.requires_identity FROM products p JOIN product_types t ON t.id=p.type_id
+		WHERE p.id=$1 AND p.hidden=false AND t.hidden=false AND (t.parent_id=0 OR EXISTS (SELECT 1 FROM product_types parent WHERE parent.id=t.parent_id AND parent.hidden=false)) FOR UPDATE`, productID).Scan(&stock, &requiresIdentity)
 	if err != nil {
 		return 0, 0, "", fmt.Errorf("商品已下架")
+	}
+	if requiresIdentity {
+		if o.Identity == nil {
+			return 0, 0, "", fmt.Errorf("实名服务未配置")
+		}
+		approved, checkErr := o.Identity.IsApproved(ctx, userID)
+		if checkErr != nil {
+			return 0, 0, "", fmt.Errorf("实名状态查询失败，请稍后再试")
+		}
+		if !approved {
+			return 0, 0, "", ErrIdentityRequired
+		}
 	}
 	if stock > 0 {
 		var reserved int
@@ -124,8 +140,8 @@ func (o *Orders) CreateOrder(ctx context.Context, userID, productID, pricesetID 
 	profit := strconv.FormatFloat(sell-cost, 'f', 2, 64)
 
 	err = tx.QueryRowContext(ctx,
-		`INSERT INTO orders(user_id,product_id,priceset_id,cycle,amount,profit) VALUES($1,$2,$3,$4,$5,$6) RETURNING id`,
-		userID, productID, pricesetID, cycle, finalAmount, profit).Scan(&orderID)
+		`INSERT INTO orders(user_id,product_id,priceset_id,cycle,amount,profit,identity_required) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+		userID, productID, pricesetID, cycle, finalAmount, profit, requiresIdentity).Scan(&orderID)
 	if err != nil {
 		return 0, 0, "", err
 	}
@@ -309,6 +325,22 @@ func (o *Orders) CreateRenewOrder(ctx context.Context, userID, serviceID int64, 
 	if err != nil {
 		return 0, 0, "", fmt.Errorf("服务不存在或不可续费")
 	}
+	var requiresIdentity bool
+	if err := tx.QueryRowContext(ctx, `SELECT requires_identity FROM products WHERE id=$1`, productID).Scan(&requiresIdentity); err != nil {
+		return 0, 0, "", fmt.Errorf("商品不存在")
+	}
+	if requiresIdentity {
+		if o.Identity == nil {
+			return 0, 0, "", fmt.Errorf("实名服务未配置")
+		}
+		approved, checkErr := o.Identity.IsApproved(ctx, userID)
+		if checkErr != nil {
+			return 0, 0, "", fmt.Errorf("实名状态查询失败，请稍后再试")
+		}
+		if !approved {
+			return 0, 0, "", ErrIdentityRequired
+		}
+	}
 	psID, err := o.Products.DefaultPricesetID(ctx)
 	if err != nil {
 		return 0, 0, "", fmt.Errorf("系统未配置价格组")
@@ -352,8 +384,8 @@ func (o *Orders) CreateRenewOrder(ctx context.Context, userID, serviceID int64, 
 	}
 
 	err = tx.QueryRowContext(ctx,
-		`INSERT INTO orders(user_id,product_id,priceset_id,cycle,amount,service_id) VALUES($1,$2,$3,$4,$5,$6) RETURNING id`,
-		userID, productID, psID, cycle, amountRaw, serviceID).Scan(&orderID)
+		`INSERT INTO orders(user_id,product_id,priceset_id,cycle,amount,service_id,identity_required) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+		userID, productID, psID, cycle, amountRaw, serviceID, requiresIdentity).Scan(&orderID)
 	if err != nil {
 		return 0, 0, "", err
 	}

@@ -10,16 +10,16 @@ import (
 type Refunds struct{ DB *sql.DB }
 
 type RefundRow struct {
-	ID         int64
-	UserID     int64
-	OrderID    int64
-	InvoiceID  int64
-	Amount     string
-	Method     string
-	Reason     string
-	AdminID    int64
-	Status     string
-	CreatedAt  time.Time
+	ID        int64
+	UserID    int64
+	OrderID   int64
+	InvoiceID int64
+	Amount    string
+	Method    string
+	Reason    string
+	AdminID   int64
+	Status    string
+	CreatedAt time.Time
 }
 
 func (r *Refunds) Create(ctx context.Context, row RefundRow) error {

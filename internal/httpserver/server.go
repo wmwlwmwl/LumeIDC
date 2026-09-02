@@ -3,11 +3,13 @@ package httpserver
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"time"
 
+	"lumeidc/internal/captcha"
 	"lumeidc/internal/config"
 	"lumeidc/internal/cron"
 	"lumeidc/internal/crypto"
@@ -20,6 +22,7 @@ import (
 	"lumeidc/internal/server/easypanel"
 	"lumeidc/internal/server/zjmf"
 	"lumeidc/internal/service"
+	"lumeidc/internal/storage"
 
 	robfigcron "github.com/robfig/cron/v3"
 )
@@ -71,7 +74,26 @@ func Build(cfg *config.Config) (*App, error) {
 	users := &repo.Users{DB: database}
 	products := &repo.Products{DB: database}
 	serversRepo := &repo.Servers{DB: database}
-	auth := &handler.Auth{Users: users, Sessions: store, Lockout: &repo.LoginAttempts{DB: database}}
+	settingsRepo := &repo.Settings{DB: database}
+	identityKey := cfg.PIIKey
+	if identityKey == "" {
+		// 兼容尚未配置独立 PII key 的旧安装；新安装由 installer 生成独立密钥。
+		identityKey, err = crypto.DeriveKey(cfg.SecretKey, "identity-pii")
+		if err != nil {
+			database.Close()
+			return nil, fmt.Errorf("派生实名资料密钥失败: %w", err)
+		}
+	}
+	piiCryptor, err := crypto.New(identityKey)
+	if err != nil {
+		database.Close()
+		return nil, fmt.Errorf("初始化实名资料加密器失败: %w", err)
+	}
+	identityFiles := &storage.PrivateFiles{Root: cfg.PrivateDataDir}
+	identityStore := &repo.IdentityStore{DB: database}
+	identity := service.NewIdentity(identityStore, users, piiCryptor, identityFiles, service.NewConfiguredSMSProvider(settingsRepo), identityKey, nil)
+	localCaptcha := captcha.New(database, settingsRepo, []byte(cfg.SecretKey))
+	auth := &handler.Auth{Users: users, Sessions: store, Lockout: &repo.LoginAttempts{DB: database}, LocalCaptcha: localCaptcha, BaseURL: cfg.BaseURL}
 	gateways := map[string]gateway.Gateway{
 		"epay":       gateway.Epay{},
 		"alipay_f2f": gateway.AlipayF2F{},
@@ -79,8 +101,13 @@ func Build(cfg *config.Config) (*App, error) {
 	}
 	balanceRepo := &repo.Balance{DB: database}
 	handler.SetBalanceRepo(balanceRepo)
-	settingsRepo := &repo.Settings{DB: database}
 	notifier := &service.Notifier{DB: database, Settings: settingsRepo}
+	identity.Notifier = notifier
+	identity.Settings = settingsRepo
+	identity.BaseURL = cfg.BaseURL
+	identity.Verification = service.NewConfiguredVerificationProvider(settingsRepo, cfg.BaseURL)
+	auth.Challenges = &service.AuthChallengeService{Store: &repo.AuthChallenges{DB: database}, SMS: identity.OTP, EmailSend: notifier.SendMail, Key: []byte(cfg.SecretKey)}
+	auth.Captcha = service.NewConfiguredCaptchaProvider(settingsRepo)
 	auth.Notifier = notifier
 	paymentSvc := &service.Payment{
 		DB:           database,
@@ -95,7 +122,7 @@ func Build(cfg *config.Config) (*App, error) {
 		Crypt:        cryptor,
 	}
 	pay := &handler.Pay{
-		Orders:   &service.Orders{DB: database, Products: products, Coupons: &repo.Coupons{DB: database}},
+		Orders:   &service.Orders{DB: database, Products: products, Coupons: &repo.Coupons{DB: database}, Identity: identity},
 		Payment:  paymentSvc,
 		Products: products,
 		Gateways: gateways,
@@ -103,11 +130,11 @@ func Build(cfg *config.Config) (*App, error) {
 		GwRepo:   &repo.Gateways{DB: database},
 		Balance:  balanceRepo,
 	}
-	adminHandler := &handler.Admin{Admins: &repo.Admins{DB: database}, DB: database, Lockout: &repo.LoginAttempts{DB: database}, Announcements: &repo.Announcements{DB: database}}
+	adminHandler := &handler.Admin{Admins: &repo.Admins{DB: database}, DB: database, Lockout: &repo.LoginAttempts{DB: database}, Announcements: &repo.Announcements{DB: database}, LocalCaptcha: localCaptcha}
 	pages := &handler.Pages{
 		Products:      products,
 		Svc:           &service.ServicesRepo{DB: database},
-		Orders:        &service.Orders{DB: database, Products: products, Coupons: &repo.Coupons{DB: database}},
+		Orders:        &service.Orders{DB: database, Products: products, Coupons: &repo.Coupons{DB: database}, Identity: identity},
 		UsersRepo:     users,
 		ServersRepo:   serversRepo,
 		Console:       &service.Console{DB: database, Servers: serversRepo, Products: products, Providers: providers, Crypt: cryptor},
@@ -121,8 +148,16 @@ func Build(cfg *config.Config) (*App, error) {
 	handler.RegisterAssets(mux)
 	auth.Register(mux)
 	pages.Register(mux)
+	verificationHandler := &handler.VerificationHandler{Identity: identity, Users: users, Sessions: store}
+	verificationHandler.Register(mux)
 	pay.Register(mux)
 	adminHandler.Register(mux)
+	adminVerification := &handler.AdminVerification{Identity: identity, Users: users}
+	mux.HandleFunc("GET /admin/verifications", adminVerification.List)
+	mux.HandleFunc("GET /admin/verifications/{id}", adminVerification.Detail)
+	mux.HandleFunc("POST /admin/verifications/{id}/approve", adminVerification.Approve)
+	mux.HandleFunc("POST /admin/verifications/{id}/reject", adminVerification.Reject)
+	mux.HandleFunc("GET /admin/verifications/{id}/photo/{side}", adminVerification.Photo)
 	gwHandler := &handler.AdminGateway{GwRepo: &repo.Gateways{DB: database}, Gateways: gateways}
 	gwHandler.Register(mux)
 	srvHandler := &handler.AdminServers{Servers: serversRepo, Providers: providers}
@@ -136,6 +171,7 @@ func Build(cfg *config.Config) (*App, error) {
 		Payment:   paymentSvc,
 		Providers: providers,
 		Settings:  &repo.Settings{DB: database},
+		Identity:  identityStore,
 	}
 	mux.HandleFunc("GET /admin/users/{id}/edit", mng.UserEdit)
 	mux.HandleFunc("POST /admin/users/{id}/save", mng.UserSave)

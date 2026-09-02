@@ -54,7 +54,7 @@
   </div>
 </header>
 
-{{if or (eq .Page "user_home.html") (eq .Page "service_list.html") (eq .Page "service_detail.html") (eq .Page "user_recharge.html") (eq .Page "user_invoices.html") (eq .Page "user_notifications.html") (eq .Page "user_password.html")}}
+{{if or (eq .Page "user_home.html") (eq .Page "service_list.html") (eq .Page "service_detail.html") (eq .Page "user_recharge.html") (eq .Page "user_invoices.html") (eq .Page "user_notifications.html") (eq .Page "user_password.html") (eq .Page "user_profile.html") (eq .Page "user_verification.html")}}
 <div class="fx-account-layout">
   <aside class="fx-account-side">
     <div class="fx-account-side-brand">
@@ -81,6 +81,12 @@
         <span class="fx-nav-ind"></span>消息中心
       </a>
       <div class="fx-account-nav-label">账户设置</div>
+      <a href="/user/verification" class="{{if eq .Page "user_verification.html"}}is-active{{end}}">
+        <span class="fx-nav-ind"></span>实名认证
+      </a>
+      <a href="/user/profile" class="{{if eq .Page "user_profile.html"}}is-active{{end}}">
+        <span class="fx-nav-ind"></span>资料与手机号
+      </a>
       <a href="/user/password" class="{{if eq .Page "user_password.html"}}is-active{{end}}">
         <span class="fx-nav-ind"></span>安全设置
       </a>

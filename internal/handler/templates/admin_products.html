@@ -31,6 +31,7 @@
           <th scope="col">上游</th>
           <th scope="col">月付价</th>
           <th scope="col">状态</th>
+          <th scope="col">实名购买</th>
           <th scope="col" class="th-actions">操作</th>
         </tr>
       </thead>
@@ -49,6 +50,7 @@
           </td>
           <td class="td-price">￥{{.C}}</td>
           <td>{{if eq .D "隐藏"}}<span class="badge badge-warn">隐藏</span>{{else}}<span class="badge badge-ok">显示</span>{{end}}</td>
+          <td>{{if .RequiresIdentity}}<span class="badge badge-warn">需要实名</span>{{else}}<span class="text-muted">不需要</span>{{end}}</td>
           <td class="td-actions">
             <a href="/admin/products/{{.ID}}/edit" class="admin-row-btn">编辑</a>
             <form method="post" action="/admin/products/{{.ID}}/delete" class="inline-form" data-confirm="确认删除产品「{{.A}}」？删除后无法恢复。">
@@ -59,7 +61,7 @@
         </tr>
         {{end}}
         {{if not .Rows}}
-        <tr><td colspan="7" class="admin-table-empty">暂无产品，点击右上角新增</td></tr>
+        <tr><td colspan="8" class="admin-table-empty">暂无产品，点击右上角新增</td></tr>
         {{end}}
       </tbody>
     </table>

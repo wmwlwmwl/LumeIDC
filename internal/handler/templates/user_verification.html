@@ -1,0 +1,49 @@
+{{define "page"}}
+<div class="fx-page-head">
+  <div class="fx-page-title"><span class="eyebrow">ACCOUNT / IDENTITY</span><h1>实名认证</h1><p>人工审核与自动实名是两个独立的认证模块。</p></div>
+</div>
+{{if .OK}}<div class="ui-alert ui-alert-success" role="status">{{.OK}}</div>{{end}}
+{{if .Error}}<div class="ui-alert ui-alert-error" role="alert">{{.Error}}</div>{{end}}
+
+{{if .ManualEnabled}}
+<section class="fx-form-panel">
+  <h2>人工实名审核</h2>
+  <p>提交姓名、身份证号及身份证正反面照片，由管理员人工审核。</p>
+  <p>当前状态：<strong>{{.StatusText}}</strong>{{if .MaskedID}}　证件号：<strong>{{.MaskedID}}</strong>{{end}}</p>
+  {{if eq .Status "pending"}}
+  <p>资料正在人工审核，请耐心等待。</p>
+  {{else if eq .Status "approved"}}
+  <p>人工审核已通过。如需修改实名资料，请联系管理员发起复核。</p>
+  {{else}}
+    {{if eq .Status "rejected"}}<div class="ui-alert ui-alert-error" role="alert">拒绝原因：{{.Reason}}</div>{{end}}
+    {{if .CanSubmit}}
+    <form method="post" action="/user/verification" enctype="multipart/form-data" class="fx-stack-form">
+      <input type="hidden" name="_csrf" value="{{.CSRF}}">
+      <label for="legal-name">法定姓名</label><input id="legal-name" name="legal_name" required maxlength="50" autocomplete="name">
+      <label for="identity-number">身份证号</label><input id="identity-number" name="identity_number" required minlength="15" maxlength="18" autocomplete="off">
+      <label for="identity-front">身份证正面照片（JPG/PNG，最大 5 MB）</label><input id="identity-front" name="front" type="file" accept="image/jpeg,image/png" required>
+      <label for="identity-back">身份证背面照片（JPG/PNG，最大 5 MB）</label><input id="identity-back" name="back" type="file" accept="image/jpeg,image/png" required>
+      <p class="text-muted small">资料仅供人工实名审核使用，请勿上传其他文件。</p>
+      <button class="ui-btn" type="submit">提交人工审核 <span>→</span></button>
+    </form>
+    {{end}}
+  {{end}}
+</section>
+{{else}}
+<section class="fx-form-panel"><h2>人工实名审核</h2><p>人工实名审核模块当前未启用。</p></section>
+{{end}}
+
+{{if .PluginProvider}}
+<section class="fx-form-panel">
+  <h2>自动实名认证：{{.PluginProvider}}</h2>
+  <p>自动实名通过 provider 查询结果自动完成，不进入人工审核队列。</p>
+  {{if .AutomaticStatusText}}<p>当前状态：<strong>{{.AutomaticStatusText}}</strong></p>{{end}}
+  {{if eq .AutomaticStatus "pending"}}
+    {{if .AutomaticURL}}<p><a href="{{.AutomaticURL}}" target="_blank" rel="noopener">打开自动认证页面</a></p>{{end}}
+    <form method="post" action="/user/verification/plugin/poll" class="fx-stack-form"><input type="hidden" name="_csrf" value="{{.CSRF}}"><input type="hidden" name="submission_id" value="{{.AutomaticID}}"><button class="ui-btn" type="submit">查询自动认证结果</button></form>
+  {{else if or (eq .AutomaticStatus "") (eq .AutomaticStatus "rejected") (eq .AutomaticStatus "failed") (eq .AutomaticStatus "expired")}}
+    <form method="post" action="/user/verification/plugin/start" class="fx-stack-form"><input type="hidden" name="_csrf" value="{{.CSRF}}"><input type="hidden" name="provider" value="{{.PluginProvider}}"><label for="plugin-legal-name">法定姓名</label><input id="plugin-legal-name" name="legal_name" required maxlength="50"><label for="plugin-identity-number">身份证号</label><input id="plugin-identity-number" name="identity_number" required minlength="15" maxlength="18" autocomplete="off"><button class="ui-btn" type="submit">开始自动认证 <span>→</span></button></form>
+  {{end}}
+</section>
+{{end}}
+{{end}}

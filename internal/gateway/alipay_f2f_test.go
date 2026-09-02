@@ -14,12 +14,14 @@ func TestAlipaySignatureRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	params := url.Values{"z": {"last"}, "a": {"first"}, "empty": {""}, "sign_type": {"RSA2"}}
+	// 模拟支付宝服务端按 rsaCheckV1 规则对通知签名：签名内容剔除 sign_type
+	params := url.Values{"z": {"last"}, "a": {"first"}, "empty": {""}}
 	signature, err := signAlipay(params, key)
 	if err != nil {
 		t.Fatal(err)
 	}
 	params.Set("sign", signature)
+	params.Set("sign_type", "RSA2")
 	values := map[string]string{}
 	for name, value := range params {
 		values[name] = value[0]

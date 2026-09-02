@@ -30,6 +30,7 @@
           <th scope="col">编码</th>
           <th scope="col">插件</th>
           <th scope="col">名称</th>
+          <th scope="col">手续费</th>
           <th scope="col">地址</th>
           <th scope="col">排序</th>
           <th scope="col">状态</th>
@@ -42,6 +43,7 @@
           <td class="td-id">{{.Code}}</td>
            <td>{{if eq .Driver "epay"}}易支付{{else if eq .Driver "alipay_f2f"}}支付宝当面付{{else}}模拟支付{{end}}</td>
           <td class="td-name">{{.Name}}</td>
+          <td>{{.FeePercent}}%</td>
           <td class="td-url">{{.APIURL}}</td>
           <td>{{.Sort}}</td>
           <td>{{if .Enabled}}<span class="badge badge-ok">启用</span>{{else}}<span class="badge badge-idle">停用</span>{{end}}</td>
@@ -66,6 +68,8 @@
                 </select>
                 <label for="name-{{.Code}}">显示名称</label>
                 <input id="name-{{.Code}}" name="name" value="{{.Name}}" placeholder="显示名称" required>
+                <label for="fee-{{.Code}}">在线支付手续费率（%）</label>
+                <input id="fee-{{.Code}}" name="fee_percent" type="number" value="{{.FeePercent}}" min="0" max="100" step="0.01" placeholder="0.00">
                 <label for="api-{{.Code}}">API 地址</label>
                 <input id="api-{{.Code}}" name="api_url" value="{{.APIURL}}" placeholder="API 地址" data-gateway-field="api_url">
                 <label for="pid-{{.Code}}">商户 PID</label>
@@ -97,7 +101,7 @@
         </tr>
         {{end}}
         {{if not .Rows}}
-        <tr><td colspan="7" class="admin-table-empty">暂无网关实例</td></tr>
+        <tr><td colspan="8" class="admin-table-empty">暂无网关实例</td></tr>
         {{end}}
       </tbody>
     </table>
@@ -127,6 +131,8 @@
       </div>
       <label for="new-name">显示名称</label>
       <input id="new-name" name="name" placeholder="如 易支付主通道" required>
+      <label for="new-fee">在线支付手续费率（%）</label>
+      <input id="new-fee" name="fee_percent" type="number" value="0" min="0" max="100" step="0.01" placeholder="0.00">
       <label for="new-api">API 地址</label>
       <input id="new-api" name="api_url" placeholder="API 地址" data-gateway-field="api_url">
       <div class="admin-form-row">

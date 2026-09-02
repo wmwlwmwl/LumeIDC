@@ -124,12 +124,21 @@ func (s *Store) Start(w http.ResponseWriter) *Session {
 	return sess
 }
 
-// RevokeUser 删除指定用户的全部会话。
+// RevokeUser 删除指定普通用户的全部会话。
 func (s *Store) RevokeUser(userID int64) {
+	s.revoke(userID, false)
+}
+
+// RevokeAdmin 删除指定管理员的全部会话。
+func (s *Store) RevokeAdmin(adminID int64) {
+	s.revoke(adminID, true)
+}
+
+func (s *Store) revoke(userID int64, admin bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for id, sess := range s.sess {
-		if sess.UserID == userID {
+		if sess.UserID == userID && sess.IsAdmin == admin {
 			delete(s.sess, id)
 		}
 	}
