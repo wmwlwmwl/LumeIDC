@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"lumeidc/internal/middleware"
@@ -20,7 +21,7 @@ import (
 
 //go:embed templates/site.html templates/products.html templates/service_list.html templates/buy.html templates/user_recharge.html
 //go:embed templates/user_home.html templates/user_invoices.html templates/user_password.html templates/service_detail.html templates/user_profile.html templates/user_verification.html
-//go:embed templates/user_notifications.html
+//go:embed templates/user_notifications.html templates/notfound.html templates/service_upgrade.html
 var siteFS embed.FS
 
 type Pages struct {
@@ -36,6 +37,7 @@ type Pages struct {
 	Settings      *repo.Settings
 	Invoices      *repo.Invoices
 	Lifecycle     *service.Lifecycle
+	Payment       *service.Payment // 降级 0 元单余额核销用
 	*Deps
 }
 
@@ -51,6 +53,9 @@ func (h *Pages) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /user/invoices", h.userInvoices)
 	mux.HandleFunc("GET /services/{serviceID}", h.serviceDetail)
 	mux.HandleFunc("POST /services/{serviceID}/renew", h.serviceRenew)
+	mux.HandleFunc("POST /services/{serviceID}/name", h.serviceRename)
+	mux.HandleFunc("GET /services/{serviceID}/upgrade", h.serviceUpgradeForm)
+	mux.HandleFunc("POST /services/{serviceID}/upgrade", h.serviceUpgradeOrder)
 	mux.HandleFunc("POST /services/{serviceID}/cancel", h.serviceCancel)
 	mux.HandleFunc("POST /services/{serviceID}/console", h.consoleAction)
 	// VNC 页面使用 GET；其他控制台动作由 handler 拒绝 GET。
@@ -76,6 +81,12 @@ func (h *Pages) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /user/password", h.passwordForm)
 	mux.HandleFunc("POST /user/password", h.passwordSubmit)
 	mux.HandleFunc("GET /notifications", h.notifications)
+}
+
+// NotFound 全局 404（未匹配路由的统一兜底）。
+func (h *Pages) NotFound(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotFound)
+	h.render(w, r, "notfound.html", map[string]any{})
 }
 
 // notifications GET /notifications — 站内信列表（读取后标记已读）。
@@ -119,6 +130,10 @@ func pageTitleLabel(page string) string {
 		return "安全设置"
 	case "user_verification.html":
 		return "实名认证"
+	case "notfound.html":
+		return "页面不存在"
+	case "service_upgrade.html":
+		return "服务升降级"
 	}
 	return ""
 }
@@ -431,16 +446,78 @@ func (h *Pages) myServices(w http.ResponseWriter, r *http.Request) {
 	statusText := map[int16]string{0: "待开通", 1: "激活", 2: "已停机"}
 	psID, _ := h.Products.DefaultPricesetID(r.Context())
 	soon := time.Now().AddDate(0, 0, 14)
+	var wg sync.WaitGroup
 	for i := range list {
-		list[i].StatusText = statusText[list[i].Status]
-		list[i].ExpiringSoon = list[i].ExpiresAt.Before(soon)
-		if pr, err := h.Products.Price(r.Context(), list[i].ProductID, psID); err == nil {
-			list[i].ShowQ = priceVal(pr.Quarterly) > 0
-			list[i].ShowY = priceVal(pr.Yearly) > 0
+		svc := &list[i]
+		svc.StatusText = statusText[svc.Status]
+		svc.ExpiringSoon = svc.ExpiresAt.Before(soon)
+		svc.DaysLeft = int(time.Until(svc.ExpiresAt).Hours() / 24)
+		if pr, err := h.Products.Price(r.Context(), svc.ProductID, psID); err == nil {
+			svc.ShowQ = priceVal(pr.Quarterly) > 0
+			svc.ShowY = priceVal(pr.Yearly) > 0
 		}
+		// 本地：配置摘要 + 月售价（含配置与利润）
+		sel := h.Svc.ConfigSelection(r.Context(), svc.ID)
+		svc.ConfigDesc = buildConfigDesc(r.Context(), h.Products, svc.ProductID, sel)
+		if m, err := service.MonthlySellPrice(r.Context(), h.Products, svc.ProductID, sel); err == nil {
+			svc.Monthly = fmt.Sprintf("%.2f", m)
+		}
+		// 上游实时 IP/系统：best-effort 并行拉取（失败置空，不阻塞列表）
+		wg.Add(1)
+		go func(svc *service.ServiceRow) {
+			defer wg.Done()
+			cctx, cancel := context.WithTimeout(r.Context(), 4*time.Second)
+			defer cancel()
+			if d, derr := h.Console.HostDetail(cctx, userID, svc.ID); derr == nil {
+				svc.IP = d.IP
+				if d.OSName != "" {
+					svc.OS = d.OSName
+					if d.OSVersion != "" {
+						svc.OS += "-" + d.OSVersion
+					}
+				}
+			}
+		}(svc)
 	}
+	wg.Wait()
 	h.render(w, r, "service_list.html", map[string]any{
 		"Services": list, "CSRF": h.pageCSRF(w, r)})
+}
+
+// buildConfigDesc 从配置选择生成可读摘要（如 "CPU 2核 · 内存 4G"），供列表卡片展示。
+func buildConfigDesc(ctx context.Context, products *repo.Products, productID int64, selection map[string]string) string {
+	opts, err := products.GetConfigOptions(ctx, productID)
+	if err != nil {
+		return ""
+	}
+	return configDescFromOpts(opts, selection)
+}
+
+// configDescFromOpts 内存版配置摘要（opts 已随主查询带回，避免逐行查询）。
+func configDescFromOpts(opts []repo.ConfigOption, selection map[string]string) string {
+	parts := make([]string, 0, len(opts))
+	for _, o := range opts {
+		if o.Hidden || o.Field == "os" {
+			continue
+		}
+		val := strings.TrimSpace(selection[o.Field])
+		if val == "" {
+			continue
+		}
+		if o.Mode == "range" {
+			parts = append(parts, fmt.Sprintf("%s %s%s", o.Name, val, o.Unit))
+			continue
+		}
+		name := val
+		for _, s := range o.Subs {
+			if s.Value == val || s.Name == val {
+				name = s.Name
+				break
+			}
+		}
+		parts = append(parts, fmt.Sprintf("%s %s", o.Name, name))
+	}
+	return strings.Join(parts, " · ")
 }
 
 func pathID(r *http.Request, name string) int64 {

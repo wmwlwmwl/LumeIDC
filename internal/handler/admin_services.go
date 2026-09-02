@@ -3,38 +3,89 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
 	"time"
+
+	"lumeidc/internal/repo"
+	"lumeidc/internal/service"
 )
 
 type adminServiceRow struct {
-	ID       int64
-	A, B, C  string // 用户 / 产品 / 状态
-	D        string // 到期时间
-	Upstream string // 上游 host id
-	ProvErr  string // 开通失败原因
-	Profit   string // 毛利（来自下单订单）
+	ID         int64
+	A, B, C    string // 用户 / 产品 / 状态
+	D          string // 到期时间
+	Upstream   string // 上游 host id
+	ProvErr    string // 开通失败原因
+	Profit     string // 毛利（来自下单订单）
+	Hostname   string
+	ConfigDesc string
+	Monthly    string
+	DaysLeft   int
 }
 
-// ServicesList GET /admin/services — 全部服务列表。
+// ServicesList GET /admin/services — 全部服务列表（服务端筛选）。
 
 func (m *AdminManage) ServicesList(w http.ResponseWriter, r *http.Request) {
 	if !m.require(w, r) {
 		return
 	}
-	list, err := m.Svc.AdminList(r.Context())
+	f := service.AdminServiceFilter{Keyword: r.URL.Query().Get("q"), Status: -1}
+	if pid, err := strconv.ParseInt(r.URL.Query().Get("product_id"), 10, 64); err == nil {
+		f.ProductID = pid
+	}
+	if s := r.URL.Query().Get("status"); s != "" {
+		if v, err := strconv.ParseInt(s, 10, 64); err == nil && v >= 0 && v <= 2 {
+			f.Status = int16(v)
+		}
+	}
+	list, err := m.Svc.AdminList(r.Context(), f)
 	if err != nil {
 		http.Error(w, "查询失败", 500)
 		return
 	}
 	out := make([]adminServiceRow, 0, len(list))
 	for _, svc := range list {
-		out = append(out, adminServiceRow{ID: svc.ID, A: svc.User, B: svc.Name, C: svc.Status, D: svc.Expires, Upstream: svc.Upstream, ProvErr: svc.ProvErr, Profit: svc.Profit})
+		row := adminServiceRow{ID: svc.ID, A: svc.User, B: svc.Name, C: svc.Status, D: svc.Expires,
+			Upstream: svc.Upstream, ProvErr: svc.ProvErr, Profit: svc.Profit, Hostname: svc.Hostname}
+		// 配置摘要 + 月价：全部用主查询带回的数据在内存计算（不逐行查库；IP/系统留详情页）
+		var sel map[string]string
+		if len(svc.ConfigSnap) > 0 {
+			var saved struct {
+				Selection map[string]string `json:"selection"`
+			}
+			if json.Unmarshal(svc.ConfigSnap, &saved) == nil {
+				sel = saved.Selection
+			}
+		}
+		var opts []repo.ConfigOption
+		_ = json.Unmarshal(svc.ConfigOpts, &opts)
+		row.ConfigDesc = configDescFromOpts(opts, sel)
+		if base, err := strconv.ParseFloat(svc.MonthlyBase, 64); err == nil {
+			pt, pv := svc.ProfitType, svc.ProfitValue
+			if pv <= 0 { // 产品未设利润回退服务器默认（与 ProductSellProfit 口径一致）
+				pt, pv = svc.ServerProfitType, svc.ServerProfitValue
+			}
+			row.Monthly = fmt.Sprintf("%.2f", service.SellPriceFromData(base, opts, pt, pv, sel))
+		}
+		row.DaysLeft = int(time.Until(svc.ExpiresAt).Hours() / 24)
+		out = append(out, row)
+	}
+	products, _ := m.Products.ListAll(r.Context())
+	if products == nil {
+		products = []repo.Product{}
+	}
+	statusStr := ""
+	if f.Status >= 0 {
+		statusStr = strconv.FormatInt(int64(f.Status), 10)
 	}
 	m.renderAdmin(w, "admin_services.html", AdminData{
 		Rows: out, CSRF: m.adminCSRF(w, r), Error: r.URL.Query().Get("err"),
+		ServersList: map[string]any{
+			"Q": f.Keyword, "Status": statusStr, "ProductID": f.ProductID, "Products": products,
+		},
 	})
 }
 

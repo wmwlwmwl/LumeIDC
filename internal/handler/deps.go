@@ -21,6 +21,7 @@ type Deps struct {
 	AdminStore *middleware.Store // 后台会话 CSRF
 	Balance    *repo.Balance     // 导航栏余额（nil 时跳过余额注入）
 	Settings   *repo.Settings    // 站点品牌信息（nil 时回退默认）
+	AdminPathCfg *middleware.AdminPathConfig // 自定义后台路径（运行期可改，nil 时用默认 /admin）
 
 	// 模板懒缓存：首次按页解析，之后复用（html/template 解析后并发执行安全）。
 	tplMu  sync.Mutex
@@ -161,6 +162,13 @@ func (d *Deps) renderAdmin(w http.ResponseWriter, page string, data AdminData) {
 // renderAuth 渲染登录/注册认证页（模板使用 text/template，不自动转义，语义与旧 renderAuth 一致）。
 func (d *Deps) renderAuth(w http.ResponseWriter, data map[string]any) {
 	d.fillSiteData(data)
+	ap := "/admin"
+	if d != nil && d.AdminPathCfg != nil {
+		if v := d.AdminPathCfg.Get(); v != "" {
+			ap = v
+		}
+	}
+	data["AdminPath"] = ap
 	tpl, err := d.authTemplate()
 	if err != nil {
 		http.Error(w, err.Error(), 500)

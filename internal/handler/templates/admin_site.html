@@ -41,6 +41,13 @@
     <label for="service-hours">工作时间</label>
     <input id="service-hours" name="service_hours" value="{{index .ServersList "service_hours"}}" placeholder="周一至周五 9:00-18:00" maxlength="128">
     <p class="text-muted small">联系方式会显示在登录/注册页底部；未填写则隐藏。</p>
+  </div>
+
+  <div class="admin-panel-header"><h2>后台入口</h2></div>
+  <div class="admin-panel-body">
+    <label for="site-admin-path">后台访问路径</label>
+    <input id="site-admin-path" name="admin_path" value="{{index .ServersList "admin_path"}}" placeholder="/manage" maxlength="32">
+    <p class="text-muted small">仅允许 <code>/字母数字_-</code>（如 /manage），不能与 /login、/services 等公共路径冲突。保存后<strong>立即生效</strong>；留空使用默认 <code>/admin</code>。配置后默认 /admin 将被隐藏。</p>
 
     <div class="admin-form-actions">
       <button class="ui-btn" type="submit">保存站点设置 <span>→</span></button>

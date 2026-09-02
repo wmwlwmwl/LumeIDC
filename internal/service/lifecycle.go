@@ -351,3 +351,11 @@ func mapUpstreamStatus(u string) (int16, bool) {
 	}
 	return 0, false
 }
+
+// Upgrade 上游升降级钩子（预留）。
+// ponytail: 一期本地为主，不改上游实例资源，本方法为 no-op 占位；
+// 二期按 upstream_host_id 调魔方财务 /api/v1/hosts/:id/actions/upgrade 或
+// /api/v1/hosts/:id/actions/upgradeconfig + /checkout 时在此实现。
+func (lc *Lifecycle) Upgrade(ctx context.Context, serviceID, targetProductID int64, cycle string, orderID int64) error {
+	return nil
+}

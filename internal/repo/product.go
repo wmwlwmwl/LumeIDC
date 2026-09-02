@@ -368,6 +368,27 @@ func (p *Products) DefaultPricesetID(ctx context.Context) (int64, error) {
 	return id.Int64, nil
 }
 
+// ProductSellProfit 返回产品计价利润（产品未设置时回退服务器默认，与 CreateOrder 口径一致）。
+func (p *Products) ProductSellProfit(ctx context.Context, productID int64) (profitType int16, profitValue float64, err error) {
+	if err = p.db.QueryRowContext(ctx, `SELECT profit_type,profit_value FROM products WHERE id=$1`, productID).Scan(&profitType, &profitValue); err != nil {
+		return 0, 0, err
+	}
+	if profitValue <= 0 {
+		var sid sql.NullInt64
+		if err := p.db.QueryRowContext(ctx, `SELECT server_id FROM products WHERE id=$1`, productID).Scan(&sid); err != nil {
+			return 0, 0, err
+		}
+		if sid.Valid {
+			if err := p.db.QueryRowContext(ctx, `SELECT coalesce(profit_type,0),coalesce(profit_value,0) FROM servers WHERE id=$1`, sid.Int64).Scan(&profitType, &profitValue); err != nil {
+				return 0, 0, err
+			}
+		} else {
+			profitType, profitValue = 0, 0
+		}
+	}
+	return profitType, profitValue, nil
+}
+
 // BoundProduct 上游已绑定产品的同步所需字段。
 type BoundProduct struct {
 	ID          int64

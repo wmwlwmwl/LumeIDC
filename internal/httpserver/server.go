@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"lumeidc/internal/captcha"
@@ -97,6 +98,13 @@ func Build(cfg *config.Config) (*App, error) {
 	deps.Balance = balanceRepo
 	deps.Settings = settingsRepo
 
+	// 自定义后台访问路径（站点设置 admin_path；运行期可改，保存即生效）
+	adminPathCfg := middleware.NewAdminPathConfig("")
+	if raw, err := settingsRepo.Get(context.Background(), service.KeyAdminPath); err == nil {
+		adminPathCfg.Set(strings.TrimSpace(raw))
+	}
+	deps.AdminPathCfg = adminPathCfg
+
 	identityKey := cfg.PIIKey
 	if identityKey == "" {
 		// 兼容尚未配置独立 PII key 的旧安装；新安装由 installer 生成独立密钥。
@@ -179,6 +187,7 @@ func Build(cfg *config.Config) (*App, error) {
 		Settings:      settingsRepo,
 		Invoices:      invoices,
 		Lifecycle:     lifecycle,
+		Payment:       paymentSvc,
 		Deps:          deps,
 	}
 
@@ -209,6 +218,7 @@ func Build(cfg *config.Config) (*App, error) {
 		Providers: providers,
 		Settings:  settingsRepo,
 		Identity:  identityStore,
+		IdentitySvc: identity,
 		AdminLog:  adminLog,
 		Deps:      deps,
 	}
@@ -250,8 +260,11 @@ func Build(cfg *config.Config) (*App, error) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"status":"ready"}`))
 	})
+	// 全局 404 兜底（未匹配路由统一渲染站点 404 页）
+	mux.HandleFunc("/", pages.NotFound)
 
 	h := store.Middleware(middleware.CSRF(mux))
+	h = middleware.AdminPath(h, adminPathCfg)
 	addr := cfg.Listen
 	if a := os.Getenv("LISTEN"); a != "" {
 		addr = a // 环境变量覆盖配置，便于本地多实例测试

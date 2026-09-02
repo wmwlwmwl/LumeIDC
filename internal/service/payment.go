@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strconv"
 	"time"
 
 	"lumeidc/internal/crypto"
@@ -75,9 +76,14 @@ func (p *Payment) MarkPaidByBalance(ctx context.Context, invoiceNo string, userI
 	var orderID, productID int64
 	var cycle string
 	var renewServiceID sql.NullInt64
+	var orderKind string
+	var targetProductID int64
+	var diffAmount float64
 	if err := tx.QueryRowContext(ctx,
-		`SELECT o.amount, o.cycle, o.id, o.service_id, o.product_id FROM invoices i JOIN orders o ON o.id=i.order_id WHERE i.id=$1`, invID).
-		Scan(&amountStr, &cycle, &orderID, &renewServiceID, &productID); err != nil {
+		`SELECT o.amount, o.cycle, o.id, o.service_id, o.product_id, o.kind,
+		        coalesce(o.target_product_id,0), coalesce(o.diff_amount,0)::float8
+		 FROM invoices i JOIN orders o ON o.id=i.order_id WHERE i.id=$1`, invID).
+		Scan(&amountStr, &cycle, &orderID, &renewServiceID, &productID, &orderKind, &targetProductID, &diffAmount); err != nil {
 		return fmt.Errorf("订单缺失: %w", err)
 	}
 	if ok, err := validPositiveAmount(ctx, tx, amountStr); err != nil {
@@ -105,11 +111,21 @@ func (p *Payment) MarkPaidByBalance(ctx context.Context, invoiceNo string, userI
 	}
 	var svcID int64
 	var newService bool
+	isUpgrade := orderKind == "upgrade"
 	interval, err := CycleInterval(cycle)
 	if err != nil {
 		return err
 	}
-	if renewServiceID.Valid && renewServiceID.Int64 > 0 {
+	switch {
+	case isUpgrade:
+		if !renewServiceID.Valid || renewServiceID.Int64 <= 0 {
+			return fmt.Errorf("升级订单缺少服务")
+		}
+		svcID = renewServiceID.Int64
+		if err := p.applyUpgrade(ctx, tx, userID, svcID, targetProductID, cycle, orderID, diffAmount); err != nil {
+			return err
+		}
+	case renewServiceID.Valid && renewServiceID.Int64 > 0:
 		svcID = renewServiceID.Int64
 		// 检查是否已授权，防止重复续费
 		if p.PeriodGrants != nil {
@@ -121,7 +137,7 @@ func (p *Payment) MarkPaidByBalance(ctx context.Context, invoiceNo string, userI
 			`UPDATE services SET status=1, expires_at=GREATEST(expires_at, now()) + $2::interval, expire_warn_sent=false WHERE id=$1`, svcID, interval); err != nil {
 			return err
 		}
-	} else {
+	default:
 		var svcIDNew int64
 		var userIDFromOrder int64
 		if err := tx.QueryRowContext(ctx,
@@ -139,7 +155,7 @@ func (p *Payment) MarkPaidByBalance(ctx context.Context, invoiceNo string, userI
 		svcID = svcIDNew
 		newService = true
 	}
-	if p.Jobs != nil {
+	if p.Jobs != nil && !isUpgrade {
 		kind := "renew"
 		if newService {
 			kind = "provision"
@@ -155,12 +171,21 @@ func (p *Payment) MarkPaidByBalance(ctx context.Context, invoiceNo string, userI
 		p.TriggerFulfillment()
 	}
 	if p.Notifier != nil {
-		p.Notifier.Notify(ctx, userID, "支付成功", "账单 "+invoiceNo+" 已通过余额支付，服务开通中。")
+		msg := "账单 " + invoiceNo + " 已通过余额支付，服务开通中。"
+		if isUpgrade {
+			msg = "账单 " + invoiceNo + " 已通过余额支付，服务升降级已生效。"
+		} else if !newService {
+			msg = "账单 " + invoiceNo + " 已通过余额支付，服务已续费。"
+		}
+		p.Notifier.Notify(ctx, userID, "支付成功", msg)
 	}
 	if p.Jobs == nil {
-		if renewServiceID.Valid && renewServiceID.Int64 > 0 {
+		switch {
+		case isUpgrade:
+			p.upgradeAsync(svcID, targetProductID, cycle, orderID)
+		case renewServiceID.Valid && renewServiceID.Int64 > 0:
 			p.renewAsync(svcID, cycle, orderID)
-		} else if newService {
+		case newService:
 			p.provisionAsync(svcID, productID, cycle)
 		}
 	}
@@ -302,9 +327,12 @@ func (p *Payment) MarkPaid(ctx context.Context, invoiceNo, tradeNo, gatewayCode 
 	var productID int64
 	var cycle string
 	var renewServiceID sql.NullInt64
+	var orderKind string
+	var targetProductID int64
+	var diffAmount float64
 	err = tx.QueryRowContext(ctx,
-		`SELECT product_id,cycle,service_id FROM orders WHERE id=$1`, orderID).
-		Scan(&productID, &cycle, &renewServiceID)
+		`SELECT product_id,cycle,service_id,kind,coalesce(target_product_id,0),coalesce(diff_amount,0)::float8 FROM orders WHERE id=$1`, orderID).
+		Scan(&productID, &cycle, &renewServiceID, &orderKind, &targetProductID, &diffAmount)
 	if err != nil {
 		return fmt.Errorf("订单缺失: %w", err)
 	}
@@ -341,10 +369,21 @@ func (p *Payment) MarkPaid(ctx context.Context, invoiceNo, tradeNo, gatewayCode 
 		return err
 	}
 
-	// 续费单：直接延期指定服务并触发上游 Renew
+	isUpgrade := orderKind == "upgrade"
 	isRenew := false
 	var svcID int64
-	if renewServiceID.Valid && renewServiceID.Int64 > 0 {
+	switch {
+	case isUpgrade:
+		// 升降级单：本地应用（换产品/周期/配置快照，降级退余额），不动 expires_at
+		if !renewServiceID.Valid || renewServiceID.Int64 <= 0 {
+			return fmt.Errorf("升级订单缺少服务")
+		}
+		svcID = renewServiceID.Int64
+		if err := p.applyUpgrade(ctx, tx, userID, svcID, targetProductID, cycle, orderID, diffAmount); err != nil {
+			return err
+		}
+	case renewServiceID.Valid && renewServiceID.Int64 > 0:
+		// 续费单：直接延期指定服务并触发上游 Renew
 		isRenew = true
 		svcID = renewServiceID.Int64
 		var svcStatus int16
@@ -367,7 +406,7 @@ func (p *Payment) MarkPaid(ctx context.Context, invoiceNo, tradeNo, gatewayCode 
 			svcID, interval); err != nil {
 			return err
 		}
-	} else {
+	default:
 		// 新购：每次支付独立建一个待开通服务（不合并既有同产品服务；续费走 isRenew 分支）
 		var svcIDNew int64
 		expiresAt, _ := CycleAddDate(now, cycle)
@@ -382,7 +421,7 @@ func (p *Payment) MarkPaid(ctx context.Context, invoiceNo, tradeNo, gatewayCode 
 		svcID = svcIDNew
 	}
 
-	if p.Jobs != nil {
+	if p.Jobs != nil && !isUpgrade {
 		kind := "provision"
 		if isRenew {
 			kind = "renew"
@@ -398,12 +437,21 @@ func (p *Payment) MarkPaid(ctx context.Context, invoiceNo, tradeNo, gatewayCode 
 		p.TriggerFulfillment()
 	}
 	if p.Notifier != nil {
-		p.Notifier.Notify(ctx, userID, "支付成功", "账单 "+invoiceNo+" 已支付，服务开通中。")
+		msg := "账单 " + invoiceNo + " 已支付，服务开通中。"
+		if isUpgrade {
+			msg = "账单 " + invoiceNo + " 已支付，服务升降级已生效。"
+		} else if isRenew {
+			msg = "账单 " + invoiceNo + " 已支付，服务已续费。"
+		}
+		p.Notifier.Notify(ctx, userID, "支付成功", msg)
 	}
 	if p.Jobs == nil {
-		if isRenew {
+		switch {
+		case isUpgrade:
+			p.upgradeAsync(svcID, targetProductID, cycle, orderID)
+		case isRenew:
 			p.renewAsync(svcID, cycle, orderID)
-		} else {
+		default:
 			p.provisionAsync(svcID, productID, cycle)
 		}
 	}
@@ -436,6 +484,58 @@ func (p *Payment) renewAsync(serviceID int64, cycle string, orderID int64) {
 		}
 		if rerr := lc.Renew(rctx, serviceID, cycle, orderID); rerr != nil {
 			log.Printf("[renew] service %d 上游续费失败: %v", serviceID, rerr)
+		}
+	}()
+}
+
+// applyUpgrade 支付事务内本地应用升降级：换产品/周期/配置快照；降级退差额到余额。
+// 不动 expires_at（保留已购时长）。退款与核销同事务（invoice status 0→1），只退一次。
+func (p *Payment) applyUpgrade(ctx context.Context, tx *sql.Tx, userID, svcID, targetProductID int64, cycle string, orderID int64, diffAmount float64) error {
+	var st int16
+	var tr string
+	if err := tx.QueryRowContext(ctx, `SELECT status,coalesce(transition_state,'') FROM services WHERE id=$1 FOR UPDATE`, svcID).Scan(&st, &tr); err != nil {
+		return err
+	}
+	if (st != 1 && st != 2) || tr != "" {
+		return fmt.Errorf("服务当前状态不可升降级")
+	}
+	if targetProductID <= 0 {
+		return fmt.Errorf("升级订单缺少目标产品")
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE services SET product_id=$2, cycle=$3,
+		        config_snapshot=(SELECT config_snapshot FROM orders WHERE id=$4)
+		 WHERE id=$1 AND status IN (1,2) AND coalesce(transition_state,'')=''`,
+		svcID, targetProductID, cycle, orderID); err != nil {
+		return err
+	}
+	if diffAmount < 0 {
+		refund := strconv.FormatFloat(-diffAmount, 'f', 2, 64)
+		if _, err := tx.ExecContext(ctx, `UPDATE users SET balance=balance+$2::numeric WHERE id=$1`, userID, refund); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO balance_logs(user_id,amount,balance_after,type,note)
+			 SELECT $1,$2::numeric,balance,'refund','服务降级退款 订单#'||$3::text FROM users WHERE id=$1`,
+			userID, refund, orderID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// upgradeAsync 异步触发上游升降级钩子（一期本地为主，Lifecycle.Upgrade 为占位 no-op）。
+func (p *Payment) upgradeAsync(serviceID, targetProductID int64, cycle string, orderID int64) {
+	go func() {
+		rctx, cancel := context.WithTimeout(context.Background(), opRenewTimeout)
+		defer cancel()
+		lc := p.Lifecycle
+		if lc == nil {
+			log.Printf("[upgrade] service %d 缺少 Lifecycle 服务", serviceID)
+			return
+		}
+		if uerr := lc.Upgrade(rctx, serviceID, targetProductID, cycle, orderID); uerr != nil {
+			log.Printf("[upgrade] service %d 上游升降级失败: %v", serviceID, uerr)
 		}
 	}()
 }

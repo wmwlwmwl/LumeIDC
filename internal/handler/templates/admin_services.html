@@ -20,6 +20,23 @@
       <input id="filter-services" type="search" data-table-filter="#svTbody" placeholder="搜索用户 / 产品 / 状态">
     </label>
   </div>
+  <form method="get" action="/admin/services" style="display:flex;gap:8px;flex-wrap:wrap;padding:0 20px 14px;border-bottom:1px solid #eef1f5">
+    <input name="q" value="{{index .ServersList "Q"}}" placeholder="搜索用户 / 服务名 / 产品" style="flex:1 1 200px;min-width:0;padding:7px 10px;border:1px solid #d7dde6;border-radius:6px">
+    <select name="product_id" style="padding:7px 10px;border:1px solid #d7dde6;border-radius:6px;min-width:160px">
+      <option value="">全部产品</option>
+      {{range index .ServersList "Products"}}
+      <option value="{{.ID}}" {{if eq .ID (index $.ServersList "ProductID")}}selected{{end}}>{{.Name}}</option>
+      {{end}}
+    </select>
+    <select name="status" style="padding:7px 10px;border:1px solid #d7dde6;border-radius:6px">
+      <option value="">全部状态</option>
+      <option value="0" {{if eq (index .ServersList "Status") "0"}}selected{{end}}>待开通</option>
+      <option value="1" {{if eq (index .ServersList "Status") "1"}}selected{{end}}>激活</option>
+      <option value="2" {{if eq (index .ServersList "Status") "2"}}selected{{end}}>已停机</option>
+    </select>
+    <button class="ui-btn ui-btn-small" type="submit">筛选</button>
+    <a class="admin-row-btn" href="/admin/services">重置</a>
+  </form>
   <div class="admin-table-wrap">
     <table class="admin-table" id="svTbody" data-pageable data-page-size="15">
       <thead>
@@ -27,8 +44,12 @@
           <th scope="col">ID</th>
           <th scope="col">用户</th>
           <th scope="col">产品</th>
+          <th scope="col">主机名</th>
+          <th scope="col">配置</th>
           <th scope="col">状态</th>
           <th scope="col">到期</th>
+          <th scope="col">剩余</th>
+          <th scope="col">月价</th>
           <th scope="col">上游</th>
           <th scope="col">失败原因</th>
           <th scope="col">利润</th>
@@ -41,12 +62,16 @@
           <td class="td-id">{{.ID}}</td>
           <td>{{.A}}</td>
           <td class="td-name">{{.B}}</td>
+          <td>{{if .Hostname}}{{.Hostname}}{{else}}-{{end}}</td>
+          <td>{{if .ConfigDesc}}{{.ConfigDesc}}{{else}}-{{end}}</td>
           <td>
             {{if eq .C "激活"}}<span class="badge badge-ok">{{.C}}</span>
             {{else if eq .C "已停机"}}<span class="badge badge-warn">{{.C}}</span>
             {{else}}<span class="badge badge-idle">{{.C}}</span>{{end}}
           </td>
           <td>{{.D}}</td>
+          <td>{{if gt .DaysLeft 0}}{{.DaysLeft}}天{{else if eq .DaysLeft 0}}今天{{else}}已到期{{end}}</td>
+          <td>￥{{if .Monthly}}{{.Monthly}}{{else}}-{{end}}</td>
           <td>{{if .Upstream}}#{{.Upstream}}{{else}}-{{end}}</td>
           <td>{{if .ProvErr}}<span class="text-danger">{{.ProvErr}}</span>{{else}}-{{end}}</td>
           <td>{{.Profit}}</td>
@@ -86,7 +111,7 @@
         </tr>
         {{end}}
         {{if not .Rows}}
-        <tr><td colspan="9" class="admin-table-empty">暂无服务实例</td></tr>
+        <tr><td colspan="13" class="admin-table-empty">暂无服务实例</td></tr>
         {{end}}
       </tbody>
     </table>

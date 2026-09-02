@@ -15,6 +15,7 @@ const (
 	KeyServiceEmail    = "service_email"
 	KeyServicePhone    = "service_phone"
 	KeyServiceHours    = "service_hours"
+	KeyAdminPath       = "admin_path" // 自定义后台访问路径（启动时读取，改后重启生效）
 
 	DefaultSiteName = "LumeIDC"
 )

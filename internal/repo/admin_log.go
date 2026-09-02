@@ -51,6 +51,31 @@ func (l *AdminLog) List(ctx context.Context, limit int) ([]AdminLogRow, error) {
 	return out, rows.Err()
 }
 
+// ListByTarget 按操作对象筛选审计日志（详情页展示）。
+// ponytail: admin_logs 无 (target_type,target_id) 索引，当前用户规模可接受；量大时补迁移建复合索引。
+func (l *AdminLog) ListByTarget(ctx context.Context, targetType string, targetID int64, limit int) ([]AdminLogRow, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 20
+	}
+	rows, err := l.db.QueryContext(ctx,
+		`SELECT id,admin_id,action,target_type,target_id,detail,ip,created_at
+		 FROM admin_logs WHERE target_type=$1 AND target_id=$2 ORDER BY id DESC LIMIT $3`,
+		targetType, targetID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []AdminLogRow
+	for rows.Next() {
+		var r AdminLogRow
+		if err := rows.Scan(&r.ID, &r.AdminID, &r.Action, &r.TargetType, &r.TargetID, &r.Detail, &r.IP, &r.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // Record 写审计日志，失败仅记日志不阻断主流程（语义与原 RecordAudit 一致）。
 func (l *AdminLog) Record(adminID int64, action, targetType string, targetID int64, detail, ip string) {
 	if l == nil {

@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"sort"
@@ -186,6 +187,46 @@ func matchSub(opt repo.ConfigOption, val string) (repo.ConfigValue, bool) {
 		}
 	}
 	return repo.ConfigValue{}, false
+}
+
+// MonthlySellPrice 某产品在给定配置选择下的"月售价"（基础月价+配置加价，按产品/服务器利润加成）。
+// 升降级差价两侧统一用该口径：目标月等价 − 当前月等价。
+func MonthlySellPrice(ctx context.Context, products *repo.Products, productID int64, selection map[string]string) (float64, error) {
+	psID, err := products.DefaultPricesetID(ctx)
+	if err != nil {
+		return 0, err
+	}
+	pr, err := products.Price(ctx, productID, psID)
+	if err != nil {
+		return 0, err
+	}
+	base, err := strconv.ParseFloat(pr.Monthly, 64)
+	if err != nil || !money.FiniteNonNegative(base) {
+		return 0, fmt.Errorf("商品月价无效")
+	}
+	opts, err := products.GetConfigOptions(ctx, productID)
+	if err != nil {
+		return 0, err
+	}
+	quote, err := CalculateQuote(opts, base, "monthly", selection)
+	if err != nil {
+		return 0, err
+	}
+	pt, pv, err := products.ProductSellProfit(ctx, productID)
+	if err != nil {
+		return 0, err
+	}
+	return mathRound(applyProfit(mathRound(quote.Total), pt, pv)), nil
+}
+
+// SellPriceFromData 内存版月售价：给定基础月价/配置选项/利润与选择，与 MonthlySellPrice 同口径。
+// 供列表页批量计价（数据已随主查询带回，避免逐行 N 次查询）。
+func SellPriceFromData(base float64, opts []repo.ConfigOption, pt int16, pv float64, selection map[string]string) float64 {
+	quote, err := CalculateQuote(opts, base, "monthly", selection)
+	if err != nil {
+		return 0
+	}
+	return mathRound(applyProfit(mathRound(quote.Total), pt, pv))
 }
 
 // DisplayPrice 目录展示月价：（基础价 + 最低一档配置价）×(1+利润比例%) 或 +固定利润。

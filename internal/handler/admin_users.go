@@ -26,7 +26,18 @@ func (m *AdminManage) UsersList(w http.ResponseWriter, r *http.Request) {
 	}
 	var rows []adminRow
 	for _, u := range list {
-		rows = append(rows, adminRow{ID: u.ID, A: u.Email, B: u.Name})
+		statusText := "正常"
+		if u.Status != 1 {
+			statusText = "禁用"
+		}
+		phone := "-"
+		if u.Phone != "" {
+			phone = service.MaskPhone(u.Phone)
+		}
+		rows = append(rows, adminRow{
+			ID: u.ID, A: u.Email, B: u.Name, C: phone,
+			D: statusText, E: fmt.Sprintf("%.2f", u.Balance), F: u.CreatedAt,
+		})
 	}
 	m.renderAdmin(w, "admin_users.html", AdminData{Rows: rows})
 }
@@ -88,15 +99,72 @@ func (m *AdminManage) UserEdit(w http.ResponseWriter, r *http.Request) {
 	if user.EmailVerified {
 		emailStatus = "已验证"
 	}
+	// 只读信息区块（best-effort：任一查询失败仅记日志，不阻断详情页渲染）
+	registeredAt, lastLogin := "-", "-"
+	if !user.CreatedAt.IsZero() {
+		registeredAt = user.CreatedAt.Format("2006-01-02 15:04")
+	}
+	if user.LastLoginAt.Valid {
+		lastLogin = user.LastLoginAt.Time.Format("2006-01-02 15:04")
+	}
+	// 实名认证（对齐 ZJMF：管理员可看完整姓名/证件号 + 证件照片）
+	realNameStatus := "未提交"
+	verifName, verifNumber := "", ""
+	verifSubID := int64(0)
+	verifSubmittedAt, verifReviewedAt := "", ""
+	if m.Identity != nil && m.IdentitySvc != nil {
+		if v, verr := m.Identity.CurrentVerification(r.Context(), id); verr == nil && v != nil {
+			realNameStatus = service.StatusText(v.Status)
+			verifSubID = v.ID
+			verifSubmittedAt = v.SubmittedAt.Format("2006-01-02 15:04")
+			if v.ReviewedAt.Valid {
+				verifReviewedAt = v.ReviewedAt.Time.Format("2006-01-02 15:04")
+			}
+			if sub, nm, num, derr := m.IdentitySvc.AdminSubmission(r.Context(), v.ID); derr == nil && sub != nil {
+				verifName, verifNumber = nm, num
+			} else if derr != nil {
+				log.Printf("[admin] 实名资料解密失败 user=%d: %v", id, derr)
+			}
+		} else if verr != nil {
+			log.Printf("[admin] 实名状态查询失败 id=%d: %v", id, verr)
+		}
+	}
+	if verifNumber != "" {
+		m.audit(r, "real_name_viewed", "user", id, "admin_user_detail")
+	}
+	serviceCount, activeCount, unpaidCount, paidTotal := m.Svc.UserStats(r.Context(), id)
+	logs, _ := m.Balance.Logs(r.Context(), id)
+	if logs == nil {
+		logs = []map[string]any{}
+	}
+	var adminLogs []repo.AdminLogRow
+	if m.AdminLog != nil {
+		if al, aerr := m.AdminLog.ListByTarget(r.Context(), "user", id, 20); aerr == nil {
+			adminLogs = al
+		} else {
+			log.Printf("[admin] 审计日志查询失败 id=%d: %v", id, aerr)
+		}
+	}
+	serversList := map[string]any{
+		"ID": id, "Email": user.Email, "A": user.Email, "B": user.Name,
+		"C": fmt.Sprintf("%.2f", user.Balance), "D": itoa(int64(user.Status)),
+		"Phone": user.Phone, "PhoneMasked": service.MaskPhone(user.Phone),
+		"PhoneStatus": phoneStatus, "EmailStatus": emailStatus,
+		"RegisteredAt": registeredAt, "LastLoginAt": lastLogin, "RealNameStatus": realNameStatus,
+		"ServiceCount": serviceCount, "ActiveCount": activeCount,
+		"UnpaidCount": unpaidCount, "PaidTotal": paidTotal,
+		"BalanceLogs": logs, "AdminLogs": adminLogs,
+		"VerifName": verifName, "VerifNumber": verifNumber,
+		"VerifSubmittedAt": verifSubmittedAt, "VerifReviewedAt": verifReviewedAt,
+	}
+	if verifSubID > 0 {
+		serversList["VerifFrontURL"] = "/admin/verifications/" + strconv.FormatInt(verifSubID, 10) + "/photo/front"
+		serversList["VerifBackURL"] = "/admin/verifications/" + strconv.FormatInt(verifSubID, 10) + "/photo/back"
+	}
 	m.renderAdmin(w, "admin_user_form.html", AdminData{
 		CSRF:  m.adminCSRF(w, r),
 		Error: r.URL.Query().Get("err"),
-		ServersList: map[string]any{
-			"ID": id, "Email": user.Email, "A": user.Email, "B": user.Name,
-			"C": fmt.Sprintf("%.2f", user.Balance), "D": itoa(int64(user.Status)),
-			"Phone": user.Phone, "PhoneMasked": service.MaskPhone(user.Phone),
-			"PhoneStatus": phoneStatus, "EmailStatus": emailStatus,
-		},
+		ServersList: serversList,
 	})
 }
 

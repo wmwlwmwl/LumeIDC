@@ -6,6 +6,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"lumeidc/internal/middleware"
 	"lumeidc/internal/service"
 )
 
@@ -36,6 +37,7 @@ func (a *Admin) adminSite(w http.ResponseWriter, r *http.Request) {
 		service.KeyServiceEmail:    get(service.KeyServiceEmail),
 		service.KeyServicePhone:    get(service.KeyServicePhone),
 		service.KeyServiceHours:    get(service.KeyServiceHours),
+		service.KeyAdminPath:       get(service.KeyAdminPath),
 	}
 	a.renderAdmin(w, "admin_site.html", AdminData{
 		CSRF:        a.adminCSRF(w, r),
@@ -64,6 +66,11 @@ func (a *Admin) adminSiteSave(w http.ResponseWriter, r *http.Request) {
 	email := strings.TrimSpace(r.PostFormValue(service.KeyServiceEmail))
 	phone := strings.TrimSpace(r.PostFormValue(service.KeyServicePhone))
 	hours := strings.TrimSpace(r.PostFormValue(service.KeyServiceHours))
+	adminPath := strings.TrimSpace(r.PostFormValue(service.KeyAdminPath))
+	if adminPath != "" && !middleware.ValidAdminPath(adminPath) {
+		http.Redirect(w, r, "/admin/site?err="+url.QueryEscape("后台路径无效：仅允许 /字母数字_-，且不能与公共路径（如 /login、/services）冲突"), http.StatusSeeOther)
+		return
+	}
 	limit := 512
 	if len([]rune(name)) > 128 {
 		http.Redirect(w, r, "/admin/site?err="+url.QueryEscape("站点名称过长"), http.StatusSeeOther)
@@ -85,5 +92,9 @@ func (a *Admin) adminSiteSave(w http.ResponseWriter, r *http.Request) {
 	set(service.KeyServiceEmail, email)
 	set(service.KeyServicePhone, phone)
 	set(service.KeyServiceHours, hours)
+	set(service.KeyAdminPath, adminPath)
+	if a.AdminPathCfg != nil {
+		a.AdminPathCfg.Set(adminPath) // 立即生效，无需重启
+	}
 	http.Redirect(w, r, "/admin/site?ok=1", http.StatusSeeOther)
 }

@@ -5,7 +5,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
+	"strings"
 	"time"
 )
 
@@ -19,13 +21,19 @@ type ServiceRow struct {
 	ShowQ        bool      `json:"-"`
 	ShowY        bool      `json:"-"`
 	ExpiringSoon bool      `json:"-"` // 14 天内到期（列表提醒用）
+	Hostname     string    `json:"hostname"`
+	IP           string    `json:"ip"`   // 上游实时（best-effort，列表展示）
+	OS           string    `json:"os"`   // 系统名称/版本（best-effort）
+	Monthly      string    `json:"-"`    // 月售价（含配置+利润）
+	ConfigDesc   string    `json:"-"`    // 配置摘要（如 "CPU 2核 · 内存 4G"）
+	DaysLeft     int       `json:"-"`    // 距到期天数
 }
 
 type ServicesRepo struct{ db *sql.DB }
 
 func (s *ServicesRepo) ListByUser(ctx context.Context, userID int64) ([]ServiceRow, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id,name,status,coalesce(expires_at,created_at),product_id FROM services WHERE user_id=$1 AND status<3 ORDER BY id DESC`,
+		`SELECT id,name,status,coalesce(expires_at,created_at),product_id,coalesce(hostname,'') FROM services WHERE user_id=$1 AND status<3 ORDER BY id DESC`,
 		userID)
 	if err != nil {
 		return nil, err
@@ -34,7 +42,7 @@ func (s *ServicesRepo) ListByUser(ctx context.Context, userID int64) ([]ServiceR
 	var out []ServiceRow
 	for rows.Next() {
 		var sr ServiceRow
-		if err := rows.Scan(&sr.ID, &sr.Name, &sr.Status, &sr.ExpiresAt, &sr.ProductID); err != nil {
+		if err := rows.Scan(&sr.ID, &sr.Name, &sr.Status, &sr.ExpiresAt, &sr.ProductID, &sr.Hostname); err != nil {
 			return nil, err
 		}
 		out = append(out, sr)
@@ -59,6 +67,7 @@ type ServiceDetail struct {
 	Amount       string           `json:"amount"`
 	Configs      []ConfigSnapshot `json:"configs"`
 	UpstreamHost int64            `json:"upstream_host_id"`
+	Remark       string           `json:"remark"`
 }
 
 // GetDetail 读取服务详情（归属校验在 SQL 内）。
@@ -67,11 +76,11 @@ func (s *ServicesRepo) GetDetail(ctx context.Context, serviceID, userID int64) (
 	var orderID sql.NullInt64
 	err := s.db.QueryRowContext(ctx,
 		`SELECT sv.id, sv.name, sv.status, coalesce(sv.expires_at,sv.created_at), sv.hostname,
-		        sv.created_at, sv.upstream_host_id, o.id, sv.product_id
+		        sv.created_at, sv.upstream_host_id, o.id, sv.product_id, sv.remark
 		 FROM services sv LEFT JOIN orders o ON o.id = sv.order_id
 		 WHERE sv.id=$1 AND sv.user_id=$2`, serviceID, userID).
 		Scan(&d.ID, &d.Name, &d.Status, &d.ExpiresAt, &d.Hostname,
-			&d.CreatedAt, &d.UpstreamHost, &orderID, &d.ProductID)
+			&d.CreatedAt, &d.UpstreamHost, &orderID, &d.ProductID, &d.Remark)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, errSvcNotFound
 	}
@@ -82,12 +91,23 @@ func (s *ServicesRepo) GetDetail(ctx context.Context, serviceID, userID int64) (
 	d.StatusText = statusText[d.Status]
 	// 周期/金额与配置快照均取本服务自己所属订单（config_snapshot），
 	// 不再取“该用户该产品最早一条”快照——否则多单用户会看到别的订单的配置。
+	// 升降级后：services.cycle/config_snapshot 优先于原订单（升级换了产品/配置/周期）。
 	if orderID.Valid {
-		var cycle, amount string
-		var snap []byte
+		var oCycle, amount, svCycle, svSnap string
+		var oSnap []byte
 		if err := s.db.QueryRowContext(ctx,
-			`SELECT cycle, amount, coalesce(config_snapshot::text,'') FROM orders WHERE id=$1`,
-			orderID.Int64).Scan(&cycle, &amount, &snap); err == nil {
+			`SELECT o.cycle, o.amount, coalesce(o.config_snapshot::text,''),
+			        coalesce(sv.cycle,''), coalesce(sv.config_snapshot::text,'')
+			 FROM orders o JOIN services sv ON sv.id=o.service_id WHERE o.id=$1`,
+			orderID.Int64).Scan(&oCycle, &amount, &oSnap, &svCycle, &svSnap); err == nil {
+			cycle := oCycle
+			if svCycle != "" {
+				cycle = svCycle
+			}
+			snap := oSnap
+			if len(svSnap) > 0 {
+				snap = []byte(svSnap)
+			}
 			d.Cycle = map[string]string{"monthly": "月付", "quarterly": "季付", "yearly": "年付"}[cycle]
 			d.Amount = amount
 			if len(snap) > 0 {
@@ -109,6 +129,32 @@ func (s *ServicesRepo) GetDetail(ctx context.Context, serviceID, userID int64) (
 		}
 	}
 	return &d, nil
+}
+
+// Rename 用户修改服务名称与备注（归属由调用方校验）。
+func (s *ServicesRepo) Rename(ctx context.Context, serviceID int64, name, remark string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE services SET name=$2, remark=$3 WHERE id=$1`, serviceID, name, remark)
+	return err
+}
+
+// ConfigSelection 读取服务当前生效的配置选择（services.config_snapshot 优先，回退原订单快照）。
+// 供升降级差价/详情展示；无快照返回空 map。
+func (s *ServicesRepo) ConfigSelection(ctx context.Context, serviceID int64) map[string]string {
+	var snap []byte
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT coalesce(sv.config_snapshot, o.config_snapshot)
+		 FROM services sv LEFT JOIN orders o ON o.id=sv.order_id WHERE sv.id=$1`,
+		serviceID).Scan(&snap); err != nil {
+		return nil
+	}
+	var saved struct {
+		Selection map[string]string `json:"selection"`
+	}
+	if json.Unmarshal(snap, &saved) == nil {
+		return saved.Selection
+	}
+	return nil
 }
 
 var errSvcNotFound = svcErr("服务不存在")
@@ -184,27 +230,69 @@ func (s *ServicesRepo) OwnsActive(ctx context.Context, serviceID, userID int64) 
 	return owned, err
 }
 
-// AdminServiceRow 后台服务列表行（SQL 与旧 handler 查询逐字平移）。
+// AdminServiceRow 后台服务列表行（SQL 与旧 handler 查询逐字平移；含内存计价所需数据）。
 type AdminServiceRow struct {
-	ID       int64
-	User     string // email
-	Name     string
-	Status   string
-	Expires  string
-	Upstream string // upstream host id
-	ProvErr  string
-	Profit   string
+	ID        int64
+	User      string // email
+	Name      string
+	Status    string
+	Expires   string
+	Upstream  string // upstream host id
+	ProvErr   string
+	Profit    string
+	ProductID int64
+	Hostname  string
+	ExpiresAt time.Time
+	// 内存计价数据（一次查询带回，避免逐行 N 次远程查询）
+	ConfigSnap        []byte  // coalesce(sv.config_snapshot, o.config_snapshot)
+	ConfigOpts        []byte  // products.configoption
+	MonthlyBase       string  // 默认价格组月价
+	ProfitType        int16   // 产品利润
+	ProfitValue       float64
+	ServerProfitType  int16 // 服务器利润（回退用）
+	ServerProfitValue float64
 }
 
-// AdminList 后台服务列表（最近 200 条）。
-func (s *ServicesRepo) AdminList(ctx context.Context) ([]AdminServiceRow, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT sv.id, coalesce(u.email,''), coalesce(sv.name,''),
-			CASE sv.status WHEN 0 THEN '待开通' WHEN 1 THEN '激活' WHEN 2 THEN '已停机' ELSE '已删除' END,
-			to_char(coalesce(sv.expires_at, sv.created_at),'YYYY-MM-DD'),
-			sv.upstream_host_id, coalesce(sv.provision_error,''),
-			coalesce((SELECT profit FROM orders WHERE id=sv.order_id),'0')
-		 FROM services sv JOIN users u ON u.id=sv.user_id WHERE sv.status < 3 ORDER BY sv.id DESC LIMIT 200`)
+// AdminServiceFilter 后台服务列表筛选。
+type AdminServiceFilter struct {
+	Keyword   string // 用户邮箱 / 服务名 / 产品名 模糊
+	ProductID int64  // 0=全部
+	Status    int16  // -1=全部；0 待开通 /1 激活 /2 已停机
+}
+
+// AdminList 后台服务列表（服务端筛选，LIMIT 200 保持）。
+func (s *ServicesRepo) AdminList(ctx context.Context, f AdminServiceFilter) ([]AdminServiceRow, error) {
+	query := `SELECT sv.id, coalesce(u.email,''), coalesce(sv.name,''),
+	        CASE sv.status WHEN 0 THEN '待开通' WHEN 1 THEN '激活' WHEN 2 THEN '已停机' ELSE '已删除' END,
+	        to_char(coalesce(sv.expires_at, sv.created_at),'YYYY-MM-DD'),
+	        sv.upstream_host_id, coalesce(sv.provision_error,''),
+	        coalesce((SELECT profit FROM orders WHERE id=sv.order_id),'0'),
+	        sv.product_id, coalesce(sv.hostname,''), coalesce(sv.expires_at, sv.created_at),
+	        coalesce(sv.config_snapshot, o.config_snapshot),
+	        coalesce(p.configoption::text,'[]'),
+	        coalesce(pp.monthly::text,'0'),
+	        p.profit_type, p.profit_value, coalesce(s.profit_type,0), coalesce(s.profit_value,0)
+	 FROM services sv JOIN users u ON u.id=sv.user_id
+	 JOIN products p ON p.id=sv.product_id
+	 LEFT JOIN servers s ON s.id=p.server_id
+	 LEFT JOIN orders o ON o.id=sv.order_id
+	 LEFT JOIN product_prices pp ON pp.product_id=p.id AND pp.priceset_id=(SELECT min(id) FROM pricesets)
+	 WHERE sv.status < 3`
+	args := []any{}
+	if k := strings.TrimSpace(f.Keyword); k != "" {
+		args = append(args, "%"+k+"%")
+		query += fmt.Sprintf(` AND (u.email ILIKE $%d OR sv.name ILIKE $%d OR p.name ILIKE $%d)`, len(args), len(args), len(args))
+	}
+	if f.ProductID > 0 {
+		args = append(args, f.ProductID)
+		query += fmt.Sprintf(` AND sv.product_id=$%d`, len(args))
+	}
+	if f.Status >= 0 && f.Status <= 2 {
+		args = append(args, f.Status)
+		query += fmt.Sprintf(` AND sv.status=$%d`, len(args))
+	}
+	query += ` ORDER BY sv.id DESC LIMIT 200`
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -212,7 +300,10 @@ func (s *ServicesRepo) AdminList(ctx context.Context) ([]AdminServiceRow, error)
 	var out []AdminServiceRow
 	for rows.Next() {
 		var r AdminServiceRow
-		rows.Scan(&r.ID, &r.User, &r.Name, &r.Status, &r.Expires, &r.Upstream, &r.ProvErr, &r.Profit) // 与旧实现一致：单行失败不中断
+		rows.Scan(&r.ID, &r.User, &r.Name, &r.Status, &r.Expires, &r.Upstream, &r.ProvErr, &r.Profit,
+			&r.ProductID, &r.Hostname, &r.ExpiresAt,
+			&r.ConfigSnap, &r.ConfigOpts, &r.MonthlyBase,
+			&r.ProfitType, &r.ProfitValue, &r.ServerProfitType, &r.ServerProfitValue) // 单行失败不中断
 		out = append(out, r)
 	}
 	return out, rows.Err()

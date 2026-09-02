@@ -18,15 +18,33 @@
       <span class="fx-service-mark">S</span>
       <div class="fx-service-name-wrap">
         <a class="fx-service-name" href="/services/{{.ID}}">{{.Name}}</a>
-        <small>ID #{{.ID}}</small>
+        {{if .ConfigDesc}}<small>{{.ConfigDesc}}</small>{{else}}<small>ID #{{.ID}}</small>{{end}}
       </div>
       <span class="badge {{if eq .StatusText "激活"}}badge-ok{{else if eq .StatusText "已停机"}}badge-warn{{else}}badge-idle{{end}}">{{.StatusText}}</span>
     </div>
     <div class="fx-service-info">
+      {{if .Hostname}}<div class="fx-service-info-item">
+        <span>主机名</span>
+        <strong>{{.Hostname}}</strong>
+      </div>{{end}}
+      {{if .IP}}<div class="fx-service-info-item">
+        <span>IP</span>
+        <strong>{{.IP}}</strong>
+      </div>{{end}}
       <div class="fx-service-info-item">
         <span>到期时间</span>
-        <strong class="{{if .ExpiringSoon}}is-warning{{end}}">{{.ExpiresAt.Format "2006-01-02"}}</strong>
+        <strong class="{{if .ExpiringSoon}}is-warning{{end}}">{{.ExpiresAt.Format "2006-01-02"}}
+          {{if gt .DaysLeft 0}}<small>（{{.DaysLeft}}天后到期）</small>{{else}}<small>（已到期）</small>{{end}}
+        </strong>
       </div>
+      <div class="fx-service-info-item">
+        <span>月付价格</span>
+        <strong>￥{{if .Monthly}}{{.Monthly}}{{else}}-{{end}}/月</strong>
+      </div>
+      {{if .OS}}<div class="fx-service-info-item">
+        <span>系统</span>
+        <strong>{{.OS}}</strong>
+      </div>{{end}}
       <div class="fx-service-info-item">
         <span>续费方式</span>
         <strong>手动续费</strong>

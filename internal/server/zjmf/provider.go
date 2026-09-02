@@ -22,6 +22,33 @@ type Provider struct{}
 func (Provider) Code() string { return "zjmf" }
 func (Provider) Name() string { return "智简魔方财务（ZJMF）" }
 
+// UpgradeTargets 实现 server.UpgradeTargetProvider：best-effort 拉取上游可升级目标。
+// ponytail: 上游该接口为多步会话式流程，此处按宽松结构解析（data[] 或 data.list[]）；
+// 失败/解析不出均返回空，由上层回退"同服务器本地产品"候选，保证本地升降级可用。
+func (p Provider) UpgradeTargets(ctx context.Context, cfg server.Config, upstreamPID int64) ([]server.UpgradeTarget, error) {
+	path := "/api/v1/product/" + strconv.FormatInt(upstreamPID, 10) + "/upgrade_product"
+	var out struct {
+		Data json.RawMessage `json:"data"`
+	}
+	if err := getJSON(ctx, cfg, path, &out); err != nil {
+		return nil, err
+	}
+	var targets []server.UpgradeTarget
+	if len(out.Data) == 0 {
+		return nil, nil
+	}
+	if err := json.Unmarshal(out.Data, &targets); err != nil {
+		var wrapped struct {
+			List []server.UpgradeTarget `json:"list"`
+		}
+		if err2 := json.Unmarshal(out.Data, &wrapped); err2 != nil {
+			return nil, err
+		}
+		targets = wrapped.List
+	}
+	return targets, nil
+}
+
 // TestConnection 登录并拉用户资料验证凭据。旧版上游无 /v1/user（404），
 // 回退用 /cart/all 验证——登录成功且目录接口可用即视为连通。
 func (p Provider) TestConnection(ctx context.Context, cfg server.Config) error {

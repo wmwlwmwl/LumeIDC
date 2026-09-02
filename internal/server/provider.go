@@ -107,6 +107,18 @@ type PriceFetcher interface {
 	FetchProductPrice(ctx context.Context, cfg Config, upstreamPID int64) (monthly, quarterly, yearly float64, err error)
 }
 
+// UpgradeTarget 上游产品可升级目标（本地服务升降级的目标候选）。
+type UpgradeTarget struct {
+	UpstreamPID int64  `json:"pid"`
+	Name        string `json:"name"`
+}
+
+// UpgradeTargetProvider 可选：返回某上游产品可升级的目标产品。
+// best-effort：失败返回空列表，调用方降级为"同服务器本地产品"候选。
+type UpgradeTargetProvider interface {
+	UpgradeTargets(ctx context.Context, cfg Config, upstreamPID int64) ([]UpgradeTarget, error)
+}
+
 // Config 连接配置（来自 servers 表行）。
 type Config struct {
 	APIURL             string `json:"api_url"`

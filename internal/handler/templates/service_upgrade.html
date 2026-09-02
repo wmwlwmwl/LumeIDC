@@ -1,0 +1,238 @@
+{{define "page"}}
+<div class="fx-buy-page">
+  <div class="fx-buy-header">
+    <a class="fx-back-link" href="/services/{{.Svc.ID}}">返回服务详情</a>
+    <span class="eyebrow">UPGRADE SERVICE</span>
+    <h1>服务升降级</h1>
+    <p>{{.Svc.Name}} · 当前周期 {{.Svc.Cycle}}</p>
+  </div>
+
+  {{if .Error}}<div class="ui-alert ui-alert-error" role="alert">{{.Error}}</div>{{end}}
+
+  <div class="fx-buy-layout">
+    <div class="fx-config-panel">
+      <div class="fx-cfg-group">
+        <h3>当前套餐</h3>
+        <p>服务 #{{.Svc.ID}}</p>
+        <div class="fx-summary-product">
+          <span class="fx-summary-mark">U</span>
+          <div>
+            <strong>{{.Svc.Name}}</strong>
+            <small>当前月价 ￥{{.CurrentMonthly}}</small>
+          </div>
+        </div>
+      </div>
+
+      <div class="fx-cfg-group">
+        <h3>选择目标产品</h3>
+        <p>选择要升降级到的产品（需与当前产品同上游）</p>
+        {{if not .Targets}}
+        <p class="text-muted">暂无可升降级产品。</p>
+        {{else}}
+        <div style="display:flex;flex-direction:column;gap:8px">
+          {{range .Targets}}
+          <label class="fx-cfg-item" style="cursor:pointer;display:flex;align-items:center;gap:8px">
+            <input type="radio" name="target_sel" value="{{.ProductID}}"
+                   {{if eq .ProductID $.TargetID}}checked{{end}}
+                   onchange="location.href='/services/{{$.Svc.ID}}/upgrade?target={{.ProductID}}'">
+            <strong>{{.Name}}</strong>
+          </label>
+          {{end}}
+        </div>
+        {{end}}
+      </div>
+
+      {{if .TargetName}}
+      <form method="post" action="/services/{{.Svc.ID}}/upgrade" id="upgradeForm">
+        <input type="hidden" name="_csrf" value="{{.CSRF}}">
+        <input type="hidden" name="target_product_id" value="{{.TargetID}}">
+
+        <div class="fx-cfg-group">
+          <h3>目标产品：{{.TargetName}}</h3>
+          <label for="cycleSel">计费周期</label>
+          <select name="cycle" id="cycleSel" onchange="recalc()">
+            <option value="monthly">月付</option>
+            {{if .ShowQ}}<option value="quarterly">季付</option>{{end}}
+            {{if .ShowY}}<option value="yearly">年付</option>{{end}}
+          </select>
+        </div>
+
+        <div class="fx-cfg-group">
+          <h3>服务配置</h3>
+          <p>按需调整目标实例规格</p>
+          {{range .TargetOptions}}
+          {{if .Hidden}}
+          <input type="hidden" name="cfg_{{.Field}}" value="{{if eq .Mode "range"}}{{.Min}}{{else}}{{if .Subs}}{{with index .Subs 0}}{{if .Value}}{{.Value}}{{else}}{{.Name}}{{end}}{{end}}{{end}}{{end}}">
+          {{else}}
+          <div class="fx-cfg-item">
+            <label class="fx-cfg-label">{{.Name}}{{if .Unit}}（{{.Unit}}）{{end}}</label>
+            {{if eq .Mode "range"}}
+            <div class="fx-stepper">
+              <input id="rng_{{.Field}}" type="range" min="{{.Min}}" max="{{.Max}}" step="{{.Step}}" value="{{.Min}}" oninput="onRange(this)">
+              <button type="button" class="fx-step-btn" onclick="stepVal('cfg_{{.Field}}', -1)" aria-label="减少">−</button>
+              <input name="cfg_{{.Field}}" id="cfg_{{.Field}}" type="number" value="{{.Min}}" min="{{.Min}}" max="{{.Max}}" step="{{.Step}}" oninput="syncNum(this.id)" onchange="clampVal(this.id)">
+              <button type="button" class="fx-step-btn" onclick="stepVal('cfg_{{.Field}}', 1)" aria-label="增加">+</button>
+            </div>
+            <p class="fx-cfg-hint">范围 {{.Min}}~{{.Max}}{{if .Unit}} {{.Unit}}{{end}}</p>
+            {{else}}
+            <select name="cfg_{{.Field}}" id="cfg_{{.Field}}" onchange="recalc()">
+              {{$f := .Field}}
+              {{range .Subs}}
+              <option value="{{if .Value}}{{.Value}}{{else}}{{.Name}}{{end}}" {{if and $.Options (index .Pricing "monthly")}}data-m="{{$f}}|{{.Name}}|{{index .Pricing "monthly"}}"{{end}}>{{.Name}}</option>
+              {{end}}
+            </select>
+            {{end}}
+          </div>
+          {{end}}
+          {{end}}
+        </div>
+      </form>
+      {{end}}
+    </div>
+
+    <aside class="fx-summary">
+      <div class="fx-summary-label">UPGRADE SUMMARY</div>
+      <h2>升降级摘要</h2>
+      <div class="fx-summary-product">
+        <span class="fx-summary-mark">U</span>
+        <div>
+          <strong>{{if .TargetName}}{{.TargetName}}{{else}}未选择目标{{end}}</strong>
+          <small>目标配置实时计价</small>
+        </div>
+      </div>
+      <div class="fx-summary-row"><span>当前月价</span><span>￥{{.CurrentMonthly}}</span></div>
+      <div class="fx-summary-row"><span>目标月价</span><span id="targetMonthly">-</span></div>
+      <div class="fx-summary-total">
+        <span>差价</span>
+        <strong><span id="diffPrice">-</span></strong>
+      </div>
+      <p id="diffHint" class="fx-summary-note"></p>
+      {{if .TargetName}}
+      <button class="ui-btn fx-summary-submit" type="submit" form="upgradeForm">确认升降级 <span>→</span></button>
+      <p class="fx-summary-note">升级补差价、降级差价退余额；最终以提交时计算为准。</p>
+      {{else}}
+      <p class="fx-summary-note">请先选择一个目标产品。</p>
+      {{end}}
+    </aside>
+  </div>
+</div>
+
+<script>
+const CFG = {{.TargetConfig}};
+const cycleNames = {monthly:"月付", quarterly:"季付", yearly:"年付"};
+const currentMonthly = CFG ? (CFG.current_monthly||0) : 0;
+
+function esc(s){const d=document.createElement("div");d.textContent=s;return d.innerHTML;}
+function rngOf(id){ return document.getElementById("rng_" + id.slice(4)); }
+function stepVal(id, dir){
+  const el = document.getElementById(id), rng = rngOf(id);
+  const step = parseFloat(el.step) || 1;
+  let v = parseFloat(el.value) || 0;
+  v += dir * step;
+  const min = parseFloat(el.min), max = parseFloat(el.max);
+  if(v < min) v = min;
+  if(v > max) v = max;
+  el.value = v; if(rng) rng.value = v; recalc();
+}
+function clampVal(id){
+  const el = document.getElementById(id), rng = rngOf(id);
+  let v = parseFloat(el.value);
+  const step = parseFloat(el.step) || 1, min = parseFloat(el.min), max = parseFloat(el.max);
+  if(isNaN(v)) v = min;
+  v = Math.round(v / step) * step;
+  if(v < min) v = min;
+  if(v > max) v = max;
+  el.value = v; if(rng) rng.value = v; recalc();
+}
+function syncNum(id){
+  const el = document.getElementById(id), rng = rngOf(id);
+  let v = parseFloat(el.value);
+  const min = parseFloat(el.min), max = parseFloat(el.max);
+  if(!isNaN(v)){ if(v < min) v = min; if(v > max) v = max; if(rng) rng.value = v; }
+  recalc();
+}
+function onRange(rng){
+  const id = "cfg_" + rng.id.slice(4);
+  document.getElementById(id).value = rng.value;
+  recalc();
+}
+function subFor(opt, val){
+  for(const s of (opt.sub||[])){
+    const v = s.value || s.option_name;
+    if(v === val || s.option_name === val) return s;
+  }
+  return null;
+}
+function priceOf(s, cycle){
+  if(!s.pricing) return 0;
+  if(s.pricing[cycle] !== undefined) return s.pricing[cycle];
+  return s.pricing.monthly || 0;
+}
+function minPrice1(s){ return (s.pricing && s.pricing.monthly !== undefined) ? s.pricing.monthly : 0; }
+function setSelectDefaults(){
+  for(const opt of (CFG.options||[])){
+    if(opt.option_mode === "select" && opt.field !== "os" && (opt.sub||[]).length){
+      const el = document.getElementById("cfg_" + opt.field);
+      if(!el) continue;
+      let best = opt.sub[0], bp = minPrice1(opt.sub[0]);
+      for(const s of opt.sub){ const p = minPrice1(s); if(p < bp){ bp = p; best = s; } }
+      el.value = best.value || best.option_name;
+    }
+  }
+}
+function recalc(){
+  const cycle = document.getElementById("cycleSel").value;
+  const pRate = CFG.profit_type === 1 ? 0 : (CFG.profit_value||0)/100;
+  const pFixed = CFG.profit_type === 1 ? (CFG.profit_value||0) : 0;
+  const baseRaw = CFG.base[cycle] || 0;
+  let total = baseRaw, mTotal = (CFG.base.monthly||0);
+  for(const opt of (CFG.options||[])){
+    if(opt.hidden || opt.field === "os") continue;
+    const el = document.getElementById("cfg_" + opt.field);
+    if(!el) continue;
+    const val = el.value;
+    if(opt.option_mode === "range"){
+      const v = parseFloat(val);
+      if(isNaN(v)) continue;
+      if(v <= 0) continue;
+      const subs = (opt.sub||[]).slice().sort((a,b)=>(a.min||0)-(b.min||0));
+      function subSize(s){
+        for(const str of [s.value, s.name]){
+          if(str == null) continue;
+          const m = String(str).match(/^[\d.]+/);
+          if(m) return parseFloat(m[0]);
+        }
+        return s.min || 0;
+      }
+      let exact = null, rangeSub = null;
+      for(const s of subs){
+        const maxB = s.max || opt.max;
+        if(v >= (s.min||0) && v <= maxB){
+          if(s.max > s.min){ if(!rangeSub) rangeSub = s; }
+          else if(subSize(s) === v){ exact = s; break; }
+        }
+      }
+      const picked = exact || rangeSub;
+      if(picked){
+        const step = opt.step > 0 ? opt.step : 1;
+        const q = picked.max > picked.min ? Math.floor(v/step) : 1;
+        total += priceOf(picked, cycle) * q;
+        mTotal += priceOf(picked, "monthly") * q;
+      }
+    } else {
+      const s = subFor(opt, val);
+      if(s){ total += priceOf(s, cycle); mTotal += priceOf(s, "monthly"); }
+    }
+  }
+  if(pFixed){ total = total + pFixed; mTotal = mTotal + pFixed; }
+  else { total = total * (1 + pRate); mTotal = mTotal * (1 + pRate); }
+  const diff = mTotal - currentMonthly;
+  document.getElementById("targetMonthly").textContent = "￥" + total.toFixed(2) + "/" + cycleNames[cycle];
+  const dp = document.getElementById("diffPrice"), hint = document.getElementById("diffHint");
+  if(diff > 0.001){ dp.textContent = "补差价 ￥" + diff.toFixed(2); dp.style.color = "#b45309"; hint.textContent = "升级需补差价"; }
+  else if(diff < -0.001){ dp.textContent = "退余额 ￥" + (-diff).toFixed(2); dp.style.color = "#15803d"; hint.textContent = "降级差价将退回余额"; }
+  else { dp.textContent = "等价"; hint.textContent = "目标配置与原配置价格相当"; }
+}
+if(CFG){ setSelectDefaults(); recalc(); }
+</script>
+{{end}}

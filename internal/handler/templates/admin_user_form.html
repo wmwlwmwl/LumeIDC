@@ -87,6 +87,171 @@
         </div>
       </div>
     </form>
+
+    <div class="admin-panel">
+      <div class="admin-panel-header">
+        <h2>账户概览</h2>
+      </div>
+      <div class="admin-panel-body">
+        <div class="admin-info-grid">
+          <div class="admin-info-item">
+            <span>注册时间</span>
+            <strong>{{index .ServersList "RegisteredAt"}}</strong>
+          </div>
+          <div class="admin-info-item">
+            <span>最后登录</span>
+            <strong>{{index .ServersList "LastLoginAt"}}</strong>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="admin-panel">
+      <div class="admin-panel-header">
+        <h2>实名认证</h2>
+      </div>
+      <div class="admin-panel-body">
+        <div class="admin-info-grid">
+          <div class="admin-info-item">
+            <span>实名状态</span>
+            <strong>{{index .ServersList "RealNameStatus"}}</strong>
+          </div>
+          <div class="admin-info-item">
+            <span>真实姓名</span>
+            <strong>{{if index .ServersList "VerifName"}}{{index .ServersList "VerifName"}}{{else}}<span class="text-muted">-</span>{{end}}</strong>
+          </div>
+          <div class="admin-info-item">
+            <span>证件号码</span>
+            <strong>{{if index .ServersList "VerifNumber"}}{{index .ServersList "VerifNumber"}}{{else}}<span class="text-muted">-</span>{{end}}</strong>
+          </div>
+          <div class="admin-info-item">
+            <span>提交时间</span>
+            <strong>{{index .ServersList "VerifSubmittedAt"}}</strong>
+          </div>
+          <div class="admin-info-item">
+            <span>审核时间</span>
+            <strong>{{index .ServersList "VerifReviewedAt"}}</strong>
+          </div>
+        </div>
+        {{if index .ServersList "VerifFrontURL"}}
+        <div class="admin-form-section">
+          <h3>证件照片</h3>
+          <div style="display:flex;gap:20px;flex-wrap:wrap">
+            <figure style="margin:0">
+              <figcaption class="text-muted small" style="margin-bottom:6px">正面</figcaption>
+              <img src="{{index .ServersList "VerifFrontURL"}}" alt="身份证正面" style="max-width:320px;border:1px solid var(--ui-line);border-radius:8px">
+            </figure>
+            <figure style="margin:0">
+              <figcaption class="text-muted small" style="margin-bottom:6px">背面</figcaption>
+              <img src="{{index .ServersList "VerifBackURL"}}" alt="身份证背面" style="max-width:320px;border:1px solid var(--ui-line);border-radius:8px">
+            </figure>
+          </div>
+          <p class="text-muted small">查看完整证件与照片会记录审计日志。</p>
+        </div>
+        {{end}}
+      </div>
+    </div>
+
+    <div class="admin-panel">
+      <div class="admin-panel-header">
+        <h2>服务与财务统计</h2>
+      </div>
+      <div class="admin-panel-body">
+        <div class="admin-info-grid">
+          <div class="admin-info-item">
+            <span>当前余额</span>
+            <strong class="text-brand">￥{{index .ServersList "C"}}</strong>
+          </div>
+          <div class="admin-info-item">
+            <span>累计消费</span>
+            <strong>￥{{index .ServersList "PaidTotal"}}</strong>
+          </div>
+          <div class="admin-info-item">
+            <span>服务总数</span>
+            <strong>{{index .ServersList "ServiceCount"}}</strong>
+          </div>
+          <div class="admin-info-item">
+            <span>激活中</span>
+            <strong>{{index .ServersList "ActiveCount"}}</strong>
+          </div>
+          <div class="admin-info-item">
+            <span>未付账单</span>
+            <strong>{{index .ServersList "UnpaidCount"}}</strong>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="admin-panel">
+      <div class="admin-panel-header">
+        <h2>余额流水</h2>
+      </div>
+      <div class="admin-panel-body">
+        <div class="admin-table-wrap">
+          <table class="admin-table">
+            <thead>
+              <tr>
+                <th scope="col">时间</th>
+                <th scope="col">变动</th>
+                <th scope="col">余额</th>
+                <th scope="col">类型</th>
+                <th scope="col">备注</th>
+              </tr>
+            </thead>
+            <tbody>
+              {{range index .ServersList "BalanceLogs"}}
+              <tr>
+                <td>{{.time}}</td>
+                <td class="td-price">{{.amount}}</td>
+                <td class="td-price">{{.after}}</td>
+                <td>
+                  {{if eq .type "recharge"}}充值
+                  {{else if eq .type "consume"}}消费
+                  {{else if eq .type "refund"}}退款
+                  {{else}}管理员调整{{end}}
+                </td>
+                <td>{{if .note}}{{.note}}{{else}}<span class="text-muted">-</span>{{end}}</td>
+              </tr>
+              {{else}}
+              <tr><td colspan="5" class="admin-table-empty">暂无流水</td></tr>
+              {{end}}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div class="admin-panel">
+      <div class="admin-panel-header">
+        <h2>管理员操作记录</h2>
+      </div>
+      <div class="admin-panel-body">
+        <div class="admin-table-wrap">
+          <table class="admin-table">
+            <thead>
+              <tr>
+                <th scope="col">ID</th>
+                <th scope="col">动作</th>
+                <th scope="col">详情</th>
+                <th scope="col">时间</th>
+              </tr>
+            </thead>
+            <tbody>
+              {{range index .ServersList "AdminLogs"}}
+              <tr>
+                <td class="td-id">{{.ID}}</td>
+                <td>{{.Action}}</td>
+                <td>{{if .Detail}}{{.Detail}}{{else}}<span class="text-muted">-</span>{{end}}</td>
+                <td>{{.CreatedAt.Format "2006-01-02 15:04"}}</td>
+              </tr>
+              {{else}}
+              <tr><td colspan="4" class="admin-table-empty">暂无操作记录</td></tr>
+              {{end}}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
   </section>
 
   <aside class="admin-types-side">

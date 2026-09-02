@@ -22,6 +22,18 @@
       <h1>{{.Svc.Name}}</h1>
       <span class="badge {{if eq .Svc.StatusText "激活"}}badge-ok{{else if eq .Svc.StatusText "已停机"}}badge-warn{{else}}badge-idle{{end}}">{{.Svc.StatusText}}</span>
       <p>创建于 {{.Svc.CreatedAt.Format "2006-01-02"}}</p>
+      {{if .Svc.Remark}}<p>备注：{{.Svc.Remark}}</p>{{end}}
+      <details class="admin-collapse" style="margin-top:8px">
+        <summary>编辑名称 / 备注</summary>
+        <form method="post" action="/services/{{.Svc.ID}}/name" style="display:flex;flex-direction:column;gap:8px;margin-top:8px">
+          <input type="hidden" name="_csrf" value="{{.CSRF}}">
+          <label class="visually-hidden" for="svc-name">服务名称</label>
+          <input id="svc-name" name="name" value="{{.Svc.Name}}" maxlength="100" required>
+          <label class="visually-hidden" for="svc-remark">备注</label>
+          <input id="svc-remark" name="remark" value="{{.Svc.Remark}}" maxlength="255" placeholder="备注（可选）">
+          <button class="ui-btn ui-btn-small" type="submit">保存</button>
+        </form>
+      </details>
     </div>
 
     <section class="fx-panel">
@@ -37,6 +49,7 @@
           </select>
           <button class="ui-btn ui-btn-small" type="submit">续费</button>
         </form>
+        <a class="ui-btn ui-btn-small" href="/services/{{.Svc.ID}}/upgrade">升降级</a>
       </div>
       <div class="fx-panel-body">
         <div class="fx-kv-grid">

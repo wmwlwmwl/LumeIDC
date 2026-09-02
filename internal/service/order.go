@@ -318,7 +318,7 @@ func (o *Orders) CreateRenewOrder(ctx context.Context, userID, serviceID int64, 
 	var ownAmt sql.NullString
 	var snap []byte
 	err = tx.QueryRowContext(ctx,
-		`SELECT sv.product_id, o.amount, o.config_snapshot
+		`SELECT sv.product_id, o.amount, coalesce(sv.config_snapshot, o.config_snapshot)
 		 FROM services sv LEFT JOIN orders o ON o.id=sv.order_id
 		 WHERE sv.id=$1 AND sv.user_id=$2 AND sv.status IN (1,2)`,
 		serviceID, userID).Scan(&productID, &ownAmt, &snap)
@@ -403,4 +403,169 @@ func (o *Orders) CreateRenewOrder(ctx context.Context, userID, serviceID int64, 
 		return 0, 0, "", err
 	}
 	return orderID, invoiceID, amountRaw, nil
+}
+
+// CreateUpgradeOrder 服务升降级（本地为主）：目标产品须与当前服务同服务器。
+// diff>0 升级补差价；diff<0 降级退余额（amount=0，支付时退 abs(diff) 到余额）。
+// 差额口径 = 目标月售价 − 当前月售价（MonthlySellPrice，两侧 monthly 归一；不含剩余天数折算，见 ponytail）。
+func (o *Orders) CreateUpgradeOrder(ctx context.Context, userID, serviceID, targetProductID int64, cycle string, selection map[string]string) (orderID, invoiceID int64, amount string, diff float64, err error) {
+	col, ok := cycleCol[cycle]
+	if !ok {
+		return 0, 0, "", 0, fmt.Errorf("无效的计费周期: %s", cycle)
+	}
+	tx, err := o.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, 0, "", 0, err
+	}
+	defer tx.Rollback()
+
+	// 锁定服务，串行化同一服务的升降级建单
+	var svcStatus int16
+	var svcProductID int64
+	var svcCycle, svcSnap, svcTransition string
+	var svcOrderID sql.NullInt64
+	err = tx.QueryRowContext(ctx,
+		`SELECT status, product_id, coalesce(cycle,''), coalesce(config_snapshot::text,''),
+		        order_id, coalesce(transition_state,'')
+		 FROM services WHERE id=$1 AND user_id=$2 FOR UPDATE`,
+		serviceID, userID).Scan(&svcStatus, &svcProductID, &svcCycle, &svcSnap, &svcOrderID, &svcTransition)
+	if err != nil {
+		return 0, 0, "", 0, fmt.Errorf("服务不存在或不可升降级")
+	}
+	if svcStatus != 1 && svcStatus != 2 {
+		return 0, 0, "", 0, fmt.Errorf("服务当前状态不可升降级")
+	}
+	if svcTransition != "" {
+		return 0, 0, "", 0, fmt.Errorf("服务正在操作中，请稍后再试")
+	}
+	if targetProductID == svcProductID {
+		return 0, 0, "", 0, fmt.Errorf("目标产品与当前产品相同")
+	}
+
+	// 防抖：复用同服务未支付升级单
+	err = tx.QueryRowContext(ctx,
+		`SELECT o.id, i.id, i.amount, o.diff_amount::float8 FROM invoices i JOIN orders o ON o.id=i.order_id
+		 WHERE o.service_id=$1 AND o.user_id=$2 AND o.kind='upgrade' AND i.status=0
+		 ORDER BY i.id DESC LIMIT 1`, serviceID, userID).
+		Scan(&orderID, &invoiceID, &amount, &diff)
+	if err == nil {
+		return orderID, invoiceID, amount, diff, nil
+	}
+	if err != sql.ErrNoRows {
+		return 0, 0, "", 0, err
+	}
+
+	// 目标产品：可售 + 与当前服务同服务器（本地升降级前提：同一上游实例）
+	targetRepo, err := o.Products.Get(ctx, targetProductID)
+	if err != nil {
+		return 0, 0, "", 0, fmt.Errorf("目标产品不存在")
+	}
+	if targetRepo.Hidden {
+		return 0, 0, "", 0, fmt.Errorf("目标产品已下架")
+	}
+	var curServerID sql.NullInt64
+	if err := tx.QueryRowContext(ctx,
+		`SELECT coalesce(sv.server_id, p.server_id) FROM services sv JOIN products p ON p.id=sv.product_id WHERE sv.id=$1`,
+		serviceID).Scan(&curServerID); err != nil || !curServerID.Valid {
+		return 0, 0, "", 0, fmt.Errorf("服务未绑定上游，无法升降级")
+	}
+	if !targetRepo.ServerID.Valid || targetRepo.ServerID.Int64 != curServerID.Int64 {
+		return 0, 0, "", 0, fmt.Errorf("目标产品与当前服务不在同一上游，无法升降级")
+	}
+
+	var requiresIdentity bool
+	if err := tx.QueryRowContext(ctx, `SELECT requires_identity FROM products WHERE id=$1`, targetProductID).Scan(&requiresIdentity); err != nil {
+		return 0, 0, "", 0, fmt.Errorf("目标产品不存在")
+	}
+	if requiresIdentity {
+		if o.Identity == nil {
+			return 0, 0, "", 0, fmt.Errorf("实名服务未配置")
+		}
+		approved, checkErr := o.Identity.IsApproved(ctx, userID)
+		if checkErr != nil {
+			return 0, 0, "", 0, fmt.Errorf("实名状态查询失败，请稍后再试")
+		}
+		if !approved {
+			return 0, 0, "", 0, ErrIdentityRequired
+		}
+	}
+
+	psID, err := o.Products.DefaultPricesetID(ctx)
+	if err != nil {
+		return 0, 0, "", 0, fmt.Errorf("系统未配置价格组")
+	}
+	query := fmt.Sprintf(`SELECT %s FROM product_prices WHERE product_id=$1 AND priceset_id=$2`, col)
+	var targetBaseRaw string
+	if err := tx.QueryRowContext(ctx, query, targetProductID, psID).Scan(&targetBaseRaw); err != nil {
+		return 0, 0, "", 0, fmt.Errorf("目标产品未配置%s价格", cycleCol[cycle])
+	}
+	targetBase, err := strconv.ParseFloat(targetBaseRaw, 64)
+	if err != nil || !money.FiniteNonNegative(targetBase) {
+		return 0, 0, "", 0, fmt.Errorf("目标产品价格无效")
+	}
+	if (cycle == "quarterly" || cycle == "yearly") && targetBase <= 0 {
+		return 0, 0, "", 0, fmt.Errorf("目标产品未提供所选计费周期")
+	}
+
+	// 差价：当前月售价 vs 目标月售价（统一 MonthlySellPrice 口径）
+	curSelection := map[string]string{}
+	if svcSnap != "" {
+		var saved struct {
+			Selection map[string]string `json:"selection"`
+		}
+		_ = json.Unmarshal([]byte(svcSnap), &saved)
+		curSelection = saved.Selection
+	}
+	currentMonthly, err := MonthlySellPrice(ctx, o.Products, svcProductID, curSelection)
+	if err != nil {
+		return 0, 0, "", 0, fmt.Errorf("计算当前价格失败: %w", err)
+	}
+	targetMonthly, err := MonthlySellPrice(ctx, o.Products, targetProductID, selection)
+	if err != nil {
+		return 0, 0, "", 0, fmt.Errorf("计算目标价格失败: %w", err)
+	}
+	diff = mathRound(targetMonthly - currentMonthly)
+	if diff == 0 {
+		return 0, 0, "", 0, fmt.Errorf("目标配置与原配置等价，无需升降级")
+	}
+
+	// 目标配置快照（按所选周期计价，供详情/续费展示）
+	targetOpts, err := o.Products.GetConfigOptions(ctx, targetProductID)
+	if err != nil {
+		return 0, 0, "", 0, fmt.Errorf("目标产品配置损坏")
+	}
+	targetQuote, err := CalculateQuote(targetOpts, targetBase, cycle, selection)
+	if err != nil {
+		return 0, 0, "", 0, err
+	}
+	snap, err := json.Marshal(map[string]any{"quote": targetQuote, "selection": selection})
+	if err != nil {
+		return 0, 0, "", 0, err
+	}
+
+	orderAmount := "0.00"
+	if diff > 0 {
+		orderAmount = strconv.FormatFloat(diff, 'f', 2, 64)
+	}
+	err = tx.QueryRowContext(ctx,
+		`INSERT INTO orders(user_id,product_id,priceset_id,cycle,amount,service_id,identity_required,kind,target_product_id,diff_amount,config_snapshot)
+		 VALUES($1,$2,$3,$4,$5,$6,$7,'upgrade',$8,$9,$10) RETURNING id`,
+		userID, targetProductID, psID, cycle, orderAmount, serviceID, requiresIdentity, targetProductID, diff, snap).Scan(&orderID)
+	if err != nil {
+		return 0, 0, "", 0, err
+	}
+	no, err := genInvoiceNo()
+	if err != nil {
+		return 0, 0, "", 0, err
+	}
+	err = tx.QueryRowContext(ctx,
+		`INSERT INTO invoices(no,user_id,order_id,amount) VALUES($1,$2,$3,$4) RETURNING id`,
+		no, userID, orderID, orderAmount).Scan(&invoiceID)
+	if err != nil {
+		return 0, 0, "", 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, 0, "", 0, err
+	}
+	return orderID, invoiceID, orderAmount, diff, nil
 }

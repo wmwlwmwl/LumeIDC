@@ -4,14 +4,19 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"time"
 
 	"golang.org/x/crypto/bcrypt"
 )
 
 type UserRow struct {
-	ID    int64
-	Email string
-	Name  string
+	ID        int64
+	Email     string
+	Name      string
+	Phone     string
+	Status    int16
+	Balance   float64
+	CreatedAt string // 已格式化 'YYYY-MM-DD HH24:MI'
 }
 
 type AdminUser struct {
@@ -23,12 +28,16 @@ type AdminUser struct {
 	Phone         string
 	EmailVerified bool
 	PhoneVerified bool
+	CreatedAt     time.Time
+	LastLoginAt   sql.NullTime
 }
 
 // ListUsers 后台用户列表（不含密码哈希）
 func (u *Users) ListUsers(ctx context.Context) ([]UserRow, error) {
 	rows, err := u.db.QueryContext(ctx,
-		`SELECT id,coalesce(email,''),name FROM users ORDER BY id DESC LIMIT 200`)
+		`SELECT id,coalesce(email,''),name,coalesce(phone_e164,''),status,balance::float8,
+		        to_char(created_at,'YYYY-MM-DD HH24:MI')
+		 FROM users ORDER BY id DESC LIMIT 200`)
 	if err != nil {
 		return nil, err
 	}
@@ -36,7 +45,7 @@ func (u *Users) ListUsers(ctx context.Context) ([]UserRow, error) {
 	var out []UserRow
 	for rows.Next() {
 		var r UserRow
-		if err := rows.Scan(&r.ID, &r.Email, &r.Name); err != nil {
+		if err := rows.Scan(&r.ID, &r.Email, &r.Name, &r.Phone, &r.Status, &r.Balance, &r.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
@@ -48,11 +57,11 @@ func (u *Users) ListUsers(ctx context.Context) ([]UserRow, error) {
 func (u *Users) AdminUserByID(ctx context.Context, userID int64) (*AdminUser, error) {
 	row := u.db.QueryRowContext(ctx, `
 		SELECT id,coalesce(email,''),name,status,balance::float8,coalesce(phone_e164,''),email_verified,
-		       phone_verified_at IS NOT NULL
+		       phone_verified_at IS NOT NULL, created_at, last_login_at
 		FROM users WHERE id=$1`, userID)
 	var user AdminUser
 	if err := row.Scan(&user.ID, &user.Email, &user.Name, &user.Status, &user.Balance,
-		&user.Phone, &user.EmailVerified, &user.PhoneVerified); err != nil {
+		&user.Phone, &user.EmailVerified, &user.PhoneVerified, &user.CreatedAt, &user.LastLoginAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}

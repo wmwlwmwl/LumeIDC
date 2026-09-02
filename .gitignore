@@ -14,6 +14,9 @@ real263.json
 # 排查诊断草稿
 /tmpcheck/
 
+# 规划文档（.trae 计划/评审产物，不入版本库）
+/.trae/
+
 # 运行日志
 server.out.log
 server.err.log

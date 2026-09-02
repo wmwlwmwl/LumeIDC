@@ -23,6 +23,7 @@ type AdminManage struct {
 	Providers *server.Registry
 	Settings  *repo.Settings
 	Identity  *repo.IdentityStore
+	IdentitySvc *service.Identity // 实名解密（AdminSubmission）
 	AdminLog  *repo.AdminLog
 	*Deps
 }

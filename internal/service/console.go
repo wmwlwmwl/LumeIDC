@@ -456,3 +456,62 @@ func (c *Console) ModuleAction(ctx context.Context, userID, serviceID int64, for
 	}
 	return mp.ModuleAction(ctx, cfg, hostID, form)
 }
+
+// UpgradeTargetView 用户可见的升降级目标（已映射到本地产品）。
+type UpgradeTargetView struct {
+	ProductID   int64  `json:"product_id"`
+	UpstreamPID int64  `json:"upstream_pid"`
+	Name        string `json:"name"`
+}
+
+// UpgradeTargets 服务的可升降级目标：优先上游拉取（best-effort），失败回退同服务器本地产品。
+func (c *Console) UpgradeTargets(ctx context.Context, userID, serviceID int64) []UpgradeTargetView {
+	prov, cfg, _, err := c.resolveBase(ctx, userID, serviceID)
+	if err != nil {
+		return nil
+	}
+	var curPID, curServerID int64
+	if err := c.db.QueryRowContext(ctx,
+		`SELECT p.upstream_pid, coalesce(sv.server_id,p.server_id) FROM services sv JOIN products p ON p.id=sv.product_id WHERE sv.id=$1`,
+		serviceID).Scan(&curPID, &curServerID); err != nil {
+		return nil
+	}
+	if up, ok := prov.(server.UpgradeTargetProvider); ok {
+		if upstream, uerr := up.UpgradeTargets(ctx, cfg, curPID); uerr == nil {
+			var out []UpgradeTargetView
+			for _, t := range upstream {
+				if t.UpstreamPID == curPID {
+					continue
+				}
+				pid, ferr := c.Products.FindByUpstreamPID(ctx, curServerID, t.UpstreamPID)
+				if ferr != nil || pid <= 0 {
+					continue
+				}
+				out = append(out, UpgradeTargetView{ProductID: pid, UpstreamPID: t.UpstreamPID, Name: t.Name})
+			}
+			if len(out) > 0 {
+				return out
+			}
+		}
+	}
+	return c.sameServerTargets(ctx, curPID, curServerID)
+}
+
+// sameServerTargets 上游拉取失败/未实现时回退：同服务器的其它本地产品。
+func (c *Console) sameServerTargets(ctx context.Context, curPID, curServerID int64) []UpgradeTargetView {
+	rows, err := c.db.QueryContext(ctx,
+		`SELECT p.id, coalesce(p.upstream_pid,0), p.name FROM products p
+		 WHERE p.server_id=$1 AND p.hidden=false AND p.id<>$2 ORDER BY p.id`, curServerID, curPID)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var out []UpgradeTargetView
+	for rows.Next() {
+		var v UpgradeTargetView
+		if rows.Scan(&v.ProductID, &v.UpstreamPID, &v.Name) == nil {
+			out = append(out, v)
+		}
+	}
+	return out
+}

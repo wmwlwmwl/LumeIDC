@@ -108,16 +108,16 @@
           <option value="corptcha" {{if eq (index .ServersList "captcha_provider") "corptcha"}}selected{{end}}>Corptcha</option>
         </select>
         <div class="settings-subfields" data-captcha-for="geetest" hidden>
-          <label for="captcha-geetest-id">Geetest Captcha ID</label><input id="captcha-geetest-id" name="captcha_geetest_id" value="{{index .ServersList "captcha_geetest_id"}}">
-          <label for="captcha-geetest-key">Geetest Captcha Key</label><input id="captcha-geetest-key" name="captcha_geetest_key" type="password" placeholder="留空保持原密钥">
+          <label for="captcha-geetest-id">Geetest Captcha ID</label><input id="captcha-geetest-id" name="captcha_geetest_id" value="{{index .ServersList "captcha_geetest_id"}}" autocomplete="off">
+          <label for="captcha-geetest-key">Geetest Captcha Key</label><input id="captcha-geetest-key" name="captcha_geetest_key" type="password" autocomplete="new-password" placeholder="留空保持原密钥">
         </div>
         <div class="settings-subfields" data-captcha-for="vaptcha" hidden>
-          <label for="captcha-vaptcha-vid">Vaptcha VID</label><input id="captcha-vaptcha-vid" name="captcha_vaptcha_vid" value="{{index .ServersList "captcha_vaptcha_vid"}}">
-          <label for="captcha-vaptcha-key">Vaptcha VKey</label><input id="captcha-vaptcha-key" name="captcha_vaptcha_key" type="password" placeholder="留空保持原密钥">
+          <label for="captcha-vaptcha-vid">Vaptcha VID</label><input id="captcha-vaptcha-vid" name="captcha_vaptcha_vid" value="{{index .ServersList "captcha_vaptcha_vid"}}" autocomplete="off">
+          <label for="captcha-vaptcha-key">Vaptcha VKey</label><input id="captcha-vaptcha-key" name="captcha_vaptcha_key" type="password" autocomplete="new-password" placeholder="留空保持原密钥">
         </div>
         <div class="settings-subfields" data-captcha-for="corptcha" hidden>
-          <label for="captcha-corptcha-site">Corptcha Site Key</label><input id="captcha-corptcha-site" name="captcha_corptcha_site_key" value="{{index .ServersList "captcha_corptcha_site_key"}}">
-          <label for="captcha-corptcha-secret">Corptcha Secret</label><input id="captcha-corptcha-secret" name="captcha_corptcha_secret" type="password" placeholder="留空保持原密钥">
+          <label for="captcha-corptcha-site">Corptcha Site Key</label><input id="captcha-corptcha-site" name="captcha_corptcha_site_key" value="{{index .ServersList "captcha_corptcha_site_key"}}" autocomplete="off">
+          <label for="captcha-corptcha-secret">Corptcha Secret</label><input id="captcha-corptcha-secret" name="captcha_corptcha_secret" type="password" autocomplete="new-password" placeholder="留空保持原密钥">
         </div>
         <label class="check-line"><input type="checkbox" name="external_captcha_register_enabled" value="1" {{if eq (index .ServersList "external_captcha_register_enabled") "1"}}checked{{end}}> 直接注册普通场景</label>
         <label class="check-line"><input type="checkbox" name="external_captcha_login_enabled" value="1" {{if eq (index .ServersList "external_captcha_login_enabled") "1"}}checked{{end}}> 用户密码登录场景</label>
@@ -178,22 +178,22 @@
         <div class="settings-subfields" data-verify-for="baidu_face" hidden>
           <label for="verification-baidu-api-key">BaiduFace API Key</label><input id="verification-baidu-api-key" name="verification_baidu_api_key" value="{{index .ServersList "verification_baidu_api_key"}}">
           <label for="verification-baidu-plan">BaiduFace Plan ID</label><input id="verification-baidu-plan" name="verification_baidu_plan_id" value="{{index .ServersList "verification_baidu_plan_id"}}">
-          <label for="verification-baidu-secret">BaiduFace Secret</label><input id="verification-baidu-secret" name="verification_baidu_secret_key" type="password" placeholder="留空保持原密钥">
+          <label for="verification-baidu-secret">BaiduFace Secret</label><input id="verification-baidu-secret" name="verification_baidu_secret_key" type="password" autocomplete="new-password" placeholder="留空保持原密钥">
         </div>
         <div class="settings-subfields" data-verify-for="leaf_face" hidden>
           <label for="verification-leaf-id">LeafFace App ID</label><input id="verification-leaf-id" name="verification_leaf_app_id" value="{{index .ServersList "verification_leaf_app_id"}}">
-          <label for="verification-leaf-secret">LeafFace App Secret</label><input id="verification-leaf-secret" name="verification_leaf_app_secret" type="password" placeholder="留空保持原密钥">
+          <label for="verification-leaf-secret">LeafFace App Secret</label><input id="verification-leaf-secret" name="verification_leaf_app_secret" type="password" autocomplete="new-password" placeholder="留空保持原密钥">
           <label for="verification-leaf-base">LeafFace API Base（留空使用默认地址）</label><input id="verification-leaf-base" name="verification_leaf_api_base" value="{{index .ServersList "verification_leaf_api_base"}}">
         </div>
         <div class="settings-subfields" data-verify-for="smapi" hidden>
           <label for="verification-smapi-app-key">Smapi App Key</label><input id="verification-smapi-app-key" name="verification_smapi_app_key" value="{{index .ServersList "verification_smapi_app_key"}}">
-          <label for="verification-smapi-secret">Smapi App Secret</label><input id="verification-smapi-secret" name="verification_smapi_secret_key" type="password" placeholder="留空保持原密钥">
+          <label for="verification-smapi-secret">Smapi App Secret</label><input id="verification-smapi-secret" name="verification_smapi_secret_key" type="password" autocomplete="new-password" placeholder="留空保持原密钥">
           <label for="verification-smapi-url">Smapi API URL（留空使用默认地址）</label><input id="verification-smapi-url" name="verification_smapi_api_url" value="{{index .ServersList "verification_smapi_api_url"}}">
           <label for="verification-smapi-product">Smapi Product Code</label><input id="verification-smapi-product" name="verification_smapi_product_code" value="{{index .ServersList "verification_smapi_product_code"}}">
         </div>
         <div class="settings-subfields" data-verify-for="stay33" hidden>
           <label for="verification-stay33-api-key">Stay33 API Key</label><input id="verification-stay33-api-key" name="verification_stay33_api_key" value="{{index .ServersList "verification_stay33_api_key"}}">
-          <label for="verification-stay33-secret">Stay33 API Secret</label><input id="verification-stay33-secret" name="verification_stay33_secret_key" type="password" placeholder="留空保持原密钥">
+          <label for="verification-stay33-secret">Stay33 API Secret</label><input id="verification-stay33-secret" name="verification_stay33_secret_key" type="password" autocomplete="new-password" placeholder="留空保持原密钥">
           <label for="verification-stay33-url">Stay33 API URL（留空使用默认地址）</label><input id="verification-stay33-url" name="verification_stay33_api_url" value="{{index .ServersList "verification_stay33_api_url"}}">
           <label for="verification-stay33-code">Stay33 Biz Code</label><input id="verification-stay33-code" name="verification_stay33_biz_code" value="{{index .ServersList "verification_stay33_biz_code"}}">
         </div>
