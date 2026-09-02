@@ -5,8 +5,6 @@ import (
 	"strconv"
 )
 
-func pidString(n int64) string { return strconv.FormatInt(n, 10) }
-
 // extractCurrency 从商品配置响应里找 currencyid（结构因版本而异，宽松提取）。
 func extractCurrency(pc map[string]any) string {
 	if v, ok := pc["currencyid"]; ok {

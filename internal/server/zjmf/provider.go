@@ -23,8 +23,10 @@ func (Provider) Code() string { return "zjmf" }
 func (Provider) Name() string { return "智简魔方财务（ZJMF）" }
 
 // UpgradeTargets 实现 server.UpgradeTargetProvider：best-effort 拉取上游可升级目标。
-// ponytail: 上游该接口为多步会话式流程，此处按宽松结构解析（data[] 或 data.list[]）；
+// 该端点为 CBAP v10 开发者 API（/api/v1/product/:id/upgrade_product）；魔方财务无此接口，
 // 失败/解析不出均返回空，由上层回退"同服务器本地产品"候选，保证本地升降级可用。
+// ponytail: 魔方财务的升降级是 host 维度（openapi /v1/hosts/:id/actions/upgrade），非商品维度，
+// 需 hostid 才能查询，此处不做；如需对接二期再按 host 链路补。
 func (p Provider) UpgradeTargets(ctx context.Context, cfg server.Config, upstreamPID int64) ([]server.UpgradeTarget, error) {
 	path := "/api/v1/product/" + strconv.FormatInt(upstreamPID, 10) + "/upgrade_product"
 	var out struct {
@@ -56,22 +58,25 @@ func (p Provider) TestConnection(ctx context.Context, cfg server.Config) error {
 	return err
 }
 
-// FetchBalance 拉取上游账户余额。返回余额字符串（如 "100.00"）；不支持时返回空。
+// FetchBalance 拉取上游账户余额。
+// 优先魔方财务 home /user_info → user.credit；回退魔方财务 openapi /v1/user → data.client.credit；
+// 再回退 CBAP/WHMCS 的 data.credit / data.balance。credit 可能是字符串或数字，用 flexString 兼容。
 func (p Provider) FetchBalance(ctx context.Context, cfg server.Config) (string, error) {
-	// 魔方财务 user_info → user.credit
 	var info struct {
 		User struct {
-			Credit string `json:"credit"`
+			Credit flexString `json:"credit"`
 		} `json:"user"`
 	}
 	if err := getJSON(ctx, cfg, "/user_info", &info); err == nil && info.User.Credit != "" {
-		return info.User.Credit, nil
+		return string(info.User.Credit), nil
 	}
-	// CBAP / WHMCS /v1/user → data.credit 或 data.balance
 	var out struct {
 		Data struct {
-			Credit  string `json:"credit"`
-			Balance string `json:"balance"`
+			Client struct {
+				Credit flexString `json:"credit"`
+			} `json:"client"`
+			Credit  flexString `json:"credit"`
+			Balance flexString `json:"balance"`
 		} `json:"data"`
 	}
 	if err := getJSON(ctx, cfg, "/v1/user", &out); err != nil {
@@ -85,10 +90,12 @@ func (p Provider) FetchBalance(ctx context.Context, cfg server.Config) (string, 
 		}
 		return "", err
 	}
-	if out.Data.Credit != "" {
-		return out.Data.Credit, nil
+	for _, v := range []flexString{out.Data.Client.Credit, out.Data.Credit, out.Data.Balance} {
+		if v != "" {
+			return string(v), nil
+		}
 	}
-	return out.Data.Balance, nil
+	return "", nil
 }
 
 // ---------- 商品目录 ----------
@@ -687,9 +694,11 @@ func (p Provider) Provision(ctx context.Context, cfg server.Config, req server.P
 		if err := postForm(ctx, cfg, "/cart/add_to_shop", form, &map[string]any{}); err != nil {
 			return server.ProvisionResult{}, fmt.Errorf("加入购物车失败: %w", err)
 		}
-		// 步骤4: 结算 → 上游账单号（部分版本结算时已返回 hostid，另一些则留待付款后创建）
+		// 步骤4: 结算 → 上游账单号（部分版本结算时已返回 hostid，另一些则留待付款后创建）。
+		// pos 是购物车位置（0 起）：清空+加购后唯一商品固定在第 0 位；传商品 ID 会被
+		// 魔方财务 settle 的位置过滤落空，进而误结算整个购物车。
 		settleBody, settle, serr := postFormSettle(ctx, cfg, "/cart/settle",
-			url.Values{"pos[0]": {pidString(req.UpstreamPID)}, "checkout": {"1"}})
+			url.Values{"pos[0]": {"0"}, "checkout": {"1"}})
 		if serr != nil {
 			return server.ProvisionResult{}, fmt.Errorf("结算失败: %w", serr)
 		}
@@ -751,5 +760,3 @@ func (p Provider) Provision(ctx context.Context, cfg server.Config, req server.P
 // 密码策略统一走 server 包（生成+校验），与其它上游共用。
 func validHostPassword(s string) bool { return server.ValidHostPassword(s) }
 func randomHostPassword() string      { return server.RandomHostPassword() }
-
-// UpstreamPIDString helper on request — 见下方扩展方法说明。

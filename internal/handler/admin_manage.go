@@ -53,7 +53,7 @@ func (m *AdminManage) audit(r *http.Request, action, targetType string, targetID
 
 func (m *AdminManage) requireCSRF(w http.ResponseWriter, r *http.Request) bool {
 	if tok := r.PostFormValue("_csrf"); tok == "" || !checkCSRF(r, tok) {
-		http.Error(w, "CSRF 校验失败", http.StatusForbidden)
+		middleware.RedirectToLogin(w, r, "页面已过期，请重新登录后重试")
 		return false
 	}
 	return true

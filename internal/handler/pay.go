@@ -261,7 +261,7 @@ func (h *Pay) start(w http.ResponseWriter, r *http.Request) {
 	tok := r.PostFormValue("_csrf")
 	sess := middleware.FromSession(r.Context())
 	if tok == "" || sess == nil || tok != sess.CSRFToken() {
-		http.Error(w, "CSRF 校验失败", http.StatusForbidden)
+		middleware.RedirectToLogin(w, r, "页面已过期，请重新登录后重试")
 		return
 	}
 	id, err := strconv.ParseInt(r.PathValue("invoiceID"), 10, 64)

@@ -30,7 +30,7 @@ func (p Provider) SnapshotInfo(ctx context.Context, cfg server.Config, upstreamH
 		"v10": {"true"},
 	}
 	u := strings.TrimRight(cfg.APIURL, "/") + "/provision/custom/content?" + q.Encode()
-	body, err := doRaw(ctx, cfg, "GET", u, "", "", "JWT "+token)
+	body, err := doRaw(ctx, cfg, "GET", u, "", "", "Bearer "+token)
 	if err != nil {
 		return server.SnapshotInfo{}, err
 	}

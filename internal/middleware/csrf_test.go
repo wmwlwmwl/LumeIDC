@@ -24,8 +24,8 @@ func TestCSRF(t *testing.T) {
 		wantStatus int
 		wantCalled bool
 	}{
-		{name: "缺少令牌", wantStatus: http.StatusForbidden},
-		{name: "错误令牌", token: "wrong", wantStatus: http.StatusForbidden},
+		{name: "缺少令牌", wantStatus: http.StatusSeeOther},
+		{name: "错误令牌", token: "wrong", wantStatus: http.StatusSeeOther},
 		{name: "正确令牌", token: form.Get("_csrf"), wantStatus: http.StatusNoContent, wantCalled: true},
 	}
 	for _, tc := range cases {
@@ -45,6 +45,9 @@ func TestCSRF(t *testing.T) {
 			}
 			if (called > before) != tc.wantCalled {
 				t.Fatalf("处理器调用状态错误，called=%d before=%d", called, before)
+			}
+			if tc.wantStatus == http.StatusSeeOther && !strings.HasPrefix(w.Header().Get("Location"), "/login") {
+				t.Fatalf("应跳转登录页，Location=%q", w.Header().Get("Location"))
 			}
 		})
 	}

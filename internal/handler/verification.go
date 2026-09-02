@@ -353,7 +353,7 @@ func (h *AdminVerification) review(w http.ResponseWriter, r *http.Request, appro
 		return
 	}
 	if tok := r.PostFormValue("_csrf"); tok == "" || !checkCSRF(r, tok) {
-		http.Error(w, "CSRF 校验失败", http.StatusForbidden)
+		middleware.RedirectToLogin(w, r, "页面已过期，请重新登录后重试")
 		return
 	}
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)

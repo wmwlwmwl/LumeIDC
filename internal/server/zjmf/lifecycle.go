@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
@@ -192,60 +191,22 @@ func (p Provider) Renew(ctx context.Context, cfg server.Config, upstreamHostID i
 	return nil
 }
 
+// Suspend 停机：POST /provision/default {id, func: suspend}。
+// 魔方财务 home 模块 ProvisionController::execute 支持 suspend/unsuspend（旧代码调
+// /v1/hosts/:id/module/suspend，openapi 无该端点，必然 404）。
 func (p Provider) Suspend(ctx context.Context, cfg server.Config, upstreamHostID int64) error {
-	return hostAction(ctx, cfg, "suspend", upstreamHostID)
+	return defaultModuleAction(ctx, cfg, upstreamHostID, "suspend", nil)
 }
 
+// Unsuspend 恢复：POST /provision/default {id, func: unsuspend}。
 func (p Provider) Unsuspend(ctx context.Context, cfg server.Config, upstreamHostID int64) error {
-	return hostAction(ctx, cfg, "unsuspend", upstreamHostID)
+	return defaultModuleAction(ctx, cfg, upstreamHostID, "unsuspend", nil)
 }
 
-// Terminate ZJMF 无独立删除端点，一期用停机替代并标记本地 terminated。
+// Terminate ZJMF 无公开删除端点，用停机替代并标记本地 terminated。
 // ponytail: 上游真实删除依赖其自动清理策略；如需硬删二期走 setdownstream 解绑。
 func (p Provider) Terminate(ctx context.Context, cfg server.Config, upstreamHostID int64) error {
 	return p.Suspend(ctx, cfg, upstreamHostID)
-}
-
-func hostAction(ctx context.Context, cfg server.Config, action string, hostID int64) error {
-	path := "/v1/hosts/" + strconv.FormatInt(hostID, 10) + "/module/" + action
-	token, err := ensureToken(ctx, cfg)
-	if err != nil {
-		return err
-	}
-	return hostActionRequest(ctx, cfg, path, token, true)
-}
-
-func hostActionRequest(ctx context.Context, cfg server.Config, path, token string, allowRetry bool) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, strings.TrimRight(cfg.APIURL, "/")+path, nil)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := defaultClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("主机操作请求失败: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusUnauthorized && allowRetry {
-		cache.invalidate(authCacheKey(cfg))
-		newToken, err := ensureToken(ctx, cfg)
-		if err != nil {
-			return err
-		}
-		return hostActionRequest(ctx, cfg, path, newToken, false)
-	}
-	body, err := readLimited(resp.Body, 1<<20)
-	if err != nil {
-		return fmt.Errorf("主机操作响应读取失败: %w", err)
-	}
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return fmt.Errorf("主机操作失败: http %d: %.100s", resp.StatusCode, body)
-	}
-	var meta map[string]any
-	if err := json.Unmarshal(body, &meta); err != nil {
-		return fmt.Errorf("主机操作响应非 JSON: %.100s", body)
-	}
-	return checkBizOK(meta)
 }
 
 func (p Provider) Status(ctx context.Context, cfg server.Config, upstreamHostID int64) (server.ServiceStatus, error) {

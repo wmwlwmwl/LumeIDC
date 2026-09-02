@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"net/http"
+	"net/url"
 	"strings"
 )
 
@@ -23,7 +24,8 @@ func CSRF(next http.Handler) http.Handler {
 		}
 		s := FromSession(r.Context())
 		if s == nil {
-			http.Error(w, "会话无效", http.StatusUnauthorized)
+			// 会话缺失/失效（如服务重启导致内存会话丢失）：友好跳转登录页而非裸报错。
+			RedirectToLogin(w, r, "会话已过期，请重新登录")
 			return
 		}
 		// 在读取 multipart 表单前限制请求体，避免 CSRF 校验触发解析时接收超大上传。
@@ -35,11 +37,22 @@ func CSRF(next http.Handler) http.Handler {
 			tok = r.PostFormValue("_csrf")
 		}
 		if tok == "" || !hmac.Equal([]byte(tok), []byte(s.CSRFToken())) {
-			http.Error(w, "CSRF 校验失败", http.StatusForbidden)
+			// 令牌与当前会话不匹配（旧页面/会话轮换）：跳转登录页刷新会话与令牌。
+			RedirectToLogin(w, r, "页面已过期，请重新登录后重试")
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// RedirectToLogin 会话/CSRF 失效时友好跳转登录页（供中间件与各 handler 复用）。
+// admin 请求跳后台登录（Location 会被自定义后台路径中间件改写到真实路径）；其余跳前台登录。
+func RedirectToLogin(w http.ResponseWriter, r *http.Request, msg string) {
+	target := "/login"
+	if strings.HasPrefix(r.URL.Path, "/admin") {
+		target = "/admin/login"
+	}
+	http.Redirect(w, r, target+"?err="+url.QueryEscape(msg), http.StatusSeeOther)
 }
 
 // NewCSRFToken generates a per-session random token.

@@ -122,7 +122,7 @@ func (p Provider) ModulePage(ctx context.Context, cfg server.Config, upstreamHos
 		"key": {key},
 		"jwt": {token},
 	}.Encode()
-	body, err := doRaw(ctx, cfg, http.MethodGet, u, "", "", "JWT "+token)
+	body, err := doRaw(ctx, cfg, http.MethodGet, u, "", "", "Bearer "+token)
 	if err != nil {
 		return "", err
 	}
