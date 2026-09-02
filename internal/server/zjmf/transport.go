@@ -147,42 +147,12 @@ func postFormSettle(ctx context.Context, cfg server.Config, path string, form ur
 
 func postFormSettleRetry(ctx context.Context, cfg server.Config, path string, form url.Values, allowRetry bool) (string, settleResp, error) {
 	var out settleResp
-	token, err := ensureToken(ctx, cfg)
+	body, err := doJSONRaw(ctx, cfg, http.MethodPost, path, form, allowRetry)
 	if err != nil {
 		return "", out, err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		strings.TrimRight(cfg.APIURL, "/")+path, strings.NewReader(form.Encode()))
-	if err != nil {
-		return "", out, err
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	resp, err := defaultClient.Do(req)
-	if err != nil {
-		return "", out, fmt.Errorf("%s 请求失败: %w", path, err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusUnauthorized && allowRetry {
-		cache.invalidate(authCacheKey(cfg))
-		return postFormSettleRetry(ctx, cfg, path, form, false)
-	}
-	body, err := readLimited(resp.Body, 1<<20)
-	if err != nil {
-		return "", out, fmt.Errorf("%s 响应读取失败: %w", path, err)
-	}
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return string(body), out, fmt.Errorf("%s 请求失败: http %d: %.100s", path, resp.StatusCode, body)
-	}
-	var meta map[string]any
-	if err := json.Unmarshal(body, &meta); err != nil {
-		return string(body), out, fmt.Errorf("%s 响应非 JSON: %.100s", path, body)
-	}
-	if err := checkBizOK(meta); err != nil {
-		return string(body), out, err
 	}
 	if err := json.Unmarshal(body, &out); err != nil {
-		return string(body), out, fmt.Errorf("%s 响应解析失败: %w", path, err)
+		return "", out, fmt.Errorf("%s 响应解析失败: %w", path, err)
 	}
 	return string(body), out, nil
 }

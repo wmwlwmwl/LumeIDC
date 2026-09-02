@@ -22,11 +22,17 @@ type Server struct {
 
 type Servers struct{ db *sql.DB }
 
+const serverCols = `SELECT id,name,provider,api_url,api_username,api_key,disabled,credential_revision,coalesce(profit_type,0),coalesce(profit_value,0)`
+
+func scanServer(row interface{ Scan(dest ...any) error }, sv *Server) error {
+	return row.Scan(&sv.ID, &sv.Name, &sv.Provider, &sv.APIURL, &sv.APIUsername, &sv.APIKey,
+		&sv.Disabled, &sv.CredentialRevision, &sv.ProfitType, &sv.ProfitValue)
+}
+
 var ErrServerNotFound = fixedErr("服务器不存在")
 
 func (s *Servers) List(ctx context.Context) ([]Server, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT id,name,provider,api_url,api_username,api_key,disabled,credential_revision,coalesce(profit_type,0),coalesce(profit_value,0) FROM servers ORDER BY id`)
+	rows, err := s.db.QueryContext(ctx, serverCols+` FROM servers ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -34,7 +40,7 @@ func (s *Servers) List(ctx context.Context) ([]Server, error) {
 	var out []Server
 	for rows.Next() {
 		var sv Server
-		if err := rows.Scan(&sv.ID, &sv.Name, &sv.Provider, &sv.APIURL, &sv.APIUsername, &sv.APIKey, &sv.Disabled, &sv.CredentialRevision, &sv.ProfitType, &sv.ProfitValue); err != nil {
+		if err := scanServer(rows, &sv); err != nil {
 			return nil, err
 		}
 		out = append(out, sv)
@@ -44,9 +50,7 @@ func (s *Servers) List(ctx context.Context) ([]Server, error) {
 
 func (s *Servers) Get(ctx context.Context, id int64) (*Server, error) {
 	var sv Server
-	err := s.db.QueryRowContext(ctx,
-		`SELECT id,name,provider,api_url,api_username,api_key,disabled,credential_revision,coalesce(profit_type,0),coalesce(profit_value,0) FROM servers WHERE id=$1`, id).
-		Scan(&sv.ID, &sv.Name, &sv.Provider, &sv.APIURL, &sv.APIUsername, &sv.APIKey, &sv.Disabled, &sv.CredentialRevision, &sv.ProfitType, &sv.ProfitValue)
+	err := scanServer(s.db.QueryRowContext(ctx, serverCols+` FROM servers WHERE id=$1`, id), &sv)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrServerNotFound
 	}

@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"lumeidc/internal/gateway"
@@ -36,6 +37,10 @@ type Pay struct {
 	Invoices *repo.Invoices
 	Balance  *repo.Balance
 	*Deps
+
+	payOnce sync.Once
+	payTpl  *template.Template // pay.html 首次渲染后缓存（并发安全）
+	payErr  error
 }
 
 func (h *Pay) Register(mux *http.ServeMux) {
@@ -190,11 +195,6 @@ func quoteGateway(amount string, cfg map[string]string) (feePercent, feeAmount, 
 	return feePercent, feeAmount, payable, err
 }
 
-func (h *Pay) loadInvoice(r *http.Request, invoiceID int64) (no string, amount string, status int16, gatewayCode string, err error) {
-	no, amount, status, gatewayCode, err = h.Invoices.LoadByID(r.Context(), invoiceID)
-	return
-}
-
 func (h *Pay) payPage(w http.ResponseWriter, r *http.Request) {
 	userID, ok := middleware.RequireUser(w, r)
 	if !ok {
@@ -205,7 +205,7 @@ func (h *Pay) payPage(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	no, amount, status, _, err := h.loadInvoice(r, id)
+	no, amount, status, _, err := h.Invoices.LoadByID(r.Context(), id)
 	if err != nil || !h.ownsInvoice(r, userID, no) {
 		http.NotFound(w, r)
 		return
@@ -239,12 +239,14 @@ func (h *Pay) payPage(w http.ResponseWriter, r *http.Request) {
 		}
 		data.BalancePay = !data.Recharge
 	}
-	tpl, err := template.ParseFS(payFS, "templates/pay.html")
-	if err != nil {
-		http.Error(w, err.Error(), 500)
+	h.payOnce.Do(func() {
+		h.payTpl, h.payErr = template.ParseFS(payFS, "templates/pay.html")
+	})
+	if h.payErr != nil {
+		http.Error(w, h.payErr.Error(), 500)
 		return
 	}
-	if err := tpl.Execute(w, data); err != nil {
+	if err := h.payTpl.Execute(w, data); err != nil {
 		log.Printf("[template] pay.html 执行失败: %v", err)
 	}
 }
@@ -267,7 +269,7 @@ func (h *Pay) start(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	no, amount, status, _, err := h.loadInvoice(r, id)
+	no, amount, status, _, err := h.Invoices.LoadByID(r.Context(), id)
 	if err != nil || status != 0 || !h.ownsInvoice(r, userID, no) {
 		http.NotFound(w, r)
 		return
@@ -401,7 +403,7 @@ func (h *Pay) payByBalance(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	no, _, _, _, err := h.loadInvoice(r, id)
+	no, _, _, _, err := h.Invoices.LoadByID(r.Context(), id)
 	if err != nil || !h.ownsInvoice(r, userID, no) {
 		http.NotFound(w, r)
 		return

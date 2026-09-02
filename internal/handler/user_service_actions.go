@@ -72,10 +72,10 @@ func (h *Pages) serviceChart(w http.ResponseWriter, r *http.Request) {
 	sel := r.URL.Query().Get("range")
 	series, err := h.Console.Chart(r.Context(), userID, id, typ, sel)
 	if err != nil {
-		writeJSON(w, map[string]any{"ok": 0, "msg": err.Error()})
+		jsonFail(w, err.Error())
 		return
 	}
-	writeJSON(w, map[string]any{"ok": 1, "series": series})
+	jsonOK(w, "series", series)
 }
 
 // serviceUsage GET /services/{id}/usage — 流量用量（JSON）。
@@ -88,10 +88,10 @@ func (h *Pages) serviceUsage(w http.ResponseWriter, r *http.Request) {
 	id, _ := strconv.ParseInt(r.PathValue("serviceID"), 10, 64)
 	u, err := h.Console.Usage(r.Context(), userID, id)
 	if err != nil {
-		writeJSON(w, map[string]any{"ok": 0, "msg": err.Error()})
+		jsonFail(w, err.Error())
 		return
 	}
-	writeJSON(w, map[string]any{"ok": 1, "usage": u})
+	jsonOK(w, "usage", u)
 }
 
 // servicePower GET /services/{id}/power — 实时电源状态（JSON）。
@@ -104,10 +104,10 @@ func (h *Pages) servicePower(w http.ResponseWriter, r *http.Request) {
 	id, _ := strconv.ParseInt(r.PathValue("serviceID"), 10, 64)
 	ps, err := h.Console.PowerStatus(r.Context(), userID, id)
 	if err != nil {
-		writeJSON(w, map[string]any{"ok": 0, "msg": err.Error()})
+		jsonFail(w, err.Error())
 		return
 	}
-	writeJSON(w, map[string]any{"ok": 1, "power": ps})
+	jsonOK(w, "power", ps)
 }
 
 // serviceTraffic GET /services/{id}/traffic — 每日流量曲线（JSON）。
@@ -120,10 +120,10 @@ func (h *Pages) serviceTraffic(w http.ResponseWriter, r *http.Request) {
 	id, _ := strconv.ParseInt(r.PathValue("serviceID"), 10, 64)
 	days, err := h.Console.TrafficUsage(r.Context(), userID, id)
 	if err != nil {
-		writeJSON(w, map[string]any{"ok": 0, "msg": err.Error()})
+		jsonFail(w, err.Error())
 		return
 	}
-	writeJSON(w, map[string]any{"ok": 1, "days": days})
+	jsonOK(w, "days", days)
 }
 
 // serviceSnapshot GET /services/{id}/snapshot — 快照/备份概况（JSON）。
@@ -136,10 +136,10 @@ func (h *Pages) serviceSnapshot(w http.ResponseWriter, r *http.Request) {
 	id, _ := strconv.ParseInt(r.PathValue("serviceID"), 10, 64)
 	info, err := h.Console.SnapshotInfo(r.Context(), userID, id)
 	if err != nil {
-		writeJSON(w, map[string]any{"ok": 0, "msg": err.Error()})
+		jsonFail(w, err.Error())
 		return
 	}
-	writeJSON(w, map[string]any{"ok": 1, "info": info})
+	jsonOK(w, "info", info)
 }
 
 // serviceSnapshotAction POST /services/{id}/snapshot/{fn} — 快照/备份操作。
@@ -152,12 +152,12 @@ func (h *Pages) serviceSnapshotAction(w http.ResponseWriter, r *http.Request) {
 	id, _ := strconv.ParseInt(r.PathValue("serviceID"), 10, 64)
 	fn := r.PathValue("fn")
 	if err := r.ParseForm(); err != nil {
-		writeJSON(w, map[string]any{"ok": 0, "msg": "表单解析失败"})
+		jsonFail(w, "表单解析失败")
 		return
 	}
 	raw, err := h.Console.SnapshotAction(r.Context(), userID, id, fn, r.PostForm)
 	if err != nil {
-		writeJSON(w, map[string]any{"ok": 0, "msg": err.Error()})
+		jsonFail(w, err.Error())
 		return
 	}
 	writeJSON(w, moduleResultJSON(raw))
@@ -177,7 +177,7 @@ func (h *Pages) serviceBlocks(w http.ResponseWriter, r *http.Request) {
 	// 方块集合因产品而异：按模块清单 Areas 里有哪些 key 拉哪些。
 	sum, err := h.Console.ModuleSummary(cctx, userID, id)
 	if err != nil {
-		writeJSON(w, map[string]any{"ok": 0, "msg": err.Error()})
+		jsonFail(w, err.Error())
 		return
 	}
 	has := map[string]bool{}
@@ -217,7 +217,7 @@ func (h *Pages) serviceBlocks(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"ok": 0, "msg": "部分方块拉取失败", "errors": errs})
 		return
 	}
-	writeJSON(w, map[string]any{"ok": 1, "blocks": blocks})
+	jsonOK(w, "blocks", blocks)
 }
 
 // serviceBlockAction POST /services/{id}/block/{fn} — 方块操作（NAT/建站/安全组/设置）。
@@ -230,13 +230,13 @@ func (h *Pages) serviceBlockAction(w http.ResponseWriter, r *http.Request) {
 	id, _ := strconv.ParseInt(r.PathValue("serviceID"), 10, 64)
 	fn := r.PathValue("fn")
 	if err := r.ParseForm(); err != nil {
-		writeJSON(w, map[string]any{"ok": 0, "msg": "表单解析失败"})
+		jsonFail(w, "表单解析失败")
 		return
 	}
 	// showSecurityRules 走 BlockAction 白名单之外，单独放行（只读）。
 	raw, err := h.Console.BlockAction(r.Context(), userID, id, fn, r.PostForm)
 	if err != nil {
-		writeJSON(w, map[string]any{"ok": 0, "msg": err.Error()})
+		jsonFail(w, err.Error())
 		return
 	}
 	writeJSON(w, moduleResultJSON(raw))
@@ -253,10 +253,10 @@ func (h *Pages) serviceBlockRules(w http.ResponseWriter, r *http.Request) {
 	gid, _ := strconv.ParseInt(r.URL.Query().Get("gid"), 10, 64)
 	rules, err := h.Console.SecurityRules(r.Context(), userID, id, gid)
 	if err != nil {
-		writeJSON(w, map[string]any{"ok": 0, "msg": err.Error()})
+		jsonFail(w, err.Error())
 		return
 	}
-	writeJSON(w, map[string]any{"ok": 1, "rules": rules})
+	jsonOK(w, "rules", rules)
 }
 
 // serviceDetail GET /services/{id} — 用户服务详情页。
@@ -269,10 +269,10 @@ func (h *Pages) reinstallOptions(w http.ResponseWriter, r *http.Request) {
 	id, _ := strconv.ParseInt(r.PathValue("serviceID"), 10, 64)
 	opts, err := h.Console.OSOptions(r.Context(), userID, id)
 	if err != nil {
-		writeJSON(w, map[string]any{"ok": 0, "msg": err.Error()})
+		jsonFail(w, err.Error())
 		return
 	}
-	writeJSON(w, map[string]any{"ok": 1, "os": opts})
+	jsonOK(w, "os", opts)
 }
 
 // serviceRescueState GET /services/{id}/rescue-state — 救援模式状态（JSON）。
@@ -285,10 +285,10 @@ func (h *Pages) serviceRescueState(w http.ResponseWriter, r *http.Request) {
 	id, _ := strconv.ParseInt(r.PathValue("serviceID"), 10, 64)
 	on, err := h.Console.RescueState(r.Context(), userID, id)
 	if err != nil {
-		writeJSON(w, map[string]any{"ok": 0, "msg": err.Error()})
+		jsonFail(w, err.Error())
 		return
 	}
-	writeJSON(w, map[string]any{"ok": 1, "rescue": on})
+	jsonOK(w, "rescue", on)
 }
 
 func actionName(a string) string {
@@ -313,5 +313,3 @@ func opLabel(a string) string {
 	}
 	return a
 }
-
-// htmlAttrEscape 转义放入 HTML 属性值的字符串（&<>"' → 实体）。

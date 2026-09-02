@@ -102,17 +102,17 @@ func (m *AdminManage) UpstreamOptions(w http.ResponseWriter, r *http.Request) {
 	}
 	serverID, _ := strconv.ParseInt(r.URL.Query().Get("server_id"), 10, 64)
 	if serverID <= 0 {
-		writeJSON(w, map[string]any{"ok": 0, "msg": "server_id 无效"})
+		jsonFail(w, "server_id 无效")
 		return
 	}
 	sv, err := m.Servers.Get(r.Context(), serverID)
 	if err != nil {
-		writeJSON(w, map[string]any{"ok": 0, "msg": "读取服务器失败"})
+		jsonFail(w, "读取服务器失败")
 		return
 	}
 	prov, err := m.Providers.Get(sv.Provider)
 	if err != nil {
-		writeJSON(w, map[string]any{"ok": 0, "msg": err.Error()})
+		jsonFail(w, err.Error())
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
@@ -124,7 +124,7 @@ func (m *AdminManage) UpstreamOptions(w http.ResponseWriter, r *http.Request) {
 		list, err = prov.Catalog(ctx, serverConfig(sv))
 	}
 	if err != nil {
-		writeJSON(w, map[string]any{"ok": 0, "msg": "拉取目录失败: " + err.Error()})
+		jsonFail(w, "拉取目录失败: "+err.Error())
 		return
 	}
 	type item struct {
@@ -150,7 +150,7 @@ func (m *AdminManage) UpstreamOptions(w http.ResponseWriter, r *http.Request) {
 	for _, n := range order {
 		out = append(out, *groups[n])
 	}
-	writeJSON(w, map[string]any{"ok": 1, "groups": out})
+	jsonOK(w, "groups", out)
 }
 
 // UpstreamConfig GET /admin/products/upstream-config — 直接拉取上游商品配置项（无需本地产品），
@@ -163,29 +163,29 @@ func (m *AdminManage) UpstreamConfig(w http.ResponseWriter, r *http.Request) {
 	serverID, _ := strconv.ParseInt(r.URL.Query().Get("server_id"), 10, 64)
 	pid, _ := strconv.Atoi(r.URL.Query().Get("pid"))
 	if serverID <= 0 || pid <= 0 {
-		writeJSON(w, map[string]any{"ok": 0, "msg": "参数无效"})
+		jsonFail(w, "参数无效")
 		return
 	}
 	sv, err := m.Servers.Get(r.Context(), serverID)
 	if err != nil {
-		writeJSON(w, map[string]any{"ok": 0, "msg": "读取服务器失败"})
+		jsonFail(w, "读取服务器失败")
 		return
 	}
 	prov, err := m.Providers.Get(sv.Provider)
 	if err != nil {
-		writeJSON(w, map[string]any{"ok": 0, "msg": err.Error()})
+		jsonFail(w, err.Error())
 		return
 	}
 	fetcher, ok := prov.(server.ConfigOptionsFetcher)
 	if !ok {
-		writeJSON(w, map[string]any{"ok": 0, "msg": "该供应商不支持配置项拉取"})
+		jsonFail(w, "该供应商不支持配置项拉取")
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
 	opts, err := fetcher.FetchProductConfigOptions(ctx, serverConfig(sv), int64(pid))
 	if err != nil {
-		writeJSON(w, map[string]any{"ok": 0, "msg": err.Error()})
+		jsonFail(w, err.Error())
 		return
 	}
 	// 同时返回上游基础价，供前端刷新月/季/年输入框（基础价常被漏抓）。

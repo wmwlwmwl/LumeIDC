@@ -304,25 +304,25 @@ func (h *Pages) serviceModuleSubmit(w http.ResponseWriter, r *http.Request) {
 	serviceID, _ := strconv.ParseInt(r.PathValue("serviceID"), 10, 64)
 	key := r.PathValue("key")
 	if strings.TrimSpace(key) == "" {
-		writeJSON(w, map[string]any{"ok": 0, "msg": "模块不可用"})
+		jsonFail(w, "模块不可用")
 		return
 	}
 	sum, err := h.Console.ModuleSummary(r.Context(), userID, serviceID)
 	if err != nil || !moduleKeyInSummary(sum, key) {
-		writeJSON(w, map[string]any{"ok": 0, "msg": "模块不可用"})
+		jsonFail(w, "模块不可用")
 		return
 	}
 	if err := r.ParseForm(); err != nil {
-		writeJSON(w, map[string]any{"ok": 0, "msg": "表单解析失败"})
+		jsonFail(w, "表单解析失败")
 		return
 	}
 	if fn := r.PostFormValue("func"); fn != "" && !moduleFunctionInSummary(sum, fn) {
-		writeJSON(w, map[string]any{"ok": 0, "msg": "操作不可用"})
+		jsonFail(w, "操作不可用")
 		return
 	}
 	raw, err := h.Console.ModuleAction(r.Context(), userID, serviceID, r.PostForm)
 	if err != nil {
-		writeJSON(w, map[string]any{"ok": 0, "msg": err.Error()})
+		jsonFail(w, err.Error())
 		return
 	}
 	writeJSON(w, moduleResultJSON(raw))

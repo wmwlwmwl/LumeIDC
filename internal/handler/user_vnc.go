@@ -3,7 +3,6 @@ package handler
 import (
 	"crypto/tls"
 	"fmt"
-	"html"
 	"io"
 	"log"
 	"net/http"
@@ -17,8 +16,6 @@ import (
 
 	"lumeidc/internal/middleware"
 )
-
-func htmlAttrEscape(s string) string { return html.EscapeString(s) }
 
 // ---------- VNC 服务端反向代理（隐藏上游域名） ----------
 
@@ -158,10 +155,10 @@ func (h *Pages) serviceVncPass(w http.ResponseWriter, r *http.Request) {
 	id, _ := strconv.ParseInt(r.PathValue("serviceID"), 10, 64)
 	info, err := h.Console.VNCInfo(r.Context(), userID, id)
 	if err != nil {
-		writeJSON(w, map[string]any{"ok": 0, "msg": err.Error()})
+		jsonFail(w, err.Error())
 		return
 	}
-	writeJSON(w, map[string]any{"ok": 1, "password": info.Password})
+	jsonOK(w, "password", info.Password)
 }
 
 // vncAssets GET /services/{id}/vnc-assets/{path...} — 代理上游 noVNC 静态资源。

@@ -50,20 +50,25 @@ func (lc *Lifecycle) loadService(ctx context.Context, serviceID int64) (*service
 	return &s, nil
 }
 
+// resolveProvider 按供应商代码+服务器ID 解析上游 Provider 与 Config（lifecycle/console 共用）。
+func resolveProvider(ctx context.Context, providers *server.Registry, servers *repo.Servers, providerCode string, serverID int64) (server.Provider, server.Config, error) {
+	prov, err := providers.Get(providerCode)
+	if err != nil {
+		return nil, server.Config{}, err
+	}
+	sv, err := servers.Get(ctx, serverID)
+	if err != nil {
+		return nil, server.Config{}, fmt.Errorf("读取服务器失败: %w", err)
+	}
+	return prov, upstreamConfig(sv), nil
+}
+
 func (lc *Lifecycle) providerFor(ctx context.Context, s *serviceRef) (server.Provider, server.Config, error) {
 	// 同 console.resolve：hostID>0 即有上游；upstream_pid=0 为合法弹性模式（EasyPanel）。
 	if !s.ServerID.Valid || s.UpstreamHost == 0 {
 		return nil, server.Config{}, errNoUpstream
 	}
-	prov, err := lc.Providers.Get(s.UpstreamProvider)
-	if err != nil {
-		return nil, server.Config{}, err
-	}
-	sv, err := lc.Servers.Get(ctx, s.ServerID.Int64)
-	if err != nil {
-		return nil, server.Config{}, fmt.Errorf("读取服务器失败: %w", err)
-	}
-	return prov, upstreamConfig(sv), nil
+	return resolveProvider(ctx, lc.Providers, lc.Servers, s.UpstreamProvider, s.ServerID.Int64)
 }
 
 var errNoUpstream = lifecycleErr("该服务未绑定上游")
@@ -139,6 +144,45 @@ func (lc *Lifecycle) setCheckpoint(ctx context.Context, serviceID int64, key, va
 	return err
 }
 
+// transition 服务状态迁移通用流程（停机/解停/删除共用）。
+// from/to 为状态迁移边界，cmp 为本地状态条件比较符（"=" 或 "<"，Terminate 用 status<3 表达"未终止皆可删"）；
+// state 为过渡状态名；errMsg 为上游失败时的日志与包装文案；op 为对上游的实际操作。
+func (lc *Lifecycle) transition(ctx context.Context, s *serviceRef, from, to int16, cmp, state, errMsg string, op func(context.Context, server.Provider, server.Config, int64) error) error {
+	prov, cfg, err := lc.providerFor(ctx, s)
+	if err == errNoUpstream {
+		_, err = lc.db.ExecContext(ctx,
+			`UPDATE services SET status=$1 WHERE id=$2 AND status`+cmp+`$3`, to, s.ID, from)
+		return err
+	}
+	if err != nil {
+		return err
+	}
+	// 设置过渡状态
+	if _, err := lc.db.ExecContext(ctx,
+		`UPDATE services SET desired_status=$1, transition_state=$4 WHERE id=$2 AND status`+cmp+`$3`,
+		to, s.ID, from, state); err != nil {
+		return err
+	}
+	cctx, cancel := context.WithTimeout(ctx, opTimeout)
+	defer cancel()
+	if err := op(cctx, prov, cfg, s.UpstreamHost); err != nil {
+		log.Printf("[lifecycle] service %d %s: %v", s.ID, errMsg, err)
+		// 失败：清除过渡状态，保留原状态
+		lc.db.ExecContext(ctx, `UPDATE services SET desired_status=NULL, transition_state='' WHERE id=$1`, s.ID)
+		return fmt.Errorf("%s: %w", errMsg, err)
+	}
+	// 成功：更新状态
+	_, err = lc.db.ExecContext(ctx,
+		`UPDATE services SET status=$1 WHERE id=$2 AND status`+cmp+`$3`, to, s.ID, from)
+	// 无条件清除过渡状态：即便并发的 SyncUpstreamStatus 改了 status，
+	// 也不让其卡在 transition_state（否则会被同步长期跳过）。
+	if _, e := lc.db.ExecContext(ctx,
+		`UPDATE services SET desired_status=NULL, transition_state='' WHERE id=$1`, s.ID); e != nil {
+		log.Printf("[lifecycle] service %d 清除过渡状态失败: %v", s.ID, e)
+	}
+	return err
+}
+
 // Suspend 停机：本地状态 + 上游同步。
 func (lc *Lifecycle) Suspend(ctx context.Context, serviceID int64) error {
 	s, err := lc.loadService(ctx, serviceID)
@@ -148,37 +192,10 @@ func (lc *Lifecycle) Suspend(ctx context.Context, serviceID int64) error {
 	if s.Status != 1 {
 		return fmt.Errorf("服务当前状态不可停机")
 	}
-	prov, cfg, err := lc.providerFor(ctx, s)
-	if err == errNoUpstream {
-		_, err = lc.db.ExecContext(ctx, `UPDATE services SET status=2 WHERE id=$1 AND status=1`, serviceID)
-		return err
-	}
-	if err != nil {
-		return err
-	}
-	// 设置过渡状态
-	if _, err := lc.db.ExecContext(ctx,
-		`UPDATE services SET desired_status=2, transition_state='suspending' WHERE id=$1 AND status=1`, serviceID); err != nil {
-		return err
-	}
-	cctx, cancel := context.WithTimeout(ctx, opTimeout)
-	defer cancel()
-	if err := prov.Suspend(cctx, cfg, s.UpstreamHost); err != nil {
-		log.Printf("[lifecycle] service %d 上游停机失败: %v", serviceID, err)
-		// 失败：清除过渡状态，保留原状态
-		lc.db.ExecContext(ctx, `UPDATE services SET desired_status=NULL, transition_state='' WHERE id=$1`, serviceID)
-		return fmt.Errorf("上游停机失败: %w", err)
-	}
-	// 成功：更新状态
-	_, err = lc.db.ExecContext(ctx,
-		`UPDATE services SET status=2 WHERE id=$1 AND status=1`, serviceID)
-	// 无条件清除过渡状态：即便并发的 SyncUpstreamStatus 改了 status，
-	// 也不让其卡在 transition_state（否则会被同步长期跳过）。
-	if _, e := lc.db.ExecContext(ctx,
-		`UPDATE services SET desired_status=NULL, transition_state='' WHERE id=$1`, serviceID); e != nil {
-		log.Printf("[lifecycle] service %d 清除过渡状态失败: %v", serviceID, e)
-	}
-	return err
+	return lc.transition(ctx, s, 1, 2, "=", "suspending", "上游停机失败",
+		func(ctx context.Context, p server.Provider, cfg server.Config, host int64) error {
+			return p.Suspend(ctx, cfg, host)
+		})
 }
 
 // Unsuspend 解除停机。
@@ -190,35 +207,10 @@ func (lc *Lifecycle) Unsuspend(ctx context.Context, serviceID int64) error {
 	if s.Status != 2 {
 		return fmt.Errorf("服务当前状态不可解除停机")
 	}
-	prov, cfg, err := lc.providerFor(ctx, s)
-	if err == errNoUpstream {
-		_, err = lc.db.ExecContext(ctx, `UPDATE services SET status=1 WHERE id=$1 AND status=2`, serviceID)
-		return err
-	}
-	if err != nil {
-		return err
-	}
-	// 设置过渡状态
-	if _, err := lc.db.ExecContext(ctx,
-		`UPDATE services SET desired_status=1, transition_state='unsuspending' WHERE id=$1 AND status=2`, serviceID); err != nil {
-		return err
-	}
-	cctx, cancel := context.WithTimeout(ctx, opTimeout)
-	defer cancel()
-	if err := prov.Unsuspend(cctx, cfg, s.UpstreamHost); err != nil {
-		log.Printf("[lifecycle] service %d 上游解除停机失败: %v", serviceID, err)
-		// 失败：清除过渡状态，保留原状态
-		lc.db.ExecContext(ctx, `UPDATE services SET desired_status=NULL, transition_state='' WHERE id=$1`, serviceID)
-		return fmt.Errorf("上游解除停机失败: %w", err)
-	}
-	// 成功：更新状态
-	_, err = lc.db.ExecContext(ctx,
-		`UPDATE services SET status=1 WHERE id=$1 AND status=2`, serviceID)
-	if _, e := lc.db.ExecContext(ctx,
-		`UPDATE services SET desired_status=NULL, transition_state='' WHERE id=$1`, serviceID); e != nil {
-		log.Printf("[lifecycle] service %d 清除过渡状态失败: %v", serviceID, e)
-	}
-	return err
+	return lc.transition(ctx, s, 2, 1, "=", "unsuspending", "上游解除停机失败",
+		func(ctx context.Context, p server.Provider, cfg server.Config, host int64) error {
+			return p.Unsuspend(ctx, cfg, host)
+		})
 }
 
 // Terminate 删除：本地终止 + 上游销毁。
@@ -230,35 +222,10 @@ func (lc *Lifecycle) Terminate(ctx context.Context, serviceID int64) error {
 	if s.Status == 3 {
 		return nil
 	}
-	prov, cfg, err := lc.providerFor(ctx, s)
-	if err == errNoUpstream {
-		_, err = lc.db.ExecContext(ctx, `UPDATE services SET status=3 WHERE id=$1 AND status<3`, serviceID)
-		return err
-	}
-	if err != nil {
-		return err
-	}
-	// 设置过渡状态
-	if _, err := lc.db.ExecContext(ctx,
-		`UPDATE services SET desired_status=3, transition_state='terminating' WHERE id=$1 AND status<3`, serviceID); err != nil {
-		return err
-	}
-	cctx, cancel := context.WithTimeout(ctx, opTimeout)
-	defer cancel()
-	if err := prov.Terminate(cctx, cfg, s.UpstreamHost); err != nil {
-		log.Printf("[lifecycle] service %d 上游删除失败: %v", serviceID, err)
-		// 失败：清除过渡状态，保留原状态
-		lc.db.ExecContext(ctx, `UPDATE services SET desired_status=NULL, transition_state='' WHERE id=$1`, serviceID)
-		return fmt.Errorf("上游删除失败: %w", err)
-	}
-	// 成功：更新状态
-	_, err = lc.db.ExecContext(ctx,
-		`UPDATE services SET status=3 WHERE id=$1 AND status<3`, serviceID)
-	if _, e := lc.db.ExecContext(ctx,
-		`UPDATE services SET desired_status=NULL, transition_state='' WHERE id=$1`, serviceID); e != nil {
-		log.Printf("[lifecycle] service %d 清除过渡状态失败: %v", serviceID, e)
-	}
-	return err
+	return lc.transition(ctx, s, 3, 3, "<", "terminating", "上游删除失败",
+		func(ctx context.Context, p server.Provider, cfg server.Config, host int64) error {
+			return p.Terminate(ctx, cfg, host)
+		})
 }
 
 // RetryProvision 手动重试开通（pending 状态的服务）。

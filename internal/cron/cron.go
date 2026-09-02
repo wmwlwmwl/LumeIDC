@@ -33,8 +33,16 @@ func (j *Jobs) Start() *cron.Cron {
 			j.Fulfillment.Drain(context.Background(), 10)
 		}
 	})
-	c.AddFunc("@every 10m", func() { j.suspendExpired(context.Background()) })
-	c.AddFunc("@every 1h", func() { j.terminateSuspended(context.Background()) })
+	c.AddFunc("@every 10m", func() {
+		j.runExpired(context.Background(),
+			`SELECT id FROM services WHERE status=1 AND expires_at < now()`, "停机",
+			func(ctx context.Context, id int64) error { return j.Lifecycle.Suspend(ctx, id) })
+	})
+	c.AddFunc("@every 1h", func() {
+		j.runExpired(context.Background(),
+			`SELECT id FROM services WHERE status=2 AND expires_at < now() - interval '30 days'`, "删除",
+			func(ctx context.Context, id int64) error { return j.Lifecycle.Terminate(ctx, id) })
+	})
 	c.AddFunc("@every 10m", func() { j.releaseExpiredStock(context.Background()) })
 	// 到期前 3 天提醒（每 6 小时一次，避免重复发送由 expire_warn_sent 标记保证）
 	c.AddFunc("@every 6h", func() { j.notifyExpiringSoon(context.Background()) })
@@ -50,12 +58,15 @@ func (j *Jobs) Start() *cron.Cron {
 	return c
 }
 
-// suspendExpired 到期服务 -> 停机（宽限期内可续费恢复），并同步上游
-func (j *Jobs) suspendExpired(ctx context.Context) {
-	rows, err := j.DB.QueryContext(ctx,
-		`SELECT id FROM services WHERE status=1 AND expires_at < now()`)
+// runExpired 对满足条件的到期服务批量执行生命周期操作（停机/删除共用）。
+// query 返回待处理服务 id；opName 用于日志（如 "停机"/"删除"）；op 为对单个服务的操作。
+func (j *Jobs) runExpired(ctx context.Context, query, opName string, op func(context.Context, int64) error) {
+	if j.Lifecycle == nil {
+		return
+	}
+	rows, err := j.DB.QueryContext(ctx, query)
 	if err != nil {
-		log.Printf("[cron] 查询到期服务失败: %v", err)
+		log.Printf("[cron] 查询待%s服务失败: %v", opName, err)
 		return
 	}
 	var ids []int64
@@ -72,49 +83,13 @@ func (j *Jobs) suspendExpired(ctx context.Context) {
 	}
 	rows.Close()
 	for _, id := range ids {
-		if j.Lifecycle != nil {
-			if err := j.Lifecycle.Suspend(ctx, id); err != nil {
-				log.Printf("[cron] 服务 %d 停机失败: %v", id, err)
-				continue
-			}
-			log.Printf("[cron] 服务 %d 已停机", id)
-		}
-	}
-}
-
-// terminateSuspended 停机超过 30 天的服务 -> 终止删除，并同步上游
-func (j *Jobs) terminateSuspended(ctx context.Context) {
-	rows, err := j.DB.QueryContext(ctx,
-		`SELECT id FROM services WHERE status=2 AND expires_at < now() - interval '30 days'`)
-	if err != nil {
-		log.Printf("[cron] 删除超期停机服务失败: %v", err)
-		return
-	}
-	var ids []int64
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			log.Printf("[cron] 读取到期服务失败: %v", err)
+		if err := op(ctx, id); err != nil {
+			log.Printf("[cron] 服务 %d %s失败: %v", id, opName, err)
 			continue
 		}
-		ids = append(ids, id)
-	}
-	if err := rows.Err(); err != nil {
-		log.Printf("[cron] 遍历到期服务失败: %v", err)
-	}
-	rows.Close()
-	for _, id := range ids {
-		if j.Lifecycle != nil {
-			if err := j.Lifecycle.Terminate(ctx, id); err != nil {
-				log.Printf("[cron] 服务 %d 删除失败: %v", id, err)
-				continue
-			}
-			log.Printf("[cron] 服务 %d 已删除", id)
-		}
+		log.Printf("[cron] 服务 %d 已%s", id, opName)
 	}
 }
-
-var _ = time.Now // 保留 time 以便后续宽限提醒任务
 
 // notifyExpiringSoon 服务到期前 3 天向用户发送提醒（站内信+邮件），每个服务仅提醒一次。
 func (j *Jobs) notifyExpiringSoon(ctx context.Context) {

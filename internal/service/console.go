@@ -43,15 +43,11 @@ func (c *Console) resolveBase(ctx context.Context, userID, serviceID int64) (ser
 	if !serverID.Valid || hostID == 0 {
 		return nil, server.Config{}, 0, errNoUpstream
 	}
-	prov, err := c.Providers.Get(providerCode)
+	prov, cfg, err := resolveProvider(ctx, c.Providers, c.Servers, providerCode, serverID.Int64)
 	if err != nil {
 		return nil, server.Config{}, 0, err
 	}
-	sv, err := c.Servers.Get(ctx, serverID.Int64)
-	if err != nil {
-		return nil, server.Config{}, 0, fmt.Errorf("读取服务器失败: %w", err)
-	}
-	return prov, upstreamConfig(sv), hostID, nil
+	return prov, cfg, hostID, nil
 }
 
 // resolve 在 resolveBase 之上断言完整控制台能力（电源/重装/救援等）。
