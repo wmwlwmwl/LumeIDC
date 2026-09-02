@@ -8,13 +8,13 @@ import (
 )
 
 // AuthChallenges stores one-time email/phone challenges. Plaintext codes are never persisted.
-type AuthChallenges struct{ DB *sql.DB }
+type AuthChallenges struct{ db *sql.DB }
 
 var ErrAuthChallengeInvalid = errors.New("验证码无效或已过期")
 var ErrAuthChallengeCode = errors.New("验证码错误")
 
 func (r *AuthChallenges) CreateAnonymous(ctx context.Context, channel, purpose, destination, destinationHMAC, codeHMAC, ip string, expiresAt, now time.Time) (int64, error) {
-	tx, err := r.DB.BeginTx(ctx, nil)
+	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
 	}
@@ -32,16 +32,16 @@ func (r *AuthChallenges) CreateAnonymous(ctx context.Context, channel, purpose, 
 
 func (r *AuthChallenges) RateLimited(ctx context.Context, channel, destinationHMAC, ip string, now time.Time) (bool, error) {
 	var count int
-	err := r.DB.QueryRowContext(ctx, `SELECT count(*) FROM auth_challenges WHERE channel=$1 AND (destination_hmac=$2 OR request_ip=$3) AND created_at>$4`, channel, destinationHMAC, ip, now.Add(-time.Hour)).Scan(&count)
+	err := r.db.QueryRowContext(ctx, `SELECT count(*) FROM auth_challenges WHERE channel=$1 AND (destination_hmac=$2 OR request_ip=$3) AND created_at>$4`, channel, destinationHMAC, ip, now.Add(-time.Hour)).Scan(&count)
 	return count >= 10, err
 }
 func (r *AuthChallenges) Invalidate(ctx context.Context, id int64, at time.Time) error {
-	_, err := r.DB.ExecContext(ctx, `UPDATE auth_challenges SET invalidated_at=$2 WHERE id=$1 AND consumed_at IS NULL`, id, at)
+	_, err := r.db.ExecContext(ctx, `UPDATE auth_challenges SET invalidated_at=$2 WHERE id=$1 AND consumed_at IS NULL`, id, at)
 	return err
 }
 
 func (r *AuthChallenges) ConsumeAnonymous(ctx context.Context, channel, purpose, destinationHMAC, codeHMAC string, now time.Time) error {
-	tx, err := r.DB.BeginTx(ctx, nil)
+	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}

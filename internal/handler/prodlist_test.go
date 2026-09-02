@@ -18,7 +18,7 @@ func TestProductsListData(t *testing.T) {
 	}
 	d, _ := sql.Open("pgx", dsn)
 	defer d.Close()
-	p := &repo.Products{DB: d}
+	p := repo.NewProducts(d)
 	list, err := p.ListAll(context.Background())
 	if err != nil {
 		t.Fatal(err)

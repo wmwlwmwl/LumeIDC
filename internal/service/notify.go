@@ -21,7 +21,7 @@ import (
 
 // Notifier 站内信 + 邮件通知（多 SMTP 账号：轮流负载 + 失败冷却切换）。
 type Notifier struct {
-	DB       *sql.DB
+	db       *sql.DB
 	Settings *repo.Settings
 
 	mu               sync.Mutex
@@ -168,10 +168,10 @@ func (n *Notifier) notifyEmailEnabled(ctx context.Context) bool {
 
 // Notify 写站内信；若开启“站内信同步到邮箱”则尝试向用户邮箱发同内容邮件。任何失败仅记日志，不阻断主流程。
 func (n *Notifier) Notify(ctx context.Context, userID int64, title, body string) {
-	if n == nil || n.DB == nil {
+	if n == nil || n.db == nil {
 		return
 	}
-	if _, err := n.DB.ExecContext(ctx,
+	if _, err := n.db.ExecContext(ctx,
 		`INSERT INTO notifications(user_id,title,body) VALUES($1,$2,$3)`, userID, title, body); err != nil {
 		log.Printf("[notify] 站内信写入失败 user=%d: %v", userID, err)
 	}
@@ -179,7 +179,7 @@ func (n *Notifier) Notify(ctx context.Context, userID int64, title, body string)
 		return
 	}
 	var email sql.NullString
-	if err := n.DB.QueryRowContext(ctx, `SELECT email FROM users WHERE id=$1`, userID).Scan(&email); err != nil || !email.Valid || email.String == "" {
+	if err := n.db.QueryRowContext(ctx, `SELECT email FROM users WHERE id=$1`, userID).Scan(&email); err != nil || !email.Valid || email.String == "" {
 		return
 	}
 	if err := n.sendWithChannels(ctx, email.String, title, body); err != nil {
@@ -262,7 +262,7 @@ func smtpDeliver(host string, port int, user, pass, from, to string, msg []byte)
 	if host == "" {
 		return fmt.Errorf("SMTP 主机为空")
 	}
-	addr := fmt.Sprintf("%s:%d", host, port)
+	addr := net.JoinHostPort(host, strconv.Itoa(port))
 	conn, err := net.DialTimeout("tcp", addr, 10*time.Second)
 	if err != nil {
 		return fmt.Errorf("无法连接 %s: %w", addr, err)
@@ -328,7 +328,7 @@ func (n *Notifier) SendMail(ctx context.Context, to, subject, body string) error
 //   - 发送失败的账号进入冷却，本次自动尝试下一个可用账号；
 //   - 冷却中的账号跳过；全部失败返回汇总错误。
 func (n *Notifier) sendWithChannels(ctx context.Context, to, subject, body string) error {
-	if n == nil || n.DB == nil || n.Settings == nil {
+	if n == nil || n.db == nil || n.Settings == nil {
 		return fmt.Errorf("邮件服务不可用")
 	}
 	accounts := n.loadAccounts(ctx)
@@ -413,7 +413,7 @@ func (n *Notifier) sendAccount(ctx context.Context, idx int, to, subject, body s
 
 // runSendTest 统一带 15s 超时执行测试发送：idx<0 走整链路轮流负载，否则定向测试该账号（无视冷却与启用开关）。
 func (n *Notifier) runSendTest(ctx context.Context, idx int, to, subject, body string) error {
-	if n == nil || n.DB == nil || n.Settings == nil {
+	if n == nil || n.db == nil || n.Settings == nil {
 		return fmt.Errorf("邮件服务不可用")
 	}
 	type result struct{ err error }
@@ -447,13 +447,13 @@ func (n *Notifier) SendTestMailAccount(ctx context.Context, idx int, to, subject
 
 // MarkNotificationsRead 标记用户全部站内信为已读。
 func (n *Notifier) MarkRead(ctx context.Context, userID int64) error {
-	_, err := n.DB.ExecContext(ctx, `UPDATE notifications SET read=true WHERE user_id=$1`, userID)
+	_, err := n.db.ExecContext(ctx, `UPDATE notifications SET read=true WHERE user_id=$1`, userID)
 	return err
 }
 
 // UserNotifications 取用户站内信（最新在前）。
 func (n *Notifier) List(ctx context.Context, userID int64) ([]map[string]any, error) {
-	rows, err := n.DB.QueryContext(ctx,
+	rows, err := n.db.QueryContext(ctx,
 		`SELECT id,title,body,read,to_char(created_at,'YYYY-MM-DD HH24:MI') FROM notifications
 		 WHERE user_id=$1 ORDER BY id DESC LIMIT 50`, userID)
 	if err != nil {

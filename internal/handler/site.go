@@ -1,29 +1,13 @@
 package handler
 
 import (
-	"context"
 	"net/http"
 	"net/url"
 	"strings"
 	"unicode/utf8"
 
-	"lumeidc/internal/repo"
 	"lumeidc/internal/service"
 )
-
-// siteSettingsRepo 由 httpserver 注入（与 balanceRepo 同模式），供全站品牌注入。
-var siteSettingsRepo *repo.Settings
-
-// SetSiteRepo 注入站点配置仓库。
-func SetSiteRepo(s *repo.Settings) { siteSettingsRepo = s }
-
-// currentSiteInfo 读取当前站点信息；未初始化（安装期）回退默认。
-func currentSiteInfo() service.SiteInfo {
-	if siteSettingsRepo == nil {
-		return service.SiteInfo{Name: service.DefaultSiteName}
-	}
-	return service.LoadSiteInfo(context.Background(), siteSettingsRepo)
-}
 
 // siteFirstMark 取站点名称首字符作为 Logo 占位字母。
 func siteFirstMark(name string) string {
@@ -35,27 +19,12 @@ func siteFirstMark(name string) string {
 	return string(r)
 }
 
-// fillSiteData 将站点信息写入任意 map 渲染数据（前台/认证页共用）。
-func fillSiteData(data map[string]any) {
-	if data == nil {
-		return
-	}
-	si := currentSiteInfo()
-	data["SiteName"] = si.Name
-	data["SiteMark"] = siteFirstMark(si.Name)
-	data["SiteDescription"] = si.Description
-	data["SiteKeywords"] = si.Keywords
-	data["ServiceEmail"] = si.ServiceEmail
-	data["ServicePhone"] = si.ServicePhone
-	data["ServiceHours"] = si.ServiceHours
-}
-
 // adminSite GET /admin/site — 站点设置页。
 func (a *Admin) adminSite(w http.ResponseWriter, r *http.Request) {
 	if !a.require(w, r) {
 		return
 	}
-	s := &repo.Settings{DB: a.DB}
+	s := a.Settings
 	get := func(k string) string {
 		v, _ := s.Get(r.Context(), k)
 		return v
@@ -68,8 +37,8 @@ func (a *Admin) adminSite(w http.ResponseWriter, r *http.Request) {
 		service.KeyServicePhone:    get(service.KeyServicePhone),
 		service.KeyServiceHours:    get(service.KeyServiceHours),
 	}
-	renderAdmin(w, "admin_site.html", AdminData{
-		CSRF:        csrfOf(adminSessions, w, r),
+	a.renderAdmin(w, "admin_site.html", AdminData{
+		CSRF:        a.adminCSRF(w, r),
 		Error:       r.URL.Query().Get("err"),
 		Msg:         r.URL.Query().Get("ok"),
 		ServersList: cfg,
@@ -104,7 +73,7 @@ func (a *Admin) adminSiteSave(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/admin/site?err="+url.QueryEscape("字段过长"), http.StatusSeeOther)
 		return
 	}
-	s := &repo.Settings{DB: a.DB}
+	s := a.Settings
 	set := func(k, v string) {
 		if err := s.Set(r.Context(), k, v); err != nil {
 			http.Error(w, "保存站点信息失败", 500)

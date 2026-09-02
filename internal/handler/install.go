@@ -88,7 +88,7 @@ func (h *Installer) submit(w http.ResponseWriter, r *http.Request) {
 		fail(err.Error())
 		return
 	}
-	admins := &repo.Admins{DB: database}
+	admins := repo.NewAdmins(database)
 	if err := admins.Create(r.Context(), f.AdminUser, f.AdminPass); err != nil {
 		fail("创建管理员失败: " + err.Error())
 		return

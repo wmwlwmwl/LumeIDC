@@ -31,23 +31,29 @@ type SiteInfo struct {
 
 // LoadSiteInfo 从 settings 读取站点信息；缺省回退默认值。
 func LoadSiteInfo(ctx context.Context, s *repo.Settings) SiteInfo {
-	read := func(key, def string) string {
-		if s == nil {
-			return def
+	defaults := map[string]string{
+		KeySiteName: DefaultSiteName,
+	}
+	keys := []string{KeySiteName, KeySiteDescription, KeySiteKeywords, KeyServiceEmail, KeyServicePhone, KeyServiceHours}
+	values := map[string]string{}
+	if s != nil {
+		if loaded, err := s.GetMany(ctx, keys...); err == nil {
+			values = loaded
 		}
-		v, err := s.Get(ctx, key)
-		if err == nil && strings.TrimSpace(v) != "" {
-			return strings.TrimSpace(v)
+	}
+	read := func(key string) string {
+		if v := strings.TrimSpace(values[key]); v != "" {
+			return v
 		}
-		return def
+		return defaults[key]
 	}
 	info := SiteInfo{
-		Name:         read(KeySiteName, DefaultSiteName),
-		Description:  read(KeySiteDescription, ""),
-		Keywords:     read(KeySiteKeywords, ""),
-		ServiceEmail: read(KeyServiceEmail, ""),
-		ServicePhone: read(KeyServicePhone, ""),
-		ServiceHours: read(KeyServiceHours, ""),
+		Name:         read(KeySiteName),
+		Description:  read(KeySiteDescription),
+		Keywords:     read(KeySiteKeywords),
+		ServiceEmail: read(KeyServiceEmail),
+		ServicePhone: read(KeyServicePhone),
+		ServiceHours: read(KeyServiceHours),
 	}
 	if strings.TrimSpace(info.Name) == "" {
 		info.Name = DefaultSiteName

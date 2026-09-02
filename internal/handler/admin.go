@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"database/sql"
 	"net/http"
 	"net/url"
 	"time"
@@ -9,19 +8,22 @@ import (
 	"lumeidc/internal/captcha"
 	"lumeidc/internal/middleware"
 	"lumeidc/internal/repo"
+	"lumeidc/internal/service"
 	"lumeidc/internal/totp"
 )
 
 type Admin struct {
 	Admins        *repo.Admins
-	DB            *sql.DB
 	Lockout       *repo.LoginAttempts
 	Announcements *repo.Announcements
 	LocalCaptcha  *captcha.Service
+	Coupons       *repo.Coupons
+	Refunds       *repo.Refunds
+	AdminLog      *repo.AdminLog
+	Stats         *repo.Stats
+	Notifier      *service.Notifier
+	*Deps
 }
-
-// GwRepo 网关配置存储；AdminPages 用。
-var _ = 0
 
 func (a *Admin) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /admin/login", a.loginForm)
@@ -48,11 +50,11 @@ func (a *Admin) Register(mux *http.ServeMux) {
 }
 
 func (a *Admin) loginForm(w http.ResponseWriter, r *http.Request) {
-	data := map[string]any{"IsAdmin": true, "CaptchaScene": "admin_login", "CSRF": csrfOf(adminSessions, w, r)}
+	data := map[string]any{"IsAdmin": true, "CaptchaScene": "admin_login", "CSRF": a.adminCSRF(w, r)}
 	if a.LocalCaptcha != nil {
 		data["CaptchaAdminLoginEnabled"] = a.LocalCaptcha.Enabled(r.Context(), "admin_login")
 	}
-	renderAuth(w, data)
+	a.renderAuth(w, data)
 }
 
 func (a *Admin) captchaCheck(r *http.Request) error {
@@ -62,16 +64,8 @@ func (a *Admin) captchaCheck(r *http.Request) error {
 	return a.LocalCaptcha.Verify(r.Context(), "admin_login", r.PostFormValue("captcha_id"), r.PostFormValue("captcha_answer"), requestIP(r))
 }
 
-// adminLoginLabel 区分管理员登录表单文案：管理员用用户名而非邮箱。
-
-// adminSessions 是管理员登录用的独立 session 存储占位；
-// ponytail: 一期与用户共用 Store 实例，用 IsAdmin 区分；二期拆分独立 cookie 域。
-var adminSessions *middleware.Store
-
-func SetAdminStore(s *middleware.Store) { adminSessions = s }
-
 func (a *Admin) loginSubmit(w http.ResponseWriter, r *http.Request) {
-	if adminSessions == nil {
+	if a.AdminStore == nil {
 		http.Error(w, "服务器内部错误", 500)
 		return
 	}
@@ -84,7 +78,7 @@ func (a *Admin) loginSubmit(w http.ResponseWriter, r *http.Request) {
 	if a.Lockout != nil {
 		if locked, lerr := a.Lockout.Locked(r.Context(), email); lerr == nil && locked {
 			w.WriteHeader(http.StatusTooManyRequests)
-			renderAuth(w, map[string]any{"IsAdmin": true, "CaptchaScene": "admin_login", "CaptchaAdminLoginEnabled": true, "CSRF": csrfOf(adminSessions, w, r), "Error": "尝试次数过多，账户已临时锁定，请 15 分钟后再试"})
+			a.renderAuth(w, map[string]any{"IsAdmin": true, "CaptchaScene": "admin_login", "CaptchaAdminLoginEnabled": true, "CSRF": a.adminCSRF(w, r), "Error": "尝试次数过多，账户已临时锁定，请 15 分钟后再试"})
 			return
 		}
 	}
@@ -94,7 +88,7 @@ func (a *Admin) loginSubmit(w http.ResponseWriter, r *http.Request) {
 			_ = a.Lockout.Fail(r.Context(), email)
 		}
 		w.WriteHeader(http.StatusUnauthorized)
-		renderAuth(w, map[string]any{"IsAdmin": true, "CaptchaScene": "admin_login", "CaptchaAdminLoginEnabled": true, "CSRF": csrfOf(adminSessions, w, r), "Error": "用户名或密码错误"})
+		a.renderAuth(w, map[string]any{"IsAdmin": true, "CaptchaScene": "admin_login", "CaptchaAdminLoginEnabled": true, "CSRF": a.adminCSRF(w, r), "Error": "用户名或密码错误"})
 		return
 	}
 	// 两步验证（若已启用）
@@ -105,7 +99,7 @@ func (a *Admin) loginSubmit(w http.ResponseWriter, r *http.Request) {
 					_ = a.Lockout.Fail(r.Context(), email)
 				}
 				w.WriteHeader(http.StatusUnauthorized)
-				renderAuth(w, map[string]any{"IsAdmin": true, "CaptchaScene": "admin_login", "CaptchaAdminLoginEnabled": true, "CSRF": csrfOf(adminSessions, w, r), "Error": "两步验证码错误"})
+				a.renderAuth(w, map[string]any{"IsAdmin": true, "CaptchaScene": "admin_login", "CaptchaAdminLoginEnabled": true, "CSRF": a.adminCSRF(w, r), "Error": "两步验证码错误"})
 				return
 			}
 		}
@@ -113,7 +107,7 @@ func (a *Admin) loginSubmit(w http.ResponseWriter, r *http.Request) {
 	if a.Lockout != nil {
 		_ = a.Lockout.Clear(r.Context(), email)
 	}
-	sess := adminSessions.Start(w)
+	sess := a.AdminStore.Start(w)
 	sess.IsAdmin = true
 	sess.UserID = id
 	http.Redirect(w, r, "/admin", http.StatusSeeOther)
@@ -124,8 +118,8 @@ func (a *Admin) passwordForm(w http.ResponseWriter, r *http.Request) {
 	if _, ok := middleware.RequireAdmin(w, r); !ok {
 		return
 	}
-	renderAdmin(w, "admin_password.html", AdminData{
-		CSRF:  csrfOf(adminSessions, w, r),
+	a.renderAdmin(w, "admin_password.html", AdminData{
+		CSRF:  a.adminCSRF(w, r),
 		Error: r.URL.Query().Get("err"),
 		Msg:   r.URL.Query().Get("ok"),
 	})
@@ -154,8 +148,8 @@ func (a *Admin) passwordSubmit(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/admin/password?err="+url.QueryEscape(msg), http.StatusSeeOther)
 		return
 	}
-	if adminSessions != nil {
-		adminSessions.RevokeAdmin(sess.UserID)
+	if a.AdminStore != nil {
+		a.AdminStore.RevokeAdmin(sess.UserID)
 	}
 	http.Redirect(w, r, "/admin/login?ok="+url.QueryEscape("密码已修改，请重新登录"), http.StatusSeeOther)
 }
@@ -174,8 +168,8 @@ func (a *Admin) totpSetup(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	uri := totp.URI("LumeIDC-Admin", "LumeIDC", secret)
-	renderAdmin(w, "admin_totp.html", AdminData{
-		CSRF:          csrfOf(adminSessions, w, r),
+	a.renderAdmin(w, "admin_totp.html", AdminData{
+		CSRF:          a.adminCSRF(w, r),
 		Secret:        secret,
 		UpstreamBound: enabled,
 		Msg:           r.URL.Query().Get("ok"),

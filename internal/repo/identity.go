@@ -17,7 +17,7 @@ var (
 	ErrNotPending       = errors.New("该申请已处理")
 )
 
-type IdentityStore struct{ DB *sql.DB }
+type IdentityStore struct{ db *sql.DB }
 
 type RealNameSubmission struct {
 	ID                       int64
@@ -67,15 +67,22 @@ type RealNameSummary struct {
 }
 
 func (s *IdentityStore) UserPhone(ctx context.Context, userID int64) (phone string, verified bool, err error) {
-	err = s.DB.QueryRowContext(ctx, `SELECT coalesce(phone_e164,''), phone_verified_at IS NOT NULL FROM users WHERE id=$1 AND status=1`, userID).Scan(&phone, &verified)
+	err = s.db.QueryRowContext(ctx, `SELECT coalesce(phone_e164,''), phone_verified_at IS NOT NULL FROM users WHERE id=$1 AND status=1`, userID).Scan(&phone, &verified)
 	if errors.Is(err, sql.ErrNoRows) {
 		err = ErrNotFound
 	}
 	return
 }
 
+// PendingPhone 当前未消费/未作废挑战中的目标手机号；无记录返回 sql.ErrNoRows。
+func (s *IdentityStore) PendingPhone(ctx context.Context, userID int64, purpose string) (string, error) {
+	var target string
+	err := s.db.QueryRowContext(ctx, `SELECT phone_e164 FROM phone_verification_challenges WHERE user_id=$1 AND purpose=$2 AND consumed_at IS NULL AND invalidated_at IS NULL ORDER BY id DESC LIMIT 1`, userID, purpose).Scan(&target)
+	return target, err
+}
+
 func (s *IdentityStore) CreatePhoneChallenge(ctx context.Context, userID int64, purpose, phone, codeHMAC, ip string, expiresAt, now time.Time) (int64, error) {
-	tx, err := s.DB.BeginTx(ctx, nil)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
 	}
@@ -135,12 +142,12 @@ func (s *IdentityStore) CreatePhoneChallenge(ctx context.Context, userID int64, 
 }
 
 func (s *IdentityStore) InvalidatePhoneChallenge(ctx context.Context, id int64, at time.Time) error {
-	_, err := s.DB.ExecContext(ctx, `UPDATE phone_verification_challenges SET invalidated_at=$2 WHERE id=$1 AND consumed_at IS NULL`, id, at)
+	_, err := s.db.ExecContext(ctx, `UPDATE phone_verification_challenges SET invalidated_at=$2 WHERE id=$1 AND consumed_at IS NULL`, id, at)
 	return err
 }
 
 func (s *IdentityStore) ConsumePhoneChallenge(ctx context.Context, userID int64, purpose, codeHMAC string, now time.Time) (string, error) {
-	tx, err := s.DB.BeginTx(ctx, nil)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return "", err
 	}
@@ -194,7 +201,7 @@ func (s *IdentityStore) ConsumePhoneChallenge(ctx context.Context, userID int64,
 }
 
 func (s *IdentityStore) ConsumeLoginPhoneChallenge(ctx context.Context, userID int64, codeHMAC string, now time.Time) error {
-	tx, err := s.DB.BeginTx(ctx, nil)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
@@ -233,12 +240,12 @@ func (s *IdentityStore) ConsumeLoginPhoneChallenge(ctx context.Context, userID i
 
 func (s *IdentityStore) PhoneTaken(ctx context.Context, phone string, excludeID int64) (bool, error) {
 	var taken bool
-	err := s.DB.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM users WHERE phone_e164=$1 AND id<>$2)`, phone, excludeID).Scan(&taken)
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM users WHERE phone_e164=$1 AND id<>$2)`, phone, excludeID).Scan(&taken)
 	return taken, err
 }
 
 func (s *IdentityStore) AdminSetPhone(ctx context.Context, userID int64, phone string, now time.Time) (bool, error) {
-	tx, err := s.DB.BeginTx(ctx, nil)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, err
 	}
@@ -286,7 +293,7 @@ func (s *IdentityStore) AdminSetPhone(ctx context.Context, userID int64, phone s
 
 // CurrentVerification is retained as a compatibility name and returns the current manual submission only.
 func (s *IdentityStore) CurrentVerification(ctx context.Context, userID int64) (*RealNameSubmission, error) {
-	row := s.DB.QueryRowContext(ctx, `SELECT id,user_id,status,'manual',legal_name_ciphertext,identity_number_ciphertext,identity_number_hmac,front_photo_ref,back_photo_ref,submitted_at,reviewed_at,reviewed_by,rejection_reason,version FROM manual_identity_submissions WHERE user_id=$1 ORDER BY CASE status WHEN 'pending' THEN 0 WHEN 'approved' THEN 1 ELSE 2 END,id DESC LIMIT 1`, userID)
+	row := s.db.QueryRowContext(ctx, `SELECT id,user_id,status,'manual',legal_name_ciphertext,identity_number_ciphertext,identity_number_hmac,front_photo_ref,back_photo_ref,submitted_at,reviewed_at,reviewed_by,rejection_reason,version FROM manual_identity_submissions WHERE user_id=$1 ORDER BY CASE status WHEN 'pending' THEN 0 WHEN 'approved' THEN 1 ELSE 2 END,id DESC LIMIT 1`, userID)
 	var v RealNameSubmission
 	if err := row.Scan(&v.ID, &v.UserID, &v.Status, &v.Source, &v.LegalNameCiphertext, &v.IdentityNumberCiphertext, &v.IdentityNumberHMAC, &v.FrontPhotoRef, &v.BackPhotoRef, &v.SubmittedAt, &v.ReviewedAt, &v.ReviewedBy, &v.RejectionReason, &v.Version); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -298,7 +305,7 @@ func (s *IdentityStore) CurrentVerification(ctx context.Context, userID int64) (
 }
 
 func (s *IdentityStore) CreateSubmission(ctx context.Context, userID int64, legalName, identityCipher, identityHMAC, frontRef, backRef string, now time.Time, requirePhone bool) error {
-	tx, err := s.DB.BeginTx(ctx, nil)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
@@ -339,7 +346,7 @@ func (s *IdentityStore) CreatePluginSubmission(ctx context.Context, userID int64
 	if source == "" || source == "manual" || providerRef == "" {
 		return 0, errors.New("实名 provider 参数无效")
 	}
-	tx, err := s.DB.BeginTx(ctx, nil)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
 	}
@@ -374,7 +381,7 @@ func (s *IdentityStore) CreatePluginSubmission(ctx context.Context, userID int64
 
 func (s *IdentityStore) HasApproved(ctx context.Context, userID int64) (bool, error) {
 	var ok bool
-	err := s.DB.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM manual_identity_submissions WHERE user_id=$1 AND status='approved') OR EXISTS(SELECT 1 FROM automatic_identity_attempts WHERE user_id=$1 AND status='approved')`, userID).Scan(&ok)
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM manual_identity_submissions WHERE user_id=$1 AND status='approved') OR EXISTS(SELECT 1 FROM automatic_identity_attempts WHERE user_id=$1 AND status='approved')`, userID).Scan(&ok)
 	return ok, err
 }
 
@@ -382,7 +389,7 @@ func (s *IdentityStore) UpdateProviderStatus(ctx context.Context, userID int64, 
 	if status != "pending" && status != "approved" && status != "rejected" && status != "failed" && status != "expired" {
 		return errors.New("实名状态无效")
 	}
-	res, err := s.DB.ExecContext(ctx, `UPDATE automatic_identity_attempts SET status=$1,failure_message=$2,completed_at=CASE WHEN $1 IN ('approved','rejected','failed','expired') THEN $5 ELSE NULL END,updated_at=$5,version=version+1 WHERE user_id=$3 AND provider_ref=$4 AND status IN ('initiated','pending')`, status, message, userID, providerRef, now)
+	res, err := s.db.ExecContext(ctx, `UPDATE automatic_identity_attempts SET status=$1,failure_message=$2,completed_at=CASE WHEN $1 IN ('approved','rejected','failed','expired') THEN $5 ELSE NULL END,updated_at=$5,version=version+1 WHERE user_id=$3 AND provider_ref=$4 AND status IN ('initiated','pending')`, status, message, userID, providerRef, now)
 	if err != nil {
 		return err
 	}
@@ -393,7 +400,7 @@ func (s *IdentityStore) UpdateProviderStatus(ctx context.Context, userID int64, 
 }
 
 func (s *IdentityStore) AutomaticAttempt(ctx context.Context, userID, id int64) (*AutomaticIdentityAttempt, error) {
-	row := s.DB.QueryRowContext(ctx, `SELECT a.id,a.user_id,coalesce(u.email,''),coalesce(u.phone_e164,''),a.provider_key,a.provider_ref,a.provider_url,a.status,a.legal_name_ciphertext,a.identity_number_ciphertext,a.identity_number_hmac,a.submitted_at,a.completed_at,a.failure_message,a.version FROM automatic_identity_attempts a JOIN users u ON u.id=a.user_id WHERE a.id=$1 AND a.user_id=$2`, id, userID)
+	row := s.db.QueryRowContext(ctx, `SELECT a.id,a.user_id,coalesce(u.email,''),coalesce(u.phone_e164,''),a.provider_key,a.provider_ref,a.provider_url,a.status,a.legal_name_ciphertext,a.identity_number_ciphertext,a.identity_number_hmac,a.submitted_at,a.completed_at,a.failure_message,a.version FROM automatic_identity_attempts a JOIN users u ON u.id=a.user_id WHERE a.id=$1 AND a.user_id=$2`, id, userID)
 	var a AutomaticIdentityAttempt
 	if err := row.Scan(&a.ID, &a.UserID, &a.Email, &a.Phone, &a.ProviderKey, &a.ProviderRef, &a.ProviderURL, &a.Status, &a.LegalNameCiphertext, &a.IdentityNumberCiphertext, &a.IdentityNumberHMAC, &a.SubmittedAt, &a.CompletedAt, &a.FailureMessage, &a.Version); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -405,7 +412,7 @@ func (s *IdentityStore) AutomaticAttempt(ctx context.Context, userID, id int64) 
 }
 
 func (s *IdentityStore) CurrentAutomatic(ctx context.Context, userID int64) (*AutomaticIdentityAttempt, error) {
-	row := s.DB.QueryRowContext(ctx, `SELECT a.id,a.user_id,coalesce(u.email,''),coalesce(u.phone_e164,''),a.provider_key,a.provider_ref,a.provider_url,a.status,a.legal_name_ciphertext,a.identity_number_ciphertext,a.identity_number_hmac,a.submitted_at,a.completed_at,a.failure_message,a.version FROM automatic_identity_attempts a JOIN users u ON u.id=a.user_id WHERE a.user_id=$1 ORDER BY CASE a.status WHEN 'pending' THEN 0 WHEN 'initiated' THEN 1 WHEN 'approved' THEN 2 ELSE 3 END,a.id DESC LIMIT 1`, userID)
+	row := s.db.QueryRowContext(ctx, `SELECT a.id,a.user_id,coalesce(u.email,''),coalesce(u.phone_e164,''),a.provider_key,a.provider_ref,a.provider_url,a.status,a.legal_name_ciphertext,a.identity_number_ciphertext,a.identity_number_hmac,a.submitted_at,a.completed_at,a.failure_message,a.version FROM automatic_identity_attempts a JOIN users u ON u.id=a.user_id WHERE a.user_id=$1 ORDER BY CASE a.status WHEN 'pending' THEN 0 WHEN 'initiated' THEN 1 WHEN 'approved' THEN 2 ELSE 3 END,a.id DESC LIMIT 1`, userID)
 	var a AutomaticIdentityAttempt
 	if err := row.Scan(&a.ID, &a.UserID, &a.Email, &a.Phone, &a.ProviderKey, &a.ProviderRef, &a.ProviderURL, &a.Status, &a.LegalNameCiphertext, &a.IdentityNumberCiphertext, &a.IdentityNumberHMAC, &a.SubmittedAt, &a.CompletedAt, &a.FailureMessage, &a.Version); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -420,7 +427,7 @@ func (s *IdentityStore) PendingList(ctx context.Context, limit int) ([]RealNameS
 	if limit <= 0 || limit > 200 {
 		limit = 100
 	}
-	rows, err := s.DB.QueryContext(ctx, `SELECT v.id,v.user_id,coalesce(u.email,''),coalesce(u.phone_e164,''),v.status,v.submitted_at FROM manual_identity_submissions v JOIN users u ON u.id=v.user_id WHERE v.status='pending' ORDER BY v.submitted_at ASC LIMIT $1`, limit)
+	rows, err := s.db.QueryContext(ctx, `SELECT v.id,v.user_id,coalesce(u.email,''),coalesce(u.phone_e164,''),v.status,v.submitted_at FROM manual_identity_submissions v JOIN users u ON u.id=v.user_id WHERE v.status='pending' ORDER BY v.submitted_at ASC LIMIT $1`, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -437,7 +444,7 @@ func (s *IdentityStore) PendingList(ctx context.Context, limit int) ([]RealNameS
 }
 
 func (s *IdentityStore) Submission(ctx context.Context, id int64) (*RealNameSubmission, error) {
-	row := s.DB.QueryRowContext(ctx, `SELECT v.id,v.user_id,coalesce(u.email,''),coalesce(u.phone_e164,''),v.status,'manual', '',v.legal_name_ciphertext,v.identity_number_ciphertext,v.identity_number_hmac,v.front_photo_ref,v.back_photo_ref,v.submitted_at,v.reviewed_at,v.reviewed_by,v.rejection_reason,v.version FROM manual_identity_submissions v JOIN users u ON u.id=v.user_id WHERE v.id=$1`, id)
+	row := s.db.QueryRowContext(ctx, `SELECT v.id,v.user_id,coalesce(u.email,''),coalesce(u.phone_e164,''),v.status,'manual', '',v.legal_name_ciphertext,v.identity_number_ciphertext,v.identity_number_hmac,v.front_photo_ref,v.back_photo_ref,v.submitted_at,v.reviewed_at,v.reviewed_by,v.rejection_reason,v.version FROM manual_identity_submissions v JOIN users u ON u.id=v.user_id WHERE v.id=$1`, id)
 	var v RealNameSubmission
 	if err := row.Scan(&v.ID, &v.UserID, &v.Email, &v.Phone, &v.Status, &v.Source, &v.ProviderRef, &v.LegalNameCiphertext, &v.IdentityNumberCiphertext, &v.IdentityNumberHMAC, &v.FrontPhotoRef, &v.BackPhotoRef, &v.SubmittedAt, &v.ReviewedAt, &v.ReviewedBy, &v.RejectionReason, &v.Version); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -449,7 +456,7 @@ func (s *IdentityStore) Submission(ctx context.Context, id int64) (*RealNameSubm
 }
 
 func (s *IdentityStore) Review(ctx context.Context, id, adminID int64, approve bool, reason string, now time.Time) error {
-	tx, err := s.DB.BeginTx(ctx, nil)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}

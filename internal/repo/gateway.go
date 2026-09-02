@@ -6,7 +6,7 @@ import (
 	"errors"
 )
 
-type Gateways struct{ DB *sql.DB }
+type Gateways struct{ db *sql.DB }
 
 type Gateway struct {
 	ID      int64
@@ -21,7 +21,7 @@ type Gateway struct {
 // Config returns the JSONB config decoded as key/value strings for a gateway code.
 func (g *Gateways) Config(ctx context.Context, code string) (map[string]string, error) {
 	var raw []byte
-	err := g.DB.QueryRowContext(ctx,
+	err := g.db.QueryRowContext(ctx,
 		`SELECT config FROM gateways WHERE code=$1 AND enabled`, code).Scan(&raw)
 	if err != nil {
 		return nil, err
@@ -30,7 +30,7 @@ func (g *Gateways) Config(ctx context.Context, code string) (map[string]string, 
 }
 
 func (g *Gateways) Enabled(ctx context.Context) ([]Gateway, error) {
-	rows, err := g.DB.QueryContext(ctx, `SELECT id,code,driver,name,config,enabled,sort FROM gateways WHERE enabled=true ORDER BY sort,id`)
+	rows, err := g.db.QueryContext(ctx, `SELECT id,code,driver,name,config,enabled,sort FROM gateways WHERE enabled=true ORDER BY sort,id`)
 	if err != nil {
 		return nil, err
 	}
@@ -51,7 +51,7 @@ func (g *Gateways) Enabled(ctx context.Context) ([]Gateway, error) {
 func (g *Gateways) Get(ctx context.Context, code string) (Gateway, error) {
 	var v Gateway
 	var raw []byte
-	err := g.DB.QueryRowContext(ctx,
+	err := g.db.QueryRowContext(ctx,
 		`SELECT id,code,driver,name,config,enabled,sort FROM gateways WHERE code=$1`, code).
 		Scan(&v.ID, &v.Code, &v.Driver, &v.Name, &raw, &v.Enabled, &v.Sort)
 	if err != nil {
@@ -62,7 +62,7 @@ func (g *Gateways) Get(ctx context.Context, code string) (Gateway, error) {
 }
 
 func (g *Gateways) List(ctx context.Context) ([]Gateway, error) {
-	rows, err := g.DB.QueryContext(ctx, `SELECT id,code,driver,name,config,enabled,sort FROM gateways ORDER BY sort,id`)
+	rows, err := g.db.QueryContext(ctx, `SELECT id,code,driver,name,config,enabled,sort FROM gateways ORDER BY sort,id`)
 	if err != nil {
 		return nil, err
 	}
@@ -83,7 +83,7 @@ func (g *Gateways) List(ctx context.Context) ([]Gateway, error) {
 // SaveConfig upserts gateway config.
 func (g *Gateways) SaveConfig(ctx context.Context, code, driver, name string, cfg map[string]string, enabled bool, sort int) error {
 	raw := encodeJSONStrings(cfg)
-	_, err := g.DB.ExecContext(ctx,
+	_, err := g.db.ExecContext(ctx,
 		`INSERT INTO gateways(code,driver,name,config,enabled,sort) VALUES($1,$2,$3,$4,$5,$6)
 		 ON CONFLICT(code) DO UPDATE SET driver=EXCLUDED.driver,name=EXCLUDED.name,config=EXCLUDED.config,enabled=EXCLUDED.enabled,sort=EXCLUDED.sort`,
 		code, driver, name, raw, enabled, sort)
@@ -92,14 +92,14 @@ func (g *Gateways) SaveConfig(ctx context.Context, code, driver, name string, cf
 
 func (g *Gateways) Delete(ctx context.Context, code string) error {
 	var pending bool
-	if err := g.DB.QueryRowContext(ctx,
+	if err := g.db.QueryRowContext(ctx,
 		`SELECT EXISTS(SELECT 1 FROM payment_attempts WHERE gateway_code=$1 AND status=0)`, code).Scan(&pending); err != nil {
 		return err
 	}
 	if pending {
 		return errors.New("该网关有进行中的支付，暂不能删除")
 	}
-	res, err := g.DB.ExecContext(ctx, `DELETE FROM gateways WHERE code=$1`, code)
+	res, err := g.db.ExecContext(ctx, `DELETE FROM gateways WHERE code=$1`, code)
 	if err != nil {
 		return err
 	}
@@ -112,7 +112,7 @@ func (g *Gateways) Delete(ctx context.Context, code string) error {
 }
 
 func (g *Gateways) BindAttempt(ctx context.Context, invoiceID int64, code, amount string, fee ...string) (int64, error) {
-	tx, err := g.DB.BeginTx(ctx, nil)
+	tx, err := g.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
 	}
@@ -178,18 +178,18 @@ func (g *Gateways) LatestAttempt(ctx context.Context, invoiceNo, code string, pe
 	}
 	query += ` ORDER BY p.id DESC LIMIT 1`
 	var p PaymentAttempt
-	err := g.DB.QueryRowContext(ctx, query, invoiceNo, code).
+	err := g.db.QueryRowContext(ctx, query, invoiceNo, code).
 		Scan(&p.ID, &p.InvoiceID, &p.GatewayCode, &p.Amount, &p.FeePercent, &p.FeeAmount, &p.Status)
 	return p, err
 }
 
 func (g *Gateways) MarkAttemptFailedByID(ctx context.Context, id int64) error {
-	_, err := g.DB.ExecContext(ctx, `UPDATE payment_attempts SET status=2 WHERE id=$1 AND status=0`, id)
+	_, err := g.db.ExecContext(ctx, `UPDATE payment_attempts SET status=2 WHERE id=$1 AND status=0`, id)
 	return err
 }
 
 func (g *Gateways) InvoiceGateway(ctx context.Context, invoiceNo string) (string, error) {
 	var code string
-	err := g.DB.QueryRowContext(ctx, `SELECT gateway FROM invoices WHERE no=$1`, invoiceNo).Scan(&code)
+	err := g.db.QueryRowContext(ctx, `SELECT gateway FROM invoices WHERE no=$1`, invoiceNo).Scan(&code)
 	return code, err
 }

@@ -15,7 +15,7 @@ type PeriodGrant struct {
 }
 
 // PeriodGrants 服务周期授权操作。
-type PeriodGrants struct{ DB *sql.DB }
+type PeriodGrants struct{ db *sql.DB }
 
 var ErrAlreadyGranted = errors.New("该账单已授权续费")
 
@@ -34,7 +34,7 @@ func (r *PeriodGrants) Grant(ctx context.Context, tx *sql.Tx, serviceID, invoice
 // HasGranted 检查指定账单是否已授权。
 func (r *PeriodGrants) HasGranted(ctx context.Context, invoiceID int64) (bool, error) {
 	var exists bool
-	err := r.DB.QueryRowContext(ctx,
+	err := r.db.QueryRowContext(ctx,
 		`SELECT EXISTS(SELECT 1 FROM service_period_grants WHERE invoice_id=$1)`,
 		invoiceID).Scan(&exists)
 	return exists, err

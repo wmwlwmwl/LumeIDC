@@ -17,6 +17,8 @@ type VerificationHandler struct {
 	Identity *service.Identity
 	Users    *repo.Users
 	Sessions *middleware.Store
+	AdminLog *repo.AdminLog
+	*Deps
 }
 
 func (h *VerificationHandler) Register(mux *http.ServeMux) {
@@ -48,7 +50,7 @@ func (h *VerificationHandler) profile(w http.ResponseWriter, r *http.Request) {
 		"HasPhone": phone != "", "CSRF": csrfOf(h.Sessions, w, r),
 		"Error": r.URL.Query().Get("err"), "OK": r.URL.Query().Get("ok"),
 	}
-	render(w, r, "user_profile.html", data)
+	h.render(w, r, "user_profile.html", data)
 }
 
 func requestIP(r *http.Request) string {
@@ -86,7 +88,7 @@ func (h *VerificationHandler) sendPhone(w http.ResponseWriter, r *http.Request) 
 		http.Redirect(w, r, "/user/profile?err="+url.QueryEscape(err.Error()), http.StatusSeeOther)
 		return
 	}
-	repo.RecordAudit(h.Users.DB, 0, "phone_otp_requested", "user", userID, "purpose="+purpose, requestIP(r))
+	h.AdminLog.Record(0, "phone_otp_requested", "user", userID, "purpose="+purpose, requestIP(r))
 	http.Redirect(w, r, "/user/profile?ok="+url.QueryEscape("验证码已发送，请查收短信"), http.StatusSeeOther)
 }
 
@@ -112,9 +114,9 @@ func (h *VerificationHandler) confirmPhone(w http.ResponseWriter, r *http.Reques
 		http.Redirect(w, r, "/user/profile?err="+url.QueryEscape(err.Error()), http.StatusSeeOther)
 		return
 	}
-	repo.RecordAudit(h.Users.DB, 0, "phone_verified", "user", userID, "purpose="+purpose, requestIP(r))
+	h.AdminLog.Record(0, "phone_verified", "user", userID, "purpose="+purpose, requestIP(r))
 	if purpose == "change" {
-		repo.RecordAudit(h.Users.DB, 0, "phone_changed", "user", userID, "", requestIP(r))
+		h.AdminLog.Record(0, "phone_changed", "user", userID, "", requestIP(r))
 	}
 	http.Redirect(w, r, "/user/profile?ok="+url.QueryEscape("手机号验证成功"), http.StatusSeeOther)
 }
@@ -175,7 +177,7 @@ func (h *VerificationHandler) verification(w http.ResponseWriter, r *http.Reques
 			data["PluginProvider"] = provider
 		}
 	}
-	render(w, r, "user_verification.html", data)
+	h.render(w, r, "user_verification.html", data)
 }
 
 func (h *VerificationHandler) submitVerification(w http.ResponseWriter, r *http.Request) {
@@ -216,7 +218,7 @@ func (h *VerificationHandler) submitVerification(w http.ResponseWriter, r *http.
 		http.Redirect(w, r, "/user/verification?err="+url.QueryEscape(msg), http.StatusSeeOther)
 		return
 	}
-	repo.RecordAudit(h.Users.DB, 0, "real_name_submitted", "user", userID, "source=manual", requestIP(r))
+	h.AdminLog.Record(0, "real_name_submitted", "user", userID, "source=manual", requestIP(r))
 	http.Redirect(w, r, "/user/verification?ok="+url.QueryEscape("实名资料已提交，等待人工审核"), http.StatusSeeOther)
 }
 
@@ -263,6 +265,8 @@ func (h *VerificationHandler) pollPlugin(w http.ResponseWriter, r *http.Request)
 type AdminVerification struct {
 	Identity *service.Identity
 	Users    *repo.Users
+	AdminLog *repo.AdminLog
+	*Deps
 }
 
 func (h *AdminVerification) require(w http.ResponseWriter, r *http.Request) (*middleware.Session, bool) {
@@ -305,7 +309,7 @@ func (h *AdminVerification) list(w http.ResponseWriter, r *http.Request) {
 	for i := range rows {
 		rows[i].Phone = service.MaskPhone(rows[i].Phone)
 	}
-	renderAdmin(w, "admin_verifications.html", AdminData{Rows: rows, CSRF: csrfOf(adminSessions, w, r), Error: r.URL.Query().Get("err"), Msg: r.URL.Query().Get("ok")})
+	h.renderAdmin(w, "admin_verifications.html", AdminData{Rows: rows, CSRF: h.adminCSRF(w, r), Error: r.URL.Query().Get("err"), Msg: r.URL.Query().Get("ok")})
 }
 
 func (h *AdminVerification) detail(w http.ResponseWriter, r *http.Request) {
@@ -323,8 +327,8 @@ func (h *AdminVerification) detail(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	repo.RecordAudit(h.Users.DB, sess.UserID, "real_name_viewed", "real_name_submission", id, "admin_detail", requestIP(r))
-	data := AdminData{CSRF: csrfOf(adminSessions, w, r), Error: r.URL.Query().Get("err"), Msg: r.URL.Query().Get("ok"), ServersList: map[string]any{
+	h.AdminLog.Record(sess.UserID, "real_name_viewed", "real_name_submission", id, "admin_detail", requestIP(r))
+	data := AdminData{CSRF: h.adminCSRF(w, r), Error: r.URL.Query().Get("err"), Msg: r.URL.Query().Get("ok"), ServersList: map[string]any{
 		"ID": v.ID, "UserID": v.UserID, "Email": v.Email, "Phone": service.MaskPhone(v.Phone),
 		"Status": service.StatusText(v.Status), "RawStatus": v.Status, "Name": name,
 		"IdentityNumber": service.MaskIdentityNumber(identityNumber), "SubmittedAt": v.SubmittedAt.Format("2006-01-02 15:04"),
@@ -332,7 +336,7 @@ func (h *AdminVerification) detail(w http.ResponseWriter, r *http.Request) {
 		"FrontURL": "/admin/verifications/" + strconv.FormatInt(v.ID, 10) + "/photo/front",
 		"BackURL":  "/admin/verifications/" + strconv.FormatInt(v.ID, 10) + "/photo/back",
 	}}
-	renderAdmin(w, "admin_verification_detail.html", data)
+	h.renderAdmin(w, "admin_verification_detail.html", data)
 }
 
 func (h *AdminVerification) approve(w http.ResponseWriter, r *http.Request) {
@@ -377,9 +381,9 @@ func (h *AdminVerification) review(w http.ResponseWriter, r *http.Request, appro
 	if v != nil {
 		target = v.UserID
 	}
-	repo.RecordAudit(h.Users.DB, sess.UserID, action, "real_name_submission", id, detail, requestIP(r))
+	h.AdminLog.Record(sess.UserID, action, "real_name_submission", id, detail, requestIP(r))
 	if target > 0 && !approve {
-		repo.RecordAudit(h.Users.DB, sess.UserID, "real_name_rejected_user", "user", target, "submission="+strconv.FormatInt(id, 10), requestIP(r))
+		h.AdminLog.Record(sess.UserID, "real_name_rejected_user", "user", target, "submission="+strconv.FormatInt(id, 10), requestIP(r))
 	}
 	http.Redirect(w, r, "/admin/verifications/"+strconv.FormatInt(id, 10)+"?ok="+url.QueryEscape("审核结果已保存"), http.StatusSeeOther)
 }
@@ -417,7 +421,7 @@ func (h *AdminVerification) photo(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	repo.RecordAudit(h.Users.DB, sess.UserID, "real_name_photo_viewed", "real_name_submission", id, r.PathValue("side"), requestIP(r))
+	h.AdminLog.Record(sess.UserID, "real_name_photo_viewed", "real_name_submission", id, r.PathValue("side"), requestIP(r))
 	w.Header().Set("Cache-Control", "private, no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	if strings.HasSuffix(strings.ToLower(ref), ".png") {

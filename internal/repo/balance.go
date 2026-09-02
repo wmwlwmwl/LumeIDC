@@ -8,7 +8,7 @@ import (
 )
 
 // Balance 用户余额操作（原子扣减/充值）。
-type Balance struct{ DB *sql.DB }
+type Balance struct{ db *sql.DB }
 
 var ErrInsufficientBalance = errors.New("余额不足")
 
@@ -51,7 +51,7 @@ func (b *Balance) ConsumeAmount(ctx context.Context, tx *sql.Tx, userID int64, a
 }
 
 func (b *Balance) change(ctx context.Context, userID int64, amount string, typ, note string) error {
-	tx, err := b.DB.BeginTx(ctx, nil)
+	tx, err := b.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
@@ -100,14 +100,14 @@ func (b *Balance) change(ctx context.Context, userID int64, amount string, typ, 
 // Get 读取余额（返回字符串，NUMERIC 精度）。
 func (b *Balance) Get(ctx context.Context, userID int64) (string, error) {
 	var v string
-	err := b.DB.QueryRowContext(ctx,
+	err := b.db.QueryRowContext(ctx,
 		`SELECT balance::text FROM users WHERE id=$1`, userID).Scan(&v)
 	return v, err
 }
 
 // Logs 流水。
 func (b *Balance) Logs(ctx context.Context, userID int64) ([]map[string]any, error) {
-	rows, err := b.DB.QueryContext(ctx,
+	rows, err := b.db.QueryContext(ctx,
 		`SELECT to_char(created_at,'YYYY-MM-DD HH24:MI'), amount::text, balance_after::text, type, note
 		 FROM balance_logs WHERE user_id=$1 ORDER BY id DESC LIMIT 100`, userID)
 	if err != nil {

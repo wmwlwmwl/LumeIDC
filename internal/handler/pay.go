@@ -33,7 +33,9 @@ type Pay struct {
 	Gateways map[string]gateway.Gateway
 	BaseURL  string
 	GwRepo   *repo.Gateways
+	Invoices *repo.Invoices
 	Balance  *repo.Balance
+	*Deps
 }
 
 func (h *Pay) Register(mux *http.ServeMux) {
@@ -62,12 +64,8 @@ func (h *Pay) alipayF2FPage(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	var id int64
-	var status int16
-	var driver, gatewayCode, baseAmount string
-	if err := h.Payment.DB.QueryRowContext(r.Context(),
-		`SELECT i.id,i.status,g.driver,i.gateway,i.amount::text FROM invoices i JOIN gateways g ON g.code=i.gateway WHERE i.no=$1 AND i.user_id=$2`, no, userID).
-		Scan(&id, &status, &driver, &gatewayCode, &baseAmount); err != nil || status != 0 || driver != "alipay_f2f" {
+	id, status, driver, gatewayCode, baseAmount, qerr := h.Invoices.F2FByNoUser(r.Context(), no, userID)
+	if qerr != nil || status != 0 || driver != "alipay_f2f" {
 		http.NotFound(w, r)
 		return
 	}
@@ -98,9 +96,8 @@ func (h *Pay) paymentStatus(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	var status int16
-	var no string
-	if err := h.Payment.DB.QueryRowContext(r.Context(), `SELECT no,status FROM invoices WHERE id=$1 AND user_id=$2`, id, userID).Scan(&no, &status); err != nil {
+	_, status, qerr := h.Invoices.StatusByIDUser(r.Context(), id, userID)
+	if qerr != nil {
 		http.NotFound(w, r)
 		return
 	}
@@ -147,9 +144,9 @@ func (h *Pay) createOrder(w http.ResponseWriter, r *http.Request) {
 	}
 	// 0 元订单（纯免费产品）：创建即自动核销并开通，跳过支付页。余额/真实网关都无法处理 0 金额。
 	if amount == "0.00" {
-		var no string
-		if err := h.Payment.DB.QueryRowContext(r.Context(), `SELECT no FROM invoices WHERE id=$1`, invID).Scan(&no); err != nil {
-			log.Printf("[0元购] 读取账单号失败 invoice=%d: %v", invID, err)
+		no, qerr := h.Invoices.NoByID(r.Context(), invID)
+		if qerr != nil {
+			log.Printf("[0元购] 读取账单号失败 invoice=%d: %v", invID, qerr)
 			http.Error(w, "免费订单开通失败，请联系管理员", http.StatusInternalServerError)
 			return
 		}
@@ -194,9 +191,7 @@ func quoteGateway(amount string, cfg map[string]string) (feePercent, feeAmount, 
 }
 
 func (h *Pay) loadInvoice(r *http.Request, invoiceID int64) (no string, amount string, status int16, gatewayCode string, err error) {
-	row := h.Payment.DB.QueryRowContext(r.Context(),
-		`SELECT no,amount,status,gateway FROM invoices WHERE id=$1`, invoiceID)
-	err = row.Scan(&no, &amount, &status, &gatewayCode)
+	no, amount, status, gatewayCode, err = h.Invoices.LoadByID(r.Context(), invoiceID)
 	return
 }
 
@@ -215,10 +210,9 @@ func (h *Pay) payPage(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	var kind string
-	_ = h.Payment.DB.QueryRowContext(r.Context(), `SELECT kind FROM invoices WHERE id=$1`, id).Scan(&kind)
-	data := payPageData{InvoiceNo: no, Amount: amount, InvoiceID: r.PathValue("invoiceID"), CSRF: csrfOf(sessionsStore, w, r), Recharge: kind == "recharge"}
-	si := currentSiteInfo()
+	kind, _ := h.Invoices.KindByID(r.Context(), id)
+	data := payPageData{InvoiceNo: no, Amount: amount, InvoiceID: r.PathValue("invoiceID"), CSRF: h.pageCSRF(w, r), Recharge: kind == "recharge"}
+	si := h.currentSiteInfo()
 	data.SiteName = si.Name
 	data.SiteMark = siteFirstMark(si.Name)
 	if bal, err := h.Balance.Get(r.Context(), userID); err == nil {
@@ -308,10 +302,8 @@ func (h *Pay) start(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Pay) ownsInvoice(r *http.Request, userID int64, no string) bool {
-	var n int64
-	h.Payment.DB.QueryRowContext(r.Context(),
-		`SELECT count(*) FROM invoices WHERE no=$1 AND user_id=$2`, no, userID).Scan(&n)
-	return n == 1
+	owned, _ := h.Invoices.OwnedByNoUser(r.Context(), no, userID)
+	return owned
 }
 
 // notify 由网关实例 code 分发到对应插件，账单核销保持统一。
@@ -366,11 +358,8 @@ func (h *Pay) notify(w http.ResponseWriter, r *http.Request) {
 		}(), err)
 		// A duplicate callback for the already completed attempt is harmless,
 		// but it must still match the recorded trade and paid amount exactly.
-		var status int16
-		var tradeNo, paidAmount, invoiceGateway string
-		if qerr := h.Payment.DB.QueryRowContext(r.Context(),
-			`SELECT status,gateway,trade_no,paid_amount::text FROM invoices WHERE no=$1`, result.InvoiceNo).
-			Scan(&status, &invoiceGateway, &tradeNo, &paidAmount); qerr == nil && status == 1 &&
+		status, invoiceGateway, tradeNo, paidAmount, qerr := h.Invoices.RecordByNo(r.Context(), result.InvoiceNo)
+		if qerr == nil && status == 1 &&
 			invoiceGateway == code && tradeNo == result.TradeNo && equalAmount(result.Amount, paidAmount) {
 			w.Write([]byte("success"))
 			return
@@ -384,11 +373,8 @@ func (h *Pay) notify(w http.ResponseWriter, r *http.Request) {
 			w.Write([]byte("fail"))
 			return
 		}
-		var storedTrade, storedGateway, storedAmount string
-		var status int16
-		if qerr := h.Payment.DB.QueryRowContext(r.Context(),
-			`SELECT status,gateway,trade_no,paid_amount::text FROM invoices WHERE no=$1`, result.InvoiceNo).
-			Scan(&status, &storedGateway, &storedTrade, &storedAmount); qerr != nil || status != 1 ||
+		status, storedGateway, storedTrade, storedAmount, qerr := h.Invoices.RecordByNo(r.Context(), result.InvoiceNo)
+		if qerr != nil || status != 1 ||
 			storedGateway != code || storedTrade != result.TradeNo || !equalAmount(storedAmount, result.Amount) {
 			w.Write([]byte("fail"))
 			return
@@ -434,12 +420,8 @@ func (h *Pay) mockPayPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	no := r.PathValue("no")
-	var invoiceID int64
-	var amount, code string
-	var status int16
-	if err := h.Payment.DB.QueryRowContext(r.Context(),
-		`SELECT id,amount::text,status,gateway FROM invoices WHERE no=$1 AND user_id=$2`, no, userID).
-		Scan(&invoiceID, &amount, &status, &code); err != nil || status != 0 || code == "" {
+	_, code, amount, status, qerr := h.Invoices.MockByNoUser(r.Context(), no, userID, false)
+	if qerr != nil || status != 0 || code == "" {
 		http.NotFound(w, r)
 		return
 	}
@@ -453,8 +435,7 @@ func (h *Pay) mockPayPage(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	_ = invoiceID
-	cs := csrfOf(sessionsStore, w, r)
+	cs := h.pageCSRF(w, r)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	fmt.Fprintf(w, `<!doctype html><html><head><meta charset="utf-8"><title>模拟支付</title></head>
 <body style="font-family:system-ui;padding:40px">
@@ -475,12 +456,8 @@ func (h *Pay) mockConfirm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	no := r.PathValue("no")
-	var invoiceID int64
-	var code, amount string
-	var status int16
-	if err := h.Payment.DB.QueryRowContext(r.Context(),
-		`SELECT id,gateway,amount::text,status FROM invoices WHERE no=$1 AND user_id=$2 FOR SHARE`, no, userID).
-		Scan(&invoiceID, &code, &amount, &status); err != nil || status != 0 || code == "" {
+	_, code, _, status, qerr := h.Invoices.MockByNoUser(r.Context(), no, userID, true)
+	if qerr != nil || status != 0 || code == "" {
 		http.NotFound(w, r)
 		return
 	}

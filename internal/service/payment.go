@@ -20,7 +20,7 @@ var (
 )
 
 type Payment struct {
-	DB           *sql.DB
+	db           *sql.DB
 	Servers      *repo.Servers
 	Products     *repo.Products
 	Provisions   *repo.ProvisionRepo
@@ -30,6 +30,8 @@ type Payment struct {
 	PeriodGrants *repo.PeriodGrants
 	Notifier     *Notifier
 	Crypt        *crypto.Cryptor // 实例密码加密落库（services.password_crypt），可为 nil
+	// Lifecycle 上游续费用；由组合根注入与 Fulfillment/Cron 共享的同一实例。
+	Lifecycle *Lifecycle
 	// TriggerFulfillment 支付成功后立即触发队列执行（httpserver 注入，异步 Drain）。
 	// 为 nil 时仅靠 cron 每 15s 轮询，支付后开通最多延迟一个轮询周期。
 	TriggerFulfillment func()
@@ -37,7 +39,7 @@ type Payment struct {
 
 // MarkPaidByBalance 用余额支付账单。余额不足返回错误，账单保持未支付。
 func (p *Payment) MarkPaidByBalance(ctx context.Context, invoiceNo string, userID int64) error {
-	tx, err := p.DB.BeginTx(ctx, nil)
+	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
@@ -213,7 +215,7 @@ func (p *Payment) enqueueFulfillment(ctx context.Context, tx *sql.Tx, serviceID,
 
 // MarkPaid 原子核销账单并开通/续期服务。幂等：重复调用返回 ErrAlreadyPaid。
 func (p *Payment) MarkPaid(ctx context.Context, invoiceNo, tradeNo, gatewayCode string, attemptIDs ...int64) error {
-	tx, err := p.DB.BeginTx(ctx, nil)
+	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
@@ -427,7 +429,11 @@ func (p *Payment) renewAsync(serviceID int64, cycle string, orderID int64) {
 	go func() {
 		rctx, cancel := context.WithTimeout(context.Background(), opRenewTimeout)
 		defer cancel()
-		lc := &Lifecycle{DB: p.DB, Servers: p.Servers, Products: p.Products}
+		lc := p.Lifecycle
+		if lc == nil {
+			log.Printf("[renew] service %d 缺少 Lifecycle 服务", serviceID)
+			return
+		}
 		if rerr := lc.Renew(rctx, serviceID, cycle, orderID); rerr != nil {
 			log.Printf("[renew] service %d 上游续费失败: %v", serviceID, rerr)
 		}
@@ -438,7 +444,7 @@ func (p *Payment) provision(ctx context.Context, serviceID, _ int64, cycle strin
 	var serverID sql.NullInt64
 	var providerCode string
 	var upstreamPID int64
-	if err := p.DB.QueryRowContext(ctx,
+	if err := p.db.QueryRowContext(ctx,
 		`SELECT server_id,coalesce(upstream_provider,''),upstream_pid FROM services WHERE id=$1`, serviceID).
 		Scan(&serverID, &providerCode, &upstreamPID); err != nil {
 		return p.failProvision(ctx, serviceID, err)
@@ -456,7 +462,7 @@ func (p *Payment) provision(ctx context.Context, serviceID, _ int64, cycle strin
 		}
 	}
 	if !needUpstream {
-		if _, err := p.DB.ExecContext(ctx, `UPDATE services SET status=1,provision_error='' WHERE id=$1 AND status=0`, serviceID); err != nil {
+		if _, err := p.db.ExecContext(ctx, `UPDATE services SET status=1,provision_error='' WHERE id=$1 AND status=0`, serviceID); err != nil {
 			return err
 		}
 		return nil
@@ -470,7 +476,7 @@ func (p *Payment) provision(ctx context.Context, serviceID, _ int64, cycle strin
 		return p.failProvision(ctx, serviceID, fmt.Errorf("读取服务器配置失败: %w", err))
 	}
 	cfg := server.Config{APIURL: sv.APIURL, APIUsername: sv.APIUsername, APIKey: sv.APIKey, CredentialRevision: sv.CredentialRevision}
-	unlock, err := lockUpstreamAccount(ctx, p.DB, cfg)
+	unlock, err := lockUpstreamAccount(ctx, p.db, cfg)
 	if err != nil {
 		return p.failProvision(ctx, serviceID, fmt.Errorf("锁定上游账户失败: %w", err))
 	}
@@ -489,7 +495,7 @@ func (p *Payment) provision(ctx context.Context, serviceID, _ int64, cycle strin
 	}
 	if res.UpstreamHostID > 0 {
 		// 开通成功即激活（此前只写 host id，等 30s 状态同步 cron 才置 1，用户看到长时间"待开通"）
-		if _, err := p.DB.ExecContext(ctx,
+		if _, err := p.db.ExecContext(ctx,
 			`UPDATE services SET upstream_host_id=$2, status=1, provision_error='' WHERE id=$1 AND status=0`, serviceID, res.UpstreamHostID); err != nil {
 			return err
 		}
@@ -497,7 +503,7 @@ func (p *Payment) provision(ctx context.Context, serviceID, _ int64, cycle strin
 	// 供应商回传了实例密码（如 EasyPanel）：加密落库供详情页展示与面板直登。
 	if res.Password != "" && p.Crypt != nil {
 		if enc, cerr := p.Crypt.Encrypt(res.Password); cerr == nil {
-			if _, uerr := p.DB.ExecContext(ctx,
+			if _, uerr := p.db.ExecContext(ctx,
 				`UPDATE services SET password_crypt=$2 WHERE id=$1`, serviceID, enc); uerr != nil {
 				log.Printf("[provision] service %d 密码落库失败: %v", serviceID, uerr)
 			}
@@ -512,7 +518,7 @@ const maxProvisionErrLen = 500
 // 用于开通时回传上游。无快照/解析失败返回 nil（上游用默认配置）。
 func (p *Payment) orderConfigOpts(ctx context.Context, serviceID int64) map[string]string {
 	var snap []byte
-	if err := p.DB.QueryRowContext(ctx,
+	if err := p.db.QueryRowContext(ctx,
 		`SELECT o.config_snapshot FROM orders o JOIN services sv ON sv.order_id = o.id WHERE sv.id=$1`,
 		serviceID).Scan(&snap); err != nil || len(snap) == 0 {
 		return nil
@@ -536,7 +542,7 @@ func (p *Payment) failProvision(ctx context.Context, serviceID int64, err error)
 		if len(msg) > maxProvisionErrLen {
 			msg = msg[:maxProvisionErrLen]
 		}
-		if _, err := p.DB.ExecContext(ctx, `UPDATE services SET provision_error=$2 WHERE id=$1`, serviceID, msg); err != nil {
+		if _, err := p.db.ExecContext(ctx, `UPDATE services SET provision_error=$2 WHERE id=$1`, serviceID, msg); err != nil {
 			return fmt.Errorf("记录开通失败: %w（原错误：%v）", err, msg)
 		}
 	}
@@ -544,7 +550,7 @@ func (p *Payment) failProvision(ctx context.Context, serviceID int64, err error)
 }
 
 func (p *Payment) clearProvisionError(ctx context.Context, serviceID int64) {
-	p.DB.ExecContext(ctx, `UPDATE services SET provision_error='' WHERE id=$1`, serviceID)
+	p.db.ExecContext(ctx, `UPDATE services SET provision_error='' WHERE id=$1`, serviceID)
 }
 
 // serviceCheckpoint 把 CheckpointStore 桥接到 provision_data JSONB。
@@ -579,7 +585,7 @@ func (p *Payment) Refund(ctx context.Context, adminID, orderID int64, amount, re
 		return fmt.Errorf("退款金额无效")
 	}
 	amount = canonical
-	tx, err := p.DB.BeginTx(ctx, nil)
+	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}

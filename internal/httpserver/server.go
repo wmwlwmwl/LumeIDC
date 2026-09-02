@@ -60,8 +60,9 @@ func Build(cfg *config.Config) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	handler.SetAdminStore(store)
-	handler.SetPageStore(store)
+	// ---- 渲染依赖（会话双 Store + 站点品牌/余额），由各 handler 匿名内嵌 ----
+	deps := &handler.Deps{PageStore: store, AdminStore: store}
+
 	// 供应商注册表：集中分发。新上游在此注册（详见 docs/provider.md）。
 	providers := server.NewRegistry()
 	providers.Register(zjmf.Provider{})
@@ -71,10 +72,31 @@ func Build(cfg *config.Config) (*App, error) {
 	if cerr != nil {
 		log.Fatalf("初始化密码加密器失败: %v", cerr)
 	}
-	users := &repo.Users{DB: database}
-	products := &repo.Products{DB: database}
-	serversRepo := &repo.Servers{DB: database}
-	settingsRepo := &repo.Settings{DB: database}
+
+	// ---- 仓库：每表一个实例，全图共享 ----
+	users := repo.NewUsers(database)
+	products := repo.NewProducts(database)
+	serversRepo := repo.NewServers(database)
+	settingsRepo := repo.NewSettings(database)
+	balanceRepo := repo.NewBalance(database)
+	coupons := repo.NewCoupons(database)
+	announcements := repo.NewAnnouncements(database)
+	adminLog := repo.NewAdminLog(database)
+	refunds := repo.NewRefunds(database)
+	statsRepo := repo.NewStats(database)
+	gatewaysRepo := repo.NewGateways(database)
+	loginAttempts := repo.NewLoginAttempts(database)
+	invoices := repo.NewInvoices(database)
+	provisions := repo.NewProvisionRepo(database)
+	jobs := repo.NewFulfillmentJobs(database)
+	periodGrants := repo.NewPeriodGrants(database)
+	admins := repo.NewAdmins(database)
+	identityStore := repo.NewIdentityStore(database)
+	authChallenges := repo.NewAuthChallenges(database)
+
+	deps.Balance = balanceRepo
+	deps.Settings = settingsRepo
+
 	identityKey := cfg.PIIKey
 	if identityKey == "" {
 		// 兼容尚未配置独立 PII key 的旧安装；新安装由 installer 生成独立密钥。
@@ -90,89 +112,105 @@ func Build(cfg *config.Config) (*App, error) {
 		return nil, fmt.Errorf("初始化实名资料加密器失败: %w", err)
 	}
 	identityFiles := &storage.PrivateFiles{Root: cfg.PrivateDataDir}
-	identityStore := &repo.IdentityStore{DB: database}
-	identity := service.NewIdentity(identityStore, users, piiCryptor, identityFiles, service.NewConfiguredSMSProvider(settingsRepo), identityKey, nil)
+
+	// 通知/实名服务：Notifier 先建，供身份/验证码/Auth 共享。
+	notifier := service.NewNotifier(database, settingsRepo)
+	identity := service.NewIdentity(identityStore, users, piiCryptor, identityFiles,
+		service.NewConfiguredSMSProvider(settingsRepo), identityKey, notifier, settingsRepo, cfg.BaseURL,
+		service.NewConfiguredVerificationProvider(settingsRepo, cfg.BaseURL))
 	localCaptcha := captcha.New(database, settingsRepo, []byte(cfg.SecretKey))
-	auth := &handler.Auth{Users: users, Sessions: store, Lockout: &repo.LoginAttempts{DB: database}, LocalCaptcha: localCaptcha, BaseURL: cfg.BaseURL}
+
+	// ---- 服务层（单例，组合根统一注入） ----
+	servicesRepo := service.NewServicesRepo(database)
+	orders := service.NewOrders(database, products, coupons, identity)
+	console := service.NewConsole(database, serversRepo, products, providers, cryptor)
+	lifecycle := service.NewLifecycle(database, serversRepo, products, providers)
+	paymentSvc := service.NewPayment(database, lifecycle, serversRepo, products, provisions, jobs, balanceRepo, providers, periodGrants, notifier, cryptor)
 	gateways := map[string]gateway.Gateway{
 		"epay":       gateway.Epay{},
 		"alipay_f2f": gateway.AlipayF2F{},
 		"mock":       gateway.Mock{},
 	}
-	balanceRepo := &repo.Balance{DB: database}
-	handler.SetBalanceRepo(balanceRepo)
-	handler.SetSiteRepo(settingsRepo)
-	notifier := &service.Notifier{DB: database, Settings: settingsRepo}
-	identity.Notifier = notifier
-	identity.Settings = settingsRepo
-	identity.BaseURL = cfg.BaseURL
-	identity.Verification = service.NewConfiguredVerificationProvider(settingsRepo, cfg.BaseURL)
-	auth.Challenges = &service.AuthChallengeService{Store: &repo.AuthChallenges{DB: database}, SMS: identity.OTP, EmailSend: notifier.SendMail, SiteName: notifier.SiteName, Key: []byte(cfg.SecretKey)}
-	auth.Captcha = service.NewConfiguredCaptchaProvider(settingsRepo)
-	auth.Notifier = notifier
-	paymentSvc := &service.Payment{
-		DB:           database,
-		Servers:      serversRepo,
-		Products:     products,
-		Provisions:   &repo.ProvisionRepo{DB: database},
-		Jobs:         &repo.FulfillmentJobs{DB: database},
-		Balance:      balanceRepo,
-		Providers:    providers,
-		PeriodGrants: &repo.PeriodGrants{DB: database},
+	auth := &handler.Auth{
+		Users:        users,
+		Sessions:     store,
+		Settings:     settingsRepo,
+		Lockout:      loginAttempts,
 		Notifier:     notifier,
-		Crypt:        cryptor,
+		Challenges:   &service.AuthChallengeService{Store: authChallenges, SMS: identity.OTP, EmailSend: notifier.SendMail, SiteName: notifier.SiteName, Key: []byte(cfg.SecretKey)},
+		Captcha:      service.NewConfiguredCaptchaProvider(settingsRepo),
+		LocalCaptcha: localCaptcha,
+		BaseURL:      cfg.BaseURL,
+		Deps:         deps,
 	}
 	pay := &handler.Pay{
-		Orders:   &service.Orders{DB: database, Products: products, Coupons: &repo.Coupons{DB: database}, Identity: identity},
+		Orders:   orders,
 		Payment:  paymentSvc,
 		Products: products,
 		Gateways: gateways,
 		BaseURL:  cfg.BaseURL,
-		GwRepo:   &repo.Gateways{DB: database},
+		GwRepo:   gatewaysRepo,
+		Invoices: invoices,
 		Balance:  balanceRepo,
+		Deps:     deps,
 	}
-	adminHandler := &handler.Admin{Admins: &repo.Admins{DB: database}, DB: database, Lockout: &repo.LoginAttempts{DB: database}, Announcements: &repo.Announcements{DB: database}, LocalCaptcha: localCaptcha}
+	adminHandler := &handler.Admin{
+		Admins:        admins,
+		Lockout:       loginAttempts,
+		Announcements: announcements,
+		LocalCaptcha:  localCaptcha,
+		Coupons:       coupons,
+		Refunds:       refunds,
+		AdminLog:      adminLog,
+		Stats:         statsRepo,
+		Notifier:      notifier,
+		Deps:          deps,
+	}
 	pages := &handler.Pages{
 		Products:      products,
-		Svc:           &service.ServicesRepo{DB: database},
-		Orders:        &service.Orders{DB: database, Products: products, Coupons: &repo.Coupons{DB: database}, Identity: identity},
+		Svc:           servicesRepo,
+		Orders:        orders,
 		UsersRepo:     users,
 		ServersRepo:   serversRepo,
-		Console:       &service.Console{DB: database, Servers: serversRepo, Products: products, Providers: providers, Crypt: cryptor},
+		Console:       console,
 		Balance:       balanceRepo,
 		Notifier:      notifier,
-		Announcements: &repo.Announcements{DB: database},
-		Settings:      &repo.Settings{DB: database},
+		Announcements: announcements,
+		Settings:      settingsRepo,
+		Invoices:      invoices,
+		Lifecycle:     lifecycle,
+		Deps:          deps,
 	}
 
 	mux := http.NewServeMux()
 	handler.RegisterAssets(mux)
 	auth.Register(mux)
 	pages.Register(mux)
-	verificationHandler := &handler.VerificationHandler{Identity: identity, Users: users, Sessions: store}
+	verificationHandler := &handler.VerificationHandler{Identity: identity, Users: users, Sessions: store, AdminLog: adminLog, Deps: deps}
 	verificationHandler.Register(mux)
 	pay.Register(mux)
 	adminHandler.Register(mux)
-	adminVerification := &handler.AdminVerification{Identity: identity, Users: users}
+	adminVerification := &handler.AdminVerification{Identity: identity, Users: users, AdminLog: adminLog, Deps: deps}
 	mux.HandleFunc("GET /admin/verifications", adminVerification.List)
 	mux.HandleFunc("GET /admin/verifications/{id}", adminVerification.Detail)
 	mux.HandleFunc("POST /admin/verifications/{id}/approve", adminVerification.Approve)
 	mux.HandleFunc("POST /admin/verifications/{id}/reject", adminVerification.Reject)
 	mux.HandleFunc("GET /admin/verifications/{id}/photo/{side}", adminVerification.Photo)
-	gwHandler := &handler.AdminGateway{GwRepo: &repo.Gateways{DB: database}, Gateways: gateways}
+	gwHandler := &handler.AdminGateway{GwRepo: gatewaysRepo, Gateways: gateways, Deps: deps}
 	gwHandler.Register(mux)
-	srvHandler := &handler.AdminServers{Servers: serversRepo, Providers: providers}
+	srvHandler := &handler.AdminServers{Servers: serversRepo, Providers: providers, Deps: deps}
 	srvHandler.Register(mux)
-	lifecycleSvc := &service.Lifecycle{DB: database, Servers: serversRepo, Products: products, Providers: providers}
 	mng := &handler.AdminManage{
 		Products: products, Users: users, Servers: serversRepo,
 		Balance:   balanceRepo,
-		Svc:       &service.ServicesRepo{DB: database},
-		Lifecycle: lifecycleSvc,
+		Svc:       servicesRepo,
+		Lifecycle: lifecycle,
 		Payment:   paymentSvc,
 		Providers: providers,
-		Settings:  &repo.Settings{DB: database},
+		Settings:  settingsRepo,
 		Identity:  identityStore,
+		AdminLog:  adminLog,
+		Deps:      deps,
 	}
 	mux.HandleFunc("GET /admin/users/{id}/edit", mng.UserEdit)
 	mux.HandleFunc("POST /admin/users/{id}/save", mng.UserSave)
@@ -218,22 +256,11 @@ func Build(cfg *config.Config) (*App, error) {
 	if a := os.Getenv("LISTEN"); a != "" {
 		addr = a // 环境变量覆盖配置，便于本地多实例测试
 	}
-	fulfillment := &service.Fulfillment{Jobs: &repo.FulfillmentJobs{DB: database}, Payment: paymentSvc, Lifecycle: &service.Lifecycle{
-		DB:        database,
-		Servers:   serversRepo,
-		Products:  products,
-		Providers: providers,
-	}}
+	fulfillment := service.NewFulfillment(jobs, paymentSvc, lifecycle)
 	// 支付成功立即异步执行履约队列（cron 每 15s 轮询仍兜底），开通不再等轮询周期
 	paymentSvc.TriggerFulfillment = func() { go fulfillment.Drain(context.Background(), 3) }
 	cronJobs := &cron.Jobs{DB: database, Fulfillment: fulfillment, Notifier: notifier,
-		Providers: providers, Servers: serversRepo, Products: products,
-		Lifecycle: &service.Lifecycle{
-			DB:        database,
-			Servers:   serversRepo,
-			Products:  products,
-			Providers: providers,
-		}}
+		Providers: providers, Servers: serversRepo, Products: products, Lifecycle: lifecycle}
 	cronRef := cronJobs.Start()
 	return &App{
 		Server: &http.Server{

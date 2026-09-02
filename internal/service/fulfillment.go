@@ -15,7 +15,7 @@ import (
 type Fulfillment struct {
 	Jobs      *repo.FulfillmentJobs
 	Payment   *Payment
-	Lifecycle *Lifecycle // renew 用；缺省时按 Payment 依赖拼装
+	Lifecycle *Lifecycle // renew 用；组合根恒注入，nil 时任务直接报错
 }
 
 func (f *Fulfillment) ProcessOne(ctx context.Context) (bool, error) {
@@ -31,12 +31,8 @@ func (f *Fulfillment) ProcessOne(ctx context.Context) (bool, error) {
 	case "renew":
 		lc := f.Lifecycle
 		if lc == nil {
-			// 兜底拼装（Providers 必须注入，否则上游调用空指针）
-			if f.Payment == nil || f.Payment.Providers == nil {
-				err = fmt.Errorf("renew 任务缺少供应商注册表")
-				break
-			}
-			lc = &Lifecycle{DB: f.Payment.DB, Servers: f.Payment.Servers, Products: f.Payment.Products, Providers: f.Payment.Providers}
+			err = fmt.Errorf("renew 任务缺少 Lifecycle 服务")
+			break
 		}
 		err = lc.Renew(opCtx, job.ServiceID, job.Cycle, job.OrderID.Int64)
 	default:

@@ -11,7 +11,7 @@ import (
 )
 
 // Coupons 优惠码管理。
-type Coupons struct{ DB *sql.DB }
+type Coupons struct{ db *sql.DB }
 
 type Coupon struct {
 	ID         int64
@@ -91,7 +91,7 @@ func (c *Coupons) Use(ctx context.Context, tx *sql.Tx, couponID, userID, orderID
 }
 
 func (c *Coupons) List(ctx context.Context) ([]Coupon, error) {
-	rows, err := c.DB.QueryContext(ctx,
+	rows, err := c.db.QueryContext(ctx,
 		`SELECT id,code,type,value,min_amount,expires_at,usage_limit,used_count,active FROM coupons ORDER BY id DESC`)
 	if err != nil {
 		return nil, err
@@ -119,13 +119,13 @@ func (c *Coupons) Create(ctx context.Context, code, typ string, value, minAmount
 	}
 	if !math.IsNaN(value) && !math.IsInf(value, 0) && value >= 0 && !math.IsNaN(minAmount) && !math.IsInf(minAmount, 0) && minAmount >= 0 && usageLimit >= 0 {
 		if typ == "percent" && value <= 100 {
-			_, err := c.DB.ExecContext(ctx,
+			_, err := c.db.ExecContext(ctx,
 				`INSERT INTO coupons(code,type,value,min_amount,usage_limit,expires_at,active) VALUES($1,$2,$3,$4,$5,$6,true)`,
 				code, typ, value, minAmount, usageLimit, expires)
 			return err
 		}
 		if typ == "fixed" {
-			_, err := c.DB.ExecContext(ctx,
+			_, err := c.db.ExecContext(ctx,
 				`INSERT INTO coupons(code,type,value,min_amount,usage_limit,expires_at,active) VALUES($1,$2,$3,$4,$5,$6,true)`,
 				code, typ, value, minAmount, usageLimit, expires)
 			return err

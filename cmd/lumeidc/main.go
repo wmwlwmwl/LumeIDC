@@ -64,10 +64,3 @@ func installListenAddr() string {
 	}
 	return "127.0.0.1:8080"
 }
-
-func listenAddr() string {
-	if a := os.Getenv("LISTEN"); a != "" {
-		return a
-	}
-	return ":8080"
-}

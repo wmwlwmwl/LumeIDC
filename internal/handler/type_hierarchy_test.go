@@ -148,7 +148,7 @@ func TestEnsureTypeHierarchy(t *testing.T) {
 	}
 	defer d.Close()
 	ctx := context.Background()
-	m := &AdminManage{Products: &repo.Products{DB: d}}
+	m := &AdminManage{Products: repo.NewProducts(d)}
 
 	// 两级分组名（parentID=0）→ 建一级+二级，产品挂二级
 	cid, err := m.ensureType(ctx, "测试云/测试国内", 0)
@@ -228,7 +228,7 @@ func TestTypeHierarchyDB(t *testing.T) {
 	}
 	defer d.Close()
 	ctx := context.Background()
-	p := &repo.Products{DB: d}
+	p := repo.NewProducts(d)
 
 	fid, err := p.CreateType(ctx, "测试一级", "", 9999, 0, false)
 	if err != nil {

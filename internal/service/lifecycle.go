@@ -15,7 +15,7 @@ import (
 
 // Lifecycle 服务生命周期操作（接上游）。
 type Lifecycle struct {
-	DB        *sql.DB
+	db        *sql.DB
 	Servers   *repo.Servers
 	Products  *repo.Products
 	Providers *server.Registry
@@ -34,7 +34,7 @@ type serviceRef struct {
 // loadService 读服务+产品绑定信息。
 func (lc *Lifecycle) loadService(ctx context.Context, serviceID int64) (*serviceRef, error) {
 	var s serviceRef
-	err := lc.DB.QueryRowContext(ctx,
+	err := lc.db.QueryRowContext(ctx,
 		`SELECT sv.id,sv.status,coalesce(sv.server_id,p.server_id),
 		        coalesce(nullif(sv.upstream_pid,0),p.upstream_pid),
 		        coalesce(nullif(sv.upstream_provider,''),srv.provider,''),
@@ -116,7 +116,7 @@ func (lc *Lifecycle) Renew(ctx context.Context, serviceID int64, cycle string, o
 // getCheckpoint 从 services.provision_data 读取 checkpoint。
 func (lc *Lifecycle) getCheckpoint(ctx context.Context, serviceID int64, key string) (string, bool, error) {
 	var data []byte
-	if err := lc.DB.QueryRowContext(ctx,
+	if err := lc.db.QueryRowContext(ctx,
 		`SELECT provision_data FROM services WHERE id=$1`, serviceID).Scan(&data); err != nil {
 		return "", false, err
 	}
@@ -133,7 +133,7 @@ func (lc *Lifecycle) getCheckpoint(ctx context.Context, serviceID int64, key str
 
 // setCheckpoint 写入 checkpoint 到 services.provision_data。
 func (lc *Lifecycle) setCheckpoint(ctx context.Context, serviceID int64, key, val string) error {
-	_, err := lc.DB.ExecContext(ctx,
+	_, err := lc.db.ExecContext(ctx,
 		`UPDATE services SET provision_data = coalesce(provision_data,'{}')::jsonb || $2::jsonb WHERE id=$1`,
 		serviceID, fmt.Sprintf(`{"%s":"%s"}`, key, val))
 	return err
@@ -150,14 +150,14 @@ func (lc *Lifecycle) Suspend(ctx context.Context, serviceID int64) error {
 	}
 	prov, cfg, err := lc.providerFor(ctx, s)
 	if err == errNoUpstream {
-		_, err = lc.DB.ExecContext(ctx, `UPDATE services SET status=2 WHERE id=$1 AND status=1`, serviceID)
+		_, err = lc.db.ExecContext(ctx, `UPDATE services SET status=2 WHERE id=$1 AND status=1`, serviceID)
 		return err
 	}
 	if err != nil {
 		return err
 	}
 	// 设置过渡状态
-	if _, err := lc.DB.ExecContext(ctx,
+	if _, err := lc.db.ExecContext(ctx,
 		`UPDATE services SET desired_status=2, transition_state='suspending' WHERE id=$1 AND status=1`, serviceID); err != nil {
 		return err
 	}
@@ -166,15 +166,15 @@ func (lc *Lifecycle) Suspend(ctx context.Context, serviceID int64) error {
 	if err := prov.Suspend(cctx, cfg, s.UpstreamHost); err != nil {
 		log.Printf("[lifecycle] service %d 上游停机失败: %v", serviceID, err)
 		// 失败：清除过渡状态，保留原状态
-		lc.DB.ExecContext(ctx, `UPDATE services SET desired_status=NULL, transition_state='' WHERE id=$1`, serviceID)
+		lc.db.ExecContext(ctx, `UPDATE services SET desired_status=NULL, transition_state='' WHERE id=$1`, serviceID)
 		return fmt.Errorf("上游停机失败: %w", err)
 	}
 	// 成功：更新状态
-	_, err = lc.DB.ExecContext(ctx,
+	_, err = lc.db.ExecContext(ctx,
 		`UPDATE services SET status=2 WHERE id=$1 AND status=1`, serviceID)
 	// 无条件清除过渡状态：即便并发的 SyncUpstreamStatus 改了 status，
 	// 也不让其卡在 transition_state（否则会被同步长期跳过）。
-	if _, e := lc.DB.ExecContext(ctx,
+	if _, e := lc.db.ExecContext(ctx,
 		`UPDATE services SET desired_status=NULL, transition_state='' WHERE id=$1`, serviceID); e != nil {
 		log.Printf("[lifecycle] service %d 清除过渡状态失败: %v", serviceID, e)
 	}
@@ -192,14 +192,14 @@ func (lc *Lifecycle) Unsuspend(ctx context.Context, serviceID int64) error {
 	}
 	prov, cfg, err := lc.providerFor(ctx, s)
 	if err == errNoUpstream {
-		_, err = lc.DB.ExecContext(ctx, `UPDATE services SET status=1 WHERE id=$1 AND status=2`, serviceID)
+		_, err = lc.db.ExecContext(ctx, `UPDATE services SET status=1 WHERE id=$1 AND status=2`, serviceID)
 		return err
 	}
 	if err != nil {
 		return err
 	}
 	// 设置过渡状态
-	if _, err := lc.DB.ExecContext(ctx,
+	if _, err := lc.db.ExecContext(ctx,
 		`UPDATE services SET desired_status=1, transition_state='unsuspending' WHERE id=$1 AND status=2`, serviceID); err != nil {
 		return err
 	}
@@ -208,13 +208,13 @@ func (lc *Lifecycle) Unsuspend(ctx context.Context, serviceID int64) error {
 	if err := prov.Unsuspend(cctx, cfg, s.UpstreamHost); err != nil {
 		log.Printf("[lifecycle] service %d 上游解除停机失败: %v", serviceID, err)
 		// 失败：清除过渡状态，保留原状态
-		lc.DB.ExecContext(ctx, `UPDATE services SET desired_status=NULL, transition_state='' WHERE id=$1`, serviceID)
+		lc.db.ExecContext(ctx, `UPDATE services SET desired_status=NULL, transition_state='' WHERE id=$1`, serviceID)
 		return fmt.Errorf("上游解除停机失败: %w", err)
 	}
 	// 成功：更新状态
-	_, err = lc.DB.ExecContext(ctx,
+	_, err = lc.db.ExecContext(ctx,
 		`UPDATE services SET status=1 WHERE id=$1 AND status=2`, serviceID)
-	if _, e := lc.DB.ExecContext(ctx,
+	if _, e := lc.db.ExecContext(ctx,
 		`UPDATE services SET desired_status=NULL, transition_state='' WHERE id=$1`, serviceID); e != nil {
 		log.Printf("[lifecycle] service %d 清除过渡状态失败: %v", serviceID, e)
 	}
@@ -232,14 +232,14 @@ func (lc *Lifecycle) Terminate(ctx context.Context, serviceID int64) error {
 	}
 	prov, cfg, err := lc.providerFor(ctx, s)
 	if err == errNoUpstream {
-		_, err = lc.DB.ExecContext(ctx, `UPDATE services SET status=3 WHERE id=$1 AND status<3`, serviceID)
+		_, err = lc.db.ExecContext(ctx, `UPDATE services SET status=3 WHERE id=$1 AND status<3`, serviceID)
 		return err
 	}
 	if err != nil {
 		return err
 	}
 	// 设置过渡状态
-	if _, err := lc.DB.ExecContext(ctx,
+	if _, err := lc.db.ExecContext(ctx,
 		`UPDATE services SET desired_status=3, transition_state='terminating' WHERE id=$1 AND status<3`, serviceID); err != nil {
 		return err
 	}
@@ -248,13 +248,13 @@ func (lc *Lifecycle) Terminate(ctx context.Context, serviceID int64) error {
 	if err := prov.Terminate(cctx, cfg, s.UpstreamHost); err != nil {
 		log.Printf("[lifecycle] service %d 上游删除失败: %v", serviceID, err)
 		// 失败：清除过渡状态，保留原状态
-		lc.DB.ExecContext(ctx, `UPDATE services SET desired_status=NULL, transition_state='' WHERE id=$1`, serviceID)
+		lc.db.ExecContext(ctx, `UPDATE services SET desired_status=NULL, transition_state='' WHERE id=$1`, serviceID)
 		return fmt.Errorf("上游删除失败: %w", err)
 	}
 	// 成功：更新状态
-	_, err = lc.DB.ExecContext(ctx,
+	_, err = lc.db.ExecContext(ctx,
 		`UPDATE services SET status=3 WHERE id=$1 AND status<3`, serviceID)
-	if _, e := lc.DB.ExecContext(ctx,
+	if _, e := lc.db.ExecContext(ctx,
 		`UPDATE services SET desired_status=NULL, transition_state='' WHERE id=$1`, serviceID); e != nil {
 		log.Printf("[lifecycle] service %d 清除过渡状态失败: %v", serviceID, e)
 	}
@@ -265,7 +265,7 @@ func (lc *Lifecycle) Terminate(ctx context.Context, serviceID int64) error {
 // 通过入队 fulfillment job 实现，不允许与同服务已有 running job 并行。
 func (p *Payment) RetryProvision(ctx context.Context, serviceID int64) error {
 	var cycle sql.NullString
-	err := p.DB.QueryRowContext(ctx,
+	err := p.db.QueryRowContext(ctx,
 		`SELECT (SELECT cycle FROM orders WHERE id=services.order_id) FROM services WHERE id=$1 AND status=0`,
 		serviceID).Scan(&cycle)
 	if err != nil {
@@ -274,7 +274,7 @@ func (p *Payment) RetryProvision(ctx context.Context, serviceID int64) error {
 	if p.Jobs == nil {
 		// 无 job 系统时回退到直接调用
 		var productID int64
-		if err := p.DB.QueryRowContext(ctx,
+		if err := p.db.QueryRowContext(ctx,
 			`SELECT product_id FROM services WHERE id=$1`, serviceID).Scan(&productID); err != nil {
 			return err
 		}
@@ -298,16 +298,16 @@ func (lc *Lifecycle) SyncUpstreamStatus(ctx context.Context) {
 	// 同步租约：防止并发同步
 	leaseKey := "sync_upstream_status"
 	var gotLease bool
-	if err := lc.DB.QueryRowContext(ctx,
+	if err := lc.db.QueryRowContext(ctx,
 		`SELECT pg_try_advisory_lock(hashtext($1))`, leaseKey).Scan(&gotLease); err != nil || !gotLease {
 		return
 	}
-	defer lc.DB.ExecContext(ctx, `SELECT pg_advisory_unlock(hashtext($1))`, leaseKey)
+	defer lc.db.ExecContext(ctx, `SELECT pg_advisory_unlock(hashtext($1))`, leaseKey)
 
 	const pageSize = 100
 	offset := 0
 	for {
-		rows, err := lc.DB.QueryContext(ctx,
+		rows, err := lc.db.QueryContext(ctx,
 			`SELECT sv.id, srv.api_url, srv.api_username, srv.api_key, sv.upstream_host_id,
 			        coalesce(nullif(sv.upstream_provider,''),srv.provider,'')
 			 FROM services sv
@@ -360,7 +360,7 @@ func (lc *Lifecycle) SyncUpstreamStatus(ctx context.Context) {
 				log.Printf("[sync] service %d 未知上游状态: %s", r.id, up.Status)
 				continue
 			}
-			if _, err := lc.DB.ExecContext(ctx,
+			if _, err := lc.db.ExecContext(ctx,
 				`UPDATE services SET status=$2, hostname=coalesce(nullif($3,''), hostname)
 			 WHERE id=$1 AND status<3`, r.id, st, up.Hostname); err != nil {
 				log.Printf("[sync] service %d 状态更新失败: %v", r.id, err)

@@ -22,7 +22,7 @@ type User struct {
 	PhoneVerified bool
 }
 
-type Users struct{ DB *sql.DB }
+type Users struct{ db *sql.DB }
 
 // NormalizeEmail 只接受纯邮箱地址并统一为小写，拒绝带显示名的地址。
 func NormalizeEmail(raw string) (string, error) {
@@ -48,7 +48,7 @@ func (u *Users) CreateAccount(ctx context.Context, email, phone, password, name 
 		return 0, err
 	}
 	var id int64
-	err = u.DB.QueryRowContext(ctx,
+	err = u.db.QueryRowContext(ctx,
 		`INSERT INTO users(email,phone_e164,phone_verified_at,email_verified,password_hash,name) VALUES(NULLIF($1,''),NULLIF($2,''),CASE WHEN $5 THEN now() ELSE NULL END,CASE WHEN $1='' THEN true ELSE false END,$3,$4) RETURNING id`,
 		email, phone, string(hash), name, phoneVerified).Scan(&id)
 	return id, err
@@ -58,7 +58,7 @@ func (u *Users) ByEmail(ctx context.Context, email string) (*User, []byte, error
 	if email == "" {
 		return nil, nil, ErrNotFound
 	}
-	row := u.DB.QueryRowContext(ctx,
+	row := u.db.QueryRowContext(ctx,
 		`SELECT id,email,name,password_hash,status,email_verified,coalesce(phone_e164,''),phone_verified_at IS NOT NULL FROM users WHERE email=$1`, email)
 	var usr User
 	var hash []byte
@@ -77,7 +77,7 @@ func (u *Users) ByEmail(ctx context.Context, email string) (*User, []byte, error
 
 // ByPhone 按手机号查询账户；密码登录始终支持，短信 OTP 登录由 handler 额外要求已验证。
 func (u *Users) ByPhone(ctx context.Context, phone string) (*User, []byte, error) {
-	row := u.DB.QueryRowContext(ctx,
+	row := u.db.QueryRowContext(ctx,
 		`SELECT id,email,name,password_hash,status,email_verified,coalesce(phone_e164,''),phone_verified_at IS NOT NULL FROM users WHERE phone_e164=$1`, phone)
 	var usr User
 	var hash []byte
@@ -99,7 +99,7 @@ func (u *Users) ByPhone(ctx context.Context, phone string) (*User, []byte, error
 // PasswordHash 返回用户密码哈希，供已登录的敏感换绑操作再次验证密码。
 func (u *Users) PasswordHash(ctx context.Context, userID int64) ([]byte, error) {
 	var hash []byte
-	err := u.DB.QueryRowContext(ctx, `SELECT password_hash FROM users WHERE id=$1 AND status=1`, userID).Scan(&hash)
+	err := u.db.QueryRowContext(ctx, `SELECT password_hash FROM users WHERE id=$1 AND status=1`, userID).Scan(&hash)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -107,25 +107,25 @@ func (u *Users) PasswordHash(ctx context.Context, userID int64) ([]byte, error) 
 }
 
 func (u *Users) MarkPhoneVerified(ctx context.Context, userID int64) error {
-	_, err := u.DB.ExecContext(ctx, `UPDATE users SET phone_verified_at=now(),phone_updated_at=now() WHERE id=$1`, userID)
+	_, err := u.db.ExecContext(ctx, `UPDATE users SET phone_verified_at=now(),phone_updated_at=now() WHERE id=$1`, userID)
 	return err
 }
 
 func (u *Users) SetVerifyToken(ctx context.Context, userID int64, token string) error {
-	_, err := u.DB.ExecContext(ctx, `UPDATE users SET verify_token=$2,verify_token_created_at=now() WHERE id=$1`, userID, token)
+	_, err := u.db.ExecContext(ctx, `UPDATE users SET verify_token=$2,verify_token_created_at=now() WHERE id=$1`, userID, token)
 	return err
 }
 
 // MarkVerified 直接标记已验证（无邮件能力时使用）。
 func (u *Users) MarkVerified(ctx context.Context, userID int64) error {
-	_, err := u.DB.ExecContext(ctx,
+	_, err := u.db.ExecContext(ctx,
 		`UPDATE users SET email_verified=true, verify_token='', verify_token_created_at=NULL WHERE id=$1`, userID)
 	return err
 }
 
 // VerifyEmail 使用令牌完成验证；无效或已用返回错误。
 func (u *Users) VerifyEmail(ctx context.Context, token string) error {
-	res, err := u.DB.ExecContext(ctx,
+	res, err := u.db.ExecContext(ctx,
 		`UPDATE users SET email_verified=true, verify_token='', verify_token_created_at=NULL WHERE verify_token=$1 AND email_verified=false AND verify_token_created_at IS NOT NULL AND verify_token_created_at > now()-interval '24 hours'`, token)
 	if err != nil {
 		return err
@@ -142,17 +142,17 @@ func (u *Users) VerifyPassword(hash []byte, password string) bool {
 
 // DeleteUnverified 删除尚未验证且刚创建失败的用户，避免邮箱被永久占用。
 func (u *Users) DeleteUnverified(ctx context.Context, userID int64) error {
-	_, err := u.DB.ExecContext(ctx, `DELETE FROM users WHERE id=$1 AND email_verified=false`, userID)
+	_, err := u.db.ExecContext(ctx, `DELETE FROM users WHERE id=$1 AND email_verified=false`, userID)
 	return err
 }
 func (u *Users) TouchLogin(ctx context.Context, userID int64) error {
-	_, err := u.DB.ExecContext(ctx, `UPDATE users SET last_login_at=now() WHERE id=$1`, userID)
+	_, err := u.db.ExecContext(ctx, `UPDATE users SET last_login_at=now() WHERE id=$1`, userID)
 	return err
 }
 
 func (u *Users) Count(ctx context.Context) (int64, error) {
 	var n int64
-	err := u.DB.QueryRowContext(ctx, `SELECT count(*) FROM users`).Scan(&n)
+	err := u.db.QueryRowContext(ctx, `SELECT count(*) FROM users`).Scan(&n)
 	return n, err
 }
 

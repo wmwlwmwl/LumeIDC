@@ -16,6 +16,7 @@ import (
 type AdminGateway struct {
 	GwRepo   *repo.Gateways
 	Gateways map[string]gateway.Gateway
+	*Deps
 }
 
 type adminGatewayRow struct {
@@ -59,7 +60,7 @@ func (g *AdminGateway) form(w http.ResponseWriter, r *http.Request) {
 		rows = append(rows, adminGatewayRow{ID: v.ID, Code: v.Code, Driver: v.Driver, Name: v.Name,
 			APIURL: v.Config["api_url"], PID: v.Config["pid"], Channel: v.Config["channel"], AppID: v.Config["app_id"], PrivateKey: v.Config["private_key"], PublicKey: v.Config["public_key"], FeePercent: feePercent, Enabled: v.Enabled, Sort: v.Sort})
 	}
-	renderAdmin(w, "admin_gateway.html", AdminData{Rows: rows, CSRF: csrfOf(adminSessions, w, r), Error: r.URL.Query().Get("err"), Msg: r.URL.Query().Get("msg")})
+	g.renderAdmin(w, "admin_gateway.html", AdminData{Rows: rows, CSRF: g.adminCSRF(w, r), Error: r.URL.Query().Get("err"), Msg: r.URL.Query().Get("msg")})
 }
 
 func (g *AdminGateway) save(w http.ResponseWriter, r *http.Request) {

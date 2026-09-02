@@ -2,13 +2,11 @@ package handler
 
 import (
 	"context"
-	"database/sql"
 	"embed"
 	"encoding/json"
 	"fmt"
 	"html"
 	"html/template"
-	"log"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -36,12 +34,10 @@ type Pages struct {
 	Notifier      *service.Notifier
 	Announcements *repo.Announcements
 	Settings      *repo.Settings
+	Invoices      *repo.Invoices
+	Lifecycle     *service.Lifecycle
+	*Deps
 }
-
-// sessionsStore 由 httpserver 注入，用于匿名会话 CSRF token。
-var sessionsStore *middleware.Store
-
-func SetPageStore(s *middleware.Store) { sessionsStore = s }
 
 func (h *Pages) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /{$}", h.home)
@@ -95,7 +91,7 @@ func (h *Pages) notifications(w http.ResponseWriter, r *http.Request) {
 		}
 		h.Notifier.MarkRead(r.Context(), userID)
 	}
-	render(w, r, "user_notifications.html", map[string]any{"Rows": list})
+	h.render(w, r, "user_notifications.html", map[string]any{"Rows": list})
 }
 
 // pageTitleLabel 返回前台页面对应的浏览器标题前缀；未匹配（兜底）返回空。
@@ -125,37 +121,6 @@ func pageTitleLabel(page string) string {
 		return "实名认证"
 	}
 	return ""
-}
-
-// render 用 site.html 作为布局渲染子页。balanceRepo 由 httpserver 注入用于导航栏余额显示。
-var balanceRepo *repo.Balance
-
-func SetBalanceRepo(b *repo.Balance) { balanceRepo = b }
-
-func render(w http.ResponseWriter, r *http.Request, page string, data map[string]any) {
-	tpl, err := template.New(page).Funcs(template.FuncMap{"safeDescriptionHTML": safeDescriptionHTML}).ParseFS(siteFS, "templates/site.html", "templates/"+page)
-	if err != nil {
-		http.Error(w, err.Error(), 500)
-		return
-	}
-	if data == nil {
-		data = map[string]any{}
-	}
-	fillSiteData(data)
-	data["Page"] = page
-	data["PageTitle"] = pageTitleLabel(page)
-	if sess := middleware.FromSession(r.Context()); sess != nil {
-		data["CSRF"] = sess.CSRFToken()
-		if sess.UserID > 0 && !sess.IsAdmin {
-			data["LoggedIn"] = true
-			if bal, err := balanceRepo.Get(r.Context(), sess.UserID); err == nil {
-				data["Balance"] = bal
-			}
-		}
-	}
-	if err := tpl.ExecuteTemplate(w, "site", data); err != nil {
-		log.Printf("[template] %s: %v", page, err)
-	}
 }
 
 // listAnnouncements 取前台展示的公告（显示中、置顶优先）。
@@ -356,7 +321,7 @@ func (h *Pages) productListPage(w http.ResponseWriter, r *http.Request, _ string
 						m := "-"
 						if pr, perr := h.Products.Price(r.Context(), p.ID, psID); perr == nil {
 							opts, _ := h.Products.GetConfigOptions(r.Context(), p.ID)
-							eType, eVal := resolveProfitType(r.Context(), p.ProfitType, p.ProfitValue, h.Products.DB, p.ID), resolveProfitValue(r.Context(), p.ProfitType, p.ProfitValue, h.Products.DB, p.ID)
+							eType, eVal := productProfitType(r.Context(), h.Products, p.ProfitType, p.ProfitValue, p.ID), productProfitValue(r.Context(), h.Products, p.ProfitType, p.ProfitValue, p.ID)
 							m = fmt.Sprintf("%.2f", service.DisplayPrice(priceVal(pr.Monthly), opts, eType, eVal))
 						}
 						views = append(views, productView{ID: p.ID, Name: p.Name, Desc: p.Description, Monthly: m, Stock: p.Stock})
@@ -365,7 +330,7 @@ func (h *Pages) productListPage(w http.ResponseWriter, r *http.Request, _ string
 			}
 		}
 	}
-	render(w, r, "products.html", map[string]any{
+	h.render(w, r, "products.html", map[string]any{
 		"Products": views, "Types": nav, "FID": fid, "GID": gid,
 		"Announcements": h.listAnnouncements(r.Context()),
 	})
@@ -405,18 +370,18 @@ func (h *Pages) buyForm(w http.ResponseWriter, r *http.Request) {
 	}
 	cfgJSON, _ := json.Marshal(map[string]any{
 		"base": baseMap, "options": opts,
-		"profit_type":  resolveProfitType(r.Context(), p.ProfitType, p.ProfitValue, h.Products.DB, p.ID),
-		"profit_value": resolveProfitValue(r.Context(), p.ProfitType, p.ProfitValue, h.Products.DB, p.ID),
+		"profit_type":  productProfitType(r.Context(), h.Products, p.ProfitType, p.ProfitValue, p.ID),
+		"profit_value": productProfitValue(r.Context(), h.Products, p.ProfitType, p.ProfitValue, p.ID),
 	})
 	// 周期下拉展示价：配置计价型（基础价 0）用加成后起步价，普通产品直接加成基础价。
-	eType, eVal := resolveProfitType(r.Context(), p.ProfitType, p.ProfitValue, h.Products.DB, p.ID), resolveProfitValue(r.Context(), p.ProfitType, p.ProfitValue, h.Products.DB, p.ID)
+	eType, eVal := productProfitType(r.Context(), h.Products, p.ProfitType, p.ProfitValue, p.ID), productProfitValue(r.Context(), h.Products, p.ProfitType, p.ProfitValue, p.ID)
 	dispMonthly := fmt.Sprintf("%.2f", service.DisplayPrice(priceVal(pr.Monthly), opts, eType, eVal))
 	dispQuarterly := fmt.Sprintf("%.2f", service.DisplayPrice(priceVal(pr.Quarterly), opts, eType, eVal))
 	dispYearly := fmt.Sprintf("%.2f", service.DisplayPrice(priceVal(pr.Yearly), opts, eType, eVal))
-	render(w, r, "buy.html", map[string]any{
+	h.render(w, r, "buy.html", map[string]any{
 		"Product": p, "Monthly": dispMonthly, "Quarterly": dispQuarterly, "Yearly": dispYearly,
 		"ShowQuarterly": showQ, "ShowYearly": showY,
-		"CSRF": csrfOf(sessionsStore, w, r), "Options": opts,
+		"CSRF": h.pageCSRF(w, r), "Options": opts,
 		"ConfigData": template.JS(cfgJSON), "LoggedIn": isLoggedIn(r),
 	})
 }
@@ -430,35 +395,22 @@ func priceVal(s string) float64 {
 	return v
 }
 
-// resolveProfitType/resolveProfitValue 回退利润：产品利润为空时用服务器默认值。
-func resolveProfitType(ctx context.Context, pType int16, pVal float64, db *sql.DB, productID int64) int16 {
+// productProfitType/productProfitValue 返回计价用利润方式/值：产品自身设置了利润则用
+// 产品值，否则回退到其所属服务器默认利润（无则为 0）。各自独立判定，语义与旧实现一致。
+func productProfitType(ctx context.Context, products *repo.Products, pType int16, pVal float64, productID int64) int16 {
 	if pVal > 0 {
 		return pType
 	}
-	var sid sql.NullInt64
-	db.QueryRowContext(ctx, `SELECT server_id FROM products WHERE id=$1`, productID).Scan(&sid)
-	if sid.Valid {
-		var st int16
-		if db.QueryRowContext(ctx, `SELECT coalesce(profit_type,0) FROM servers WHERE id=$1`, sid.Int64).Scan(&st) == nil && st > 0 {
-			return st
-		}
-	}
-	return 0
+	t, _ := products.ServerProfitFallback(ctx, productID)
+	return t
 }
 
-func resolveProfitValue(ctx context.Context, pType int16, pVal float64, db *sql.DB, productID int64) float64 {
+func productProfitValue(ctx context.Context, products *repo.Products, _ int16, pVal float64, productID int64) float64 {
 	if pVal > 0 {
 		return pVal
 	}
-	var sid sql.NullInt64
-	db.QueryRowContext(ctx, `SELECT server_id FROM products WHERE id=$1`, productID).Scan(&sid)
-	if sid.Valid {
-		var sv float64
-		if db.QueryRowContext(ctx, `SELECT coalesce(profit_value,0) FROM servers WHERE id=$1`, sid.Int64).Scan(&sv) == nil && sv > 0 {
-			return sv
-		}
-	}
-	return 0
+	_, v := products.ServerProfitFallback(ctx, productID)
+	return v
 }
 
 func isLoggedIn(r *http.Request) bool {
@@ -487,8 +439,8 @@ func (h *Pages) myServices(w http.ResponseWriter, r *http.Request) {
 			list[i].ShowY = priceVal(pr.Yearly) > 0
 		}
 	}
-	render(w, r, "service_list.html", map[string]any{
-		"Services": list, "CSRF": csrfOf(sessionsStore, w, r)})
+	h.render(w, r, "service_list.html", map[string]any{
+		"Services": list, "CSRF": h.pageCSRF(w, r)})
 }
 
 func pathID(r *http.Request, name string) int64 {

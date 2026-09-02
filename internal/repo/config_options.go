@@ -59,7 +59,7 @@ func (v ConfigValue) Price(cycle string) float64 {
 // GetConfigOptions reads product configoption JSON. Returns empty slice when unset.
 func (p *Products) GetConfigOptions(ctx context.Context, productID int64) ([]ConfigOption, error) {
 	var raw []byte
-	err := p.DB.QueryRowContext(ctx,
+	err := p.db.QueryRowContext(ctx,
 		`SELECT configoption FROM products WHERE id=$1`, productID).Scan(&raw)
 	if err != nil {
 		return nil, err
@@ -95,7 +95,7 @@ func (p *Products) SaveConfigOptions(ctx context.Context, productID int64, opts 
 	if err != nil {
 		return err
 	}
-	_, err = p.DB.ExecContext(ctx,
+	_, err = p.db.ExecContext(ctx,
 		`UPDATE products SET configoption=$2 WHERE id=$1`, productID, b)
 	return err
 }

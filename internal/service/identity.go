@@ -71,12 +71,15 @@ type Identity struct {
 	indexKey     []byte
 }
 
-func NewIdentity(store *repo.IdentityStore, users *repo.Users, pii *crypto.Cryptor, files *storage.PrivateFiles, otp PhoneOTPProvider, keyMaterial string, notifier *Notifier) *Identity {
+func NewIdentity(store *repo.IdentityStore, users *repo.Users, pii *crypto.Cryptor, files *storage.PrivateFiles, otp PhoneOTPProvider, keyMaterial string, notifier *Notifier, settings *repo.Settings, baseURL string, verification *ConfiguredVerificationProvider) *Identity {
 	h := sha256.Sum256([]byte("lumeidc identity index v1:" + keyMaterial))
 	if otp == nil {
 		otp = UnavailablePhoneOTPProvider{}
 	}
-	return &Identity{Store: store, Users: users, PII: pii, Files: files, OTP: otp, Notifier: notifier, Verification: NewConfiguredVerificationProvider(nil, ""), indexKey: h[:]}
+	if verification == nil {
+		verification = NewConfiguredVerificationProvider(settings, baseURL)
+	}
+	return &Identity{Store: store, Users: users, PII: pii, Files: files, OTP: otp, Notifier: notifier, Settings: settings, Verification: verification, BaseURL: baseURL, indexKey: h[:]}
 }
 
 var mainlandPhone = regexp.MustCompile(`^1[3-9][0-9]{9}$`)
@@ -188,8 +191,7 @@ func (s *Identity) ConfirmPhoneCode(ctx context.Context, userID int64, purpose, 
 		return errors.New("账户已绑定手机号，请使用换绑流程")
 	}
 	// 仓储层需要挑战中的目标手机号；先取当前 pending 挑战的手机号。
-	var target string
-	err = s.Store.DB.QueryRowContext(ctx, `SELECT phone_e164 FROM phone_verification_challenges WHERE user_id=$1 AND purpose=$2 AND consumed_at IS NULL AND invalidated_at IS NULL ORDER BY id DESC LIMIT 1`, userID, purpose).Scan(&target)
+	target, err := s.Store.PendingPhone(ctx, userID, purpose)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return repo.ErrChallengeInvalid

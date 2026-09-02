@@ -15,7 +15,7 @@ import (
 )
 
 type Orders struct {
-	DB       *sql.DB
+	db       *sql.DB
 	Products *repo.Products
 	Coupons  *repo.Coupons
 	Identity interface {
@@ -35,7 +35,7 @@ func (o *Orders) CreateOrder(ctx context.Context, userID, productID, pricesetID 
 	if !ok {
 		return 0, 0, "", fmt.Errorf("无效的计费周期: %s", cycle)
 	}
-	tx, err := o.DB.BeginTx(ctx, nil)
+	tx, err := o.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, 0, "", err
 	}
@@ -195,7 +195,7 @@ func (o *Orders) CreateRechargeInvoice(ctx context.Context, userID int64, amount
 		return 0, err
 	}
 	var id int64
-	err = o.DB.QueryRowContext(ctx,
+	err = o.db.QueryRowContext(ctx,
 		`INSERT INTO invoices(no,user_id,amount,kind) VALUES($1,$2,$3,'recharge') RETURNING id`,
 		no, userID, amount).Scan(&id)
 	return id, err
@@ -281,7 +281,7 @@ func (o *Orders) CreateRenewOrder(ctx context.Context, userID, serviceID int64, 
 	if !ok {
 		return 0, 0, "", fmt.Errorf("无效的计费周期: %s", cycle)
 	}
-	tx, err := o.DB.BeginTx(ctx, nil)
+	tx, err := o.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, 0, "", err
 	}

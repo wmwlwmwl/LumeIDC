@@ -15,6 +15,7 @@ import (
 type AdminServers struct {
 	Servers   *repo.Servers
 	Providers *server.Registry
+	*Deps
 }
 
 func (s *AdminServers) require(w http.ResponseWriter, r *http.Request) bool {
@@ -51,8 +52,8 @@ func (s *AdminServers) List(w http.ResponseWriter, r *http.Request) {
 			C: sv.APIURL, D: d,
 		})
 	}
-	renderAdmin(w, "admin_servers.html", AdminData{
-		Rows: rows, CSRF: csrfOf(adminSessions, w, r), Error: r.URL.Query().Get("err"),
+	s.renderAdmin(w, "admin_servers.html", AdminData{
+		Rows: rows, CSRF: s.adminCSRF(w, r), Error: r.URL.Query().Get("err"),
 	})
 }
 
@@ -60,7 +61,7 @@ func (s *AdminServers) Form(w http.ResponseWriter, r *http.Request) {
 	if !s.require(w, r) {
 		return
 	}
-	data := AdminData{CSRF: csrfOf(adminSessions, w, r), Providers: s.Providers.List()}
+	data := AdminData{CSRF: s.adminCSRF(w, r), Providers: s.Providers.List()}
 	// 凭据字段按 provider 动态渲染：{"fields": {code: [字段...]}, "values": {列: 当前值}}
 	payload := map[string]any{
 		"fields": s.Providers.CredentialFieldSets(),
@@ -81,7 +82,7 @@ func (s *AdminServers) Form(w http.ResponseWriter, r *http.Request) {
 	if b, err := json.Marshal(payload); err == nil {
 		data.ProviderFieldsJSON = template.JS(b)
 	}
-	renderAdmin(w, "admin_server_form.html", data)
+	s.renderAdmin(w, "admin_server_form.html", data)
 }
 
 func (s *AdminServers) Save(w http.ResponseWriter, r *http.Request) {

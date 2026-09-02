@@ -15,7 +15,7 @@ import (
 
 // Console 用户侧实例控制台操作（含归属校验）。
 type Console struct {
-	DB        *sql.DB
+	db        *sql.DB
 	Servers   *repo.Servers
 	Products  *repo.Products
 	Providers *server.Registry
@@ -28,7 +28,7 @@ func (c *Console) resolveBase(ctx context.Context, userID, serviceID int64) (ser
 	var serverID sql.NullInt64
 	var hostID int64
 	var providerCode string
-	err := c.DB.QueryRowContext(ctx,
+	err := c.db.QueryRowContext(ctx,
 		`SELECT sv.upstream_host_id, coalesce(sv.server_id,p.server_id),
 		        coalesce(nullif(sv.upstream_provider,''),srv.provider,'')
 		 FROM services sv JOIN products p ON p.id=sv.product_id
@@ -105,7 +105,7 @@ func (c *Console) savePassword(ctx context.Context, serviceID int64, password st
 		log.Printf("[console] service %d 密码加密失败: %v", serviceID, err)
 		return
 	}
-	if _, err := c.DB.ExecContext(ctx,
+	if _, err := c.db.ExecContext(ctx,
 		`UPDATE services SET password_crypt=$2 WHERE id=$1`, serviceID, enc); err != nil {
 		log.Printf("[console] service %d 密码落库失败: %v", serviceID, err)
 	}
@@ -126,7 +126,7 @@ func (c *Console) ProviderWidget(ctx context.Context, userID, serviceID int64, c
 	var pw string
 	var enc string
 	if c.Crypt != nil {
-		if qerr := c.DB.QueryRowContext(ctx,
+		if qerr := c.db.QueryRowContext(ctx,
 			`SELECT password_crypt FROM services WHERE id=$1`, serviceID).Scan(&enc); qerr == nil {
 			if dec, derr := c.Crypt.Decrypt(enc); derr == nil {
 				pw = dec
@@ -144,7 +144,7 @@ func (c *Console) fillPassword(ctx context.Context, serviceID int64, d *server.H
 		return
 	}
 	var enc string
-	if err := c.DB.QueryRowContext(ctx,
+	if err := c.db.QueryRowContext(ctx,
 		`SELECT password_crypt FROM services WHERE id=$1`, serviceID).Scan(&enc); err != nil {
 		return
 	}

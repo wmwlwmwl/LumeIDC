@@ -8,7 +8,7 @@ import (
 )
 
 // AdminLog 管理员操作审计日志。ponytail: 仅记录后台关键写操作，读操作不记。
-type AdminLog struct{ DB *sql.DB }
+type AdminLog struct{ db *sql.DB }
 
 type AdminLogRow struct {
 	ID         int64
@@ -22,7 +22,7 @@ type AdminLogRow struct {
 }
 
 func (l *AdminLog) Add(ctx context.Context, adminID int64, action, targetType string, targetID int64, detail, ip string) error {
-	_, err := l.DB.ExecContext(ctx,
+	_, err := l.db.ExecContext(ctx,
 		`INSERT INTO admin_logs(admin_id,action,target_type,target_id,detail,ip)
 		 VALUES($1,$2,$3,$4,$5,$6)`,
 		adminID, action, targetType, targetID, detail, ip)
@@ -33,7 +33,7 @@ func (l *AdminLog) List(ctx context.Context, limit int) ([]AdminLogRow, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 100
 	}
-	rows, err := l.DB.QueryContext(ctx,
+	rows, err := l.db.QueryContext(ctx,
 		`SELECT id,admin_id,action,target_type,target_id,detail,ip,created_at
 		 FROM admin_logs ORDER BY id DESC LIMIT $1`, limit)
 	if err != nil {
@@ -51,12 +51,12 @@ func (l *AdminLog) List(ctx context.Context, limit int) ([]AdminLogRow, error) {
 	return out, rows.Err()
 }
 
-// RecordAudit 写审计日志，失败仅记日志不阻断主流程。
-func RecordAudit(db *sql.DB, adminID int64, action, targetType string, targetID int64, detail, ip string) {
-	if db == nil {
+// Record 写审计日志，失败仅记日志不阻断主流程（语义与原 RecordAudit 一致）。
+func (l *AdminLog) Record(adminID int64, action, targetType string, targetID int64, detail, ip string) {
+	if l == nil {
 		return
 	}
-	if err := (&AdminLog{DB: db}).Add(context.Background(), adminID, action, targetType, targetID, detail, ip); err != nil {
+	if err := l.Add(context.Background(), adminID, action, targetType, targetID, detail, ip); err != nil {
 		log.Printf("[audit] 写入失败: %v", err)
 	}
 }

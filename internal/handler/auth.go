@@ -8,10 +8,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"strings"
-	"text/template"
 	"time"
 
 	"lumeidc/internal/captcha"
@@ -26,12 +24,14 @@ var authFS embed.FS
 type Auth struct {
 	Users        *repo.Users
 	Sessions     *middleware.Store
+	Settings     *repo.Settings
 	Lockout      *repo.LoginAttempts
 	Notifier     *service.Notifier
 	Challenges   *service.AuthChallengeService
 	Captcha      service.CaptchaProvider
 	LocalCaptcha *captcha.Service
 	BaseURL      string
+	*Deps
 }
 
 func (h *Auth) Register(mux *http.ServeMux) {
@@ -48,27 +48,11 @@ func (h *Auth) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /verify", h.verifyEmail)
 }
 
-func renderAuth(w http.ResponseWriter, data map[string]any) {
-	fillSiteData(data)
-	tpl, err := template.ParseFS(authFS, "templates/auth.html")
-	if err != nil {
-		http.Error(w, err.Error(), 500)
-		return
-	}
-	if err := tpl.Execute(w, data); err != nil {
-		log.Printf("[template] auth.html 执行失败: %v", err)
-	}
-}
-
 func (h *Auth) settingOn(ctx context.Context, key string, fallback bool) bool {
-	if h.Users == nil || h.Users.DB == nil {
+	if h.Settings == nil {
 		return fallback
 	}
-	var value string
-	if err := h.Users.DB.QueryRowContext(ctx, `SELECT value FROM settings WHERE key=$1`, key).Scan(&value); err != nil {
-		return fallback
-	}
-	return value == "1"
+	return h.Settings.Bool(ctx, key, fallback)
 }
 
 func (h *Auth) authFormData(ctx context.Context, w http.ResponseWriter, r *http.Request, register bool) map[string]any {
@@ -107,12 +91,12 @@ func (h *Auth) authFormData(ctx context.Context, w http.ResponseWriter, r *http.
 func (h *Auth) registerForm(w http.ResponseWriter, r *http.Request) {
 	data := h.authFormData(r.Context(), w, r, true)
 	data["IsRegister"] = true
-	renderAuth(w, data)
+	h.renderAuth(w, data)
 }
 func (h *Auth) loginForm(w http.ResponseWriter, r *http.Request) {
 	data := h.authFormData(r.Context(), w, r, false)
 	data["Next"] = safeNext(r.URL.Query().Get("next"))
-	renderAuth(w, data)
+	h.renderAuth(w, data)
 }
 
 func (h *Auth) captchaImage(w http.ResponseWriter, r *http.Request) {
@@ -327,7 +311,7 @@ func (h *Auth) renderRegisterError(w http.ResponseWriter, r *http.Request, msg s
 	data := h.authFormData(r.Context(), w, r, true)
 	data["IsRegister"] = true
 	data["Error"] = msg
-	renderAuth(w, data)
+	h.renderAuth(w, data)
 }
 
 func (h *Auth) phoneCode(w http.ResponseWriter, r *http.Request) {
@@ -397,7 +381,7 @@ func (h *Auth) loginError(w http.ResponseWriter, r *http.Request, status int, ms
 	data := h.authFormData(r.Context(), w, r, false)
 	data["Error"] = msg
 	w.WriteHeader(status)
-	renderAuth(w, data)
+	h.renderAuth(w, data)
 }
 func (h *Auth) loginSubmit(w http.ResponseWriter, r *http.Request) {
 	if e := h.captchaCheck(r.Context(), "login", r, false); e != nil {

@@ -10,7 +10,7 @@ import (
 // ChangePassword 校验旧密码并更新为新密码哈希。
 func (u *Users) ChangePassword(ctx context.Context, userID int64, oldPass, newPass string) error {
 	var hash []byte
-	err := u.DB.QueryRowContext(ctx,
+	err := u.db.QueryRowContext(ctx,
 		`SELECT password_hash FROM users WHERE id=$1`, userID).Scan(&hash)
 	if err != nil {
 		return errors.New("用户不存在")
@@ -22,7 +22,7 @@ func (u *Users) ChangePassword(ctx context.Context, userID int64, oldPass, newPa
 	if err != nil {
 		return err
 	}
-	_, err = u.DB.ExecContext(ctx,
+	_, err = u.db.ExecContext(ctx,
 		`UPDATE users SET password_hash=$2 WHERE id=$1`, userID, string(newHash))
 	return err
 }

@@ -17,7 +17,7 @@ type FulfillmentJob struct {
 	Attempts  int
 }
 
-type FulfillmentJobs struct{ DB *sql.DB }
+type FulfillmentJobs struct{ db *sql.DB }
 
 func (r *FulfillmentJobs) EnqueueTx(ctx context.Context, tx *sql.Tx, serviceID, orderID int64, kind, cycle string) error {
 	key := fmt.Sprintf("%s:%d", kind, orderID)
@@ -29,7 +29,7 @@ func (r *FulfillmentJobs) EnqueueTx(ctx context.Context, tx *sql.Tx, serviceID, 
 }
 
 func (r *FulfillmentJobs) Claim(ctx context.Context, lease time.Duration) (*FulfillmentJob, error) {
-	tx, err := r.DB.BeginTx(ctx, nil)
+	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -63,7 +63,7 @@ func (r *FulfillmentJobs) Claim(ctx context.Context, lease time.Duration) (*Fulf
 }
 
 func (r *FulfillmentJobs) Complete(ctx context.Context, id int64) error {
-	_, err := r.DB.ExecContext(ctx,
+	_, err := r.db.ExecContext(ctx,
 		`UPDATE fulfillment_jobs SET status='succeeded',lease_until=NULL,last_error='',updated_at=now() WHERE id=$1`, id)
 	return err
 }
@@ -71,7 +71,7 @@ func (r *FulfillmentJobs) Complete(ctx context.Context, id int64) error {
 // HasRunningJob 检查指定服务是否有正在执行的履约任务。
 func (r *FulfillmentJobs) HasRunningJob(ctx context.Context, serviceID int64) (bool, error) {
 	var exists bool
-	err := r.DB.QueryRowContext(ctx,
+	err := r.db.QueryRowContext(ctx,
 		`SELECT EXISTS(SELECT 1 FROM fulfillment_jobs WHERE service_id=$1 AND status='running')`,
 		serviceID).Scan(&exists)
 	return exists, err
@@ -80,7 +80,7 @@ func (r *FulfillmentJobs) HasRunningJob(ctx context.Context, serviceID int64) (b
 // EnqueueRetry 入队重试任务（管理员手动重试），dedupe key 含时间戳避免与已有任务冲突。
 func (r *FulfillmentJobs) EnqueueRetry(ctx context.Context, serviceID int64, kind, cycle string) error {
 	key := fmt.Sprintf("retry:%s:%d:%d", kind, serviceID, time.Now().UnixNano())
-	_, err := r.DB.ExecContext(ctx,
+	_, err := r.db.ExecContext(ctx,
 		`INSERT INTO fulfillment_jobs(service_id,kind,cycle,dedupe_key)
 		 VALUES($1,$2,$3,$4)`,
 		serviceID, kind, cycle, key)
@@ -104,7 +104,7 @@ func (r *FulfillmentJobs) Fail(ctx context.Context, id int64, attempts int, caus
 	if len(msg) > 500 {
 		msg = msg[:500]
 	}
-	_, err := r.DB.ExecContext(ctx,
+	_, err := r.db.ExecContext(ctx,
 		`UPDATE fulfillment_jobs SET status=$2,lease_until=NULL,last_error=$3,
 		 next_attempt_at=now()+($4 * interval '1 second'),updated_at=now() WHERE id=$1`,
 		id, status, msg, int64(delay.Seconds()))
@@ -120,7 +120,7 @@ func (r *FulfillmentJobs) MarkManualReview(ctx context.Context, id int64, cause 
 	if len(msg) > 500 {
 		msg = msg[:500]
 	}
-	_, err := r.DB.ExecContext(ctx,
+	_, err := r.db.ExecContext(ctx,
 		`UPDATE fulfillment_jobs SET status='manual_review',lease_until=NULL,last_error=$2,updated_at=now() WHERE id=$1`,
 		id, msg)
 	return err
