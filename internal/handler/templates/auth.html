@@ -3,15 +3,17 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>LumeIDC</title>
+<title>{{if .IsAdmin}}管理员登录{{else if .IsRegister}}注册{{else}}登录{{end}} - {{.SiteName}}</title>
+{{if .SiteDescription}}<meta name="description" content="{{.SiteDescription}}">{{end}}
+{{if .SiteKeywords}}<meta name="keywords" content="{{.SiteKeywords}}">{{end}}
 <link rel="stylesheet" href="/assets/vendor/bootstrap-5.3.3/css/bootstrap.min.css">
 <link rel="stylesheet" href="/assets/css/lume.css">
 </head>
 <body class="site-body">
 <a class="ui-skip" href="#auth-main">跳到主要内容</a>
 <main class="auth-layout" id="auth-main">
-<section class="auth-visual"><a class="brand" href="/"><span class="brand-mark">L</span><span>Lume<span class="brand-soft">IDC</span></span></a><div class="auth-visual-copy"><span class="eyebrow">LUMEIDC CLOUD PLATFORM</span><h1>稳定的基础设施，<br>从一个账户开始。</h1><p>集中管理你的云服务、订单和资源。</p></div><small class="auth-visual-foot">© LumeIDC · Cloud made simple</small></section>
-<section class="auth-panel"><div class="auth-box"><a class="auth-mobile-brand brand" href="/"><span class="brand-mark">L</span><span>Lume<span class="brand-soft">IDC</span></span></a><div class="auth-box-heading"><span class="eyebrow">{{if .IsRegister}}CREATE ACCOUNT{{else if .IsAdmin}}ADMIN ACCESS{{else}}WELCOME BACK{{end}}</span>
+<section class="auth-visual"><a class="brand" href="/"><span class="brand-mark">{{.SiteMark}}</span><span>{{.SiteName}}</span></a><div class="auth-visual-copy"><span class="eyebrow">CLOUD PLATFORM</span><h1>稳定的基础设施，<br>从一个账户开始。</h1><p>集中管理你的云服务、订单和资源。</p></div><small class="auth-visual-foot">© {{.SiteName}} · Cloud made simple</small></section>
+<section class="auth-panel"><div class="auth-box"><a class="auth-mobile-brand brand" href="/"><span class="brand-mark">{{.SiteMark}}</span><span>{{.SiteName}}</span></a><div class="auth-box-heading"><span class="eyebrow">{{if .IsRegister}}CREATE ACCOUNT{{else if .IsAdmin}}ADMIN ACCESS{{else}}WELCOME BACK{{end}}</span>
 {{if .Error}}<div class="ui-alert ui-alert-error" role="alert">{{.Error}}</div>{{end}}
 
 {{if .IsAdmin}}
@@ -42,6 +44,9 @@
 <form method="post" action="/login"><input type="hidden" name="_csrf" value="{{.CSRF}}"><input type="hidden" name="next" value="{{.Next}}"><label for="auth-account">邮箱或手机号</label><input class="form-control" id="auth-account" name="email" required autocomplete="username"><label for="auth-password">密码</label><input class="form-control" id="auth-password" name="password" type="password" required autocomplete="current-password">{{if .ExternalLoginCaptcha}}{{template "external-captcha" (print "login")}}{{end}}{{if .CaptchaLoginEnabled}}{{template "local-captcha" (print "login")}}{{end}}<button class="ui-btn" type="submit">登录</button></form>
 {{if .PhoneOTPLoginEnabled}}<p class="auth-sub">已绑定手机号？可使用短信验证码登录：</p><form method="post" action="/auth/phone-code"><input type="hidden" name="_csrf" value="{{.CSRF}}"><label for="auth-phone-code">手机号</label><input class="form-control" id="auth-phone-code" name="phone" type="tel" required autocomplete="tel">{{if .ExternalPhoneLoginCaptcha}}{{template "external-captcha" (print "phone_login_code")}}{{end}}{{if .CaptchaPhoneCodeEnabled}}{{template "code-captcha" (print "phone_code")}}{{end}}<button class="ui-btn ui-btn-secondary" type="submit">发送登录验证码</button></form><form method="post" action="/auth/login-by-code"><input type="hidden" name="_csrf" value="{{.CSRF}}"><input type="hidden" name="next" value="{{.Next}}"><label for="auth-login-phone">手机号</label><input class="form-control" id="auth-login-phone" name="phone" type="tel" required autocomplete="tel"><label for="auth-login-code">短信验证码</label><input class="form-control" id="auth-login-code" name="code" inputmode="numeric" minlength="6" maxlength="6" required autocomplete="one-time-code"><button class="ui-btn ui-btn-secondary" type="submit">验证码登录</button></form>{{end}}
 <p>还没有账号？<a href="/register">免费注册</a></p><p class="auth-sub"><a href="/admin/login">管理员登录</a></p>
+{{end}}
+{{if or .ServiceEmail .ServicePhone .ServiceHours}}
+<p class="auth-sub auth-contact">需要帮助？{{if .ServiceEmail}}<a href="mailto:{{.ServiceEmail}}">{{.ServiceEmail}}</a>{{end}}{{if .ServicePhone}}<a href="tel:{{.ServicePhone}}">{{.ServicePhone}}</a>{{end}}{{if .ServiceHours}} · 工作时间：{{.ServiceHours}}{{end}}</p>
 {{end}}
 </div></div></section></main>
 

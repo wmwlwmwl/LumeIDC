@@ -21,7 +21,7 @@
     </label>
   </div>
   <div class="admin-table-wrap">
-    <table class="admin-table" id="tblServers">
+    <table class="admin-table" id="tblServers" data-pageable>
       <thead>
         <tr>
           <th scope="col">ID</th>
@@ -45,7 +45,7 @@
             <a href="/admin/servers/{{.ID}}/catalog" class="admin-row-btn">浏览商品</a>
             <a href="#" onclick="testConn({{.ID}}, this);return false" class="admin-row-btn is-success">测试</a>
             <span class="testmsg text-muted small"></span>
-            <form method="post" action="/admin/servers/{{.ID}}/delete" class="inline-form" data-confirm="确认删除服务器「{{.A}}」？仍有产品绑定时无法删除。">
+            <form method="post" action="/admin/servers/{{.ID}}/delete" class="inline-form" data-confirm="确认删除服务器「{{.A}}」？仍有产品绑定时无法删除。" data-danger>
               <input type="hidden" name="_csrf" value="{{$.CSRF}}">
               <button class="admin-row-btn is-danger" type="submit">删除</button>
             </form>

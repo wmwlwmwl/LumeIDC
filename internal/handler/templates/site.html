@@ -4,7 +4,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>LumeIDC</title>
+<title>{{if .PageTitle}}{{.PageTitle}} - {{end}}{{.SiteName}}</title>
+{{if .SiteDescription}}<meta name="description" content="{{.SiteDescription}}">{{end}}
+{{if .SiteKeywords}}<meta name="keywords" content="{{.SiteKeywords}}">{{end}}
 <link rel="stylesheet" href="/assets/vendor/bootstrap-5.3.3/css/bootstrap.min.css">
 <link rel="stylesheet" href="/assets/css/lume.css">
 <script src="/assets/js/lume.js" defer></script>
@@ -15,8 +17,8 @@
 <header class="fx-header" data-site-header>
   <div class="fx-header-inner">
     <a class="fx-brand" href="/">
-      <span class="fx-brand-mark">L</span>
-      <span class="fx-brand-name">Lume<span class="fx-brand-accent">IDC</span></span>
+      <span class="fx-brand-mark">{{.SiteMark}}</span>
+      <span class="fx-brand-name">{{.SiteName}}</span>
     </a>
 
     <button class="fx-menu-toggle" type="button" data-site-menu aria-controls="site-nav" aria-expanded="false">

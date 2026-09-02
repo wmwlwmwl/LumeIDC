@@ -21,7 +21,7 @@
     </label>
   </div>
   <div class="admin-table-wrap">
-    <table class="admin-table" id="tblOrders">
+    <table class="admin-table" id="tblOrders" data-pageable>
       <thead>
         <tr>
           <th scope="col">ID</th>
@@ -31,7 +31,7 @@
           <th scope="col">周期</th>
           <th scope="col">状态</th>
           <th scope="col">利润</th>
-          <th scope="col" class="th-actions">退款操作</th>
+          <th scope="col" class="th-actions">操作</th>
         </tr>
       </thead>
       <tbody>
@@ -49,19 +49,23 @@
           </td>
           <td>{{if .E}}￥{{.E}}{{else}}-{{end}}</td>
           <td class="td-actions">
-            <form method="post" action="/admin/orders/{{.ID}}/refund" class="admin-refund-form" data-confirm="确认对订单 #{{.ID}}（{{.A}}）执行退款？退款操作会记录流水且不可撤销。">
-              <input type="hidden" name="_csrf" value="{{$.CSRF}}">
-              <label class="visually-hidden" for="refund-amount-{{.ID}}">退款金额</label>
-              <input class="admin-input-sm" id="refund-amount-{{.ID}}" name="amount" value="{{.B}}" placeholder="金额">
-              <label class="visually-hidden" for="refund-method-{{.ID}}">退款方式</label>
-              <select class="admin-select-sm" id="refund-method-{{.ID}}" name="method">
-                <option value="balance">退余额</option>
-                <option value="gateway">线下/手动</option>
-              </select>
-              <label class="visually-hidden" for="refund-reason-{{.ID}}">退款原因</label>
-              <input class="admin-input-sm" id="refund-reason-{{.ID}}" name="reason" placeholder="原因">
-              <button class="admin-row-btn is-danger" type="submit">退款</button>
-            </form>
+            <details class="admin-action-pop">
+              <summary>退款</summary>
+              <form method="post" action="/admin/orders/{{.ID}}/refund" class="admin-pop-form admin-pop-form-wide" data-confirm="确认对订单 #{{.ID}}（{{.A}}）执行退款？退款操作会记录流水且不可撤销。" data-danger>
+                <input type="hidden" name="_csrf" value="{{$.CSRF}}">
+                <span class="text-muted small">订单 #{{.ID}} · 金额 ￥{{.B}}</span>
+                <label for="refund-amount-{{.ID}}">退款金额</label>
+                <input id="refund-amount-{{.ID}}" name="amount" value="{{.B}}" placeholder="金额" required>
+                <label for="refund-method-{{.ID}}">退款方式</label>
+                <select id="refund-method-{{.ID}}" name="method">
+                  <option value="balance">退余额</option>
+                  <option value="gateway">线下/手动</option>
+                </select>
+                <label for="refund-reason-{{.ID}}">退款原因（可选）</label>
+                <input id="refund-reason-{{.ID}}" name="reason" placeholder="如 用户申请">
+                <button class="ui-btn ui-btn-small ui-btn-danger" type="submit">执行退款</button>
+              </form>
+            </details>
           </td>
         </tr>
         {{end}}

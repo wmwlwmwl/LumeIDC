@@ -98,6 +98,35 @@ func (h *Pages) notifications(w http.ResponseWriter, r *http.Request) {
 	render(w, r, "user_notifications.html", map[string]any{"Rows": list})
 }
 
+// pageTitleLabel 返回前台页面对应的浏览器标题前缀；未匹配（兜底）返回空。
+func pageTitleLabel(page string) string {
+	switch page {
+	case "products.html":
+		return "产品与服务"
+	case "buy.html":
+		return "购买服务"
+	case "service_list.html":
+		return "我的服务"
+	case "service_detail.html":
+		return "服务详情"
+	case "user_home.html":
+		return "账户概览"
+	case "user_recharge.html":
+		return "账户充值"
+	case "user_invoices.html":
+		return "财务记录"
+	case "user_notifications.html":
+		return "消息中心"
+	case "user_profile.html":
+		return "账户资料"
+	case "user_password.html":
+		return "安全设置"
+	case "user_verification.html":
+		return "实名认证"
+	}
+	return ""
+}
+
 // render 用 site.html 作为布局渲染子页。balanceRepo 由 httpserver 注入用于导航栏余额显示。
 var balanceRepo *repo.Balance
 
@@ -112,7 +141,9 @@ func render(w http.ResponseWriter, r *http.Request, page string, data map[string
 	if data == nil {
 		data = map[string]any{}
 	}
+	fillSiteData(data)
 	data["Page"] = page
+	data["PageTitle"] = pageTitleLabel(page)
 	if sess := middleware.FromSession(r.Context()); sess != nil {
 		data["CSRF"] = sess.CSRFToken()
 		if sess.UserID > 0 && !sess.IsAdmin {

@@ -49,7 +49,7 @@ func (h *Auth) Register(mux *http.ServeMux) {
 }
 
 func renderAuth(w http.ResponseWriter, data map[string]any) {
-	data["SiteName"] = "LumeIDC"
+	fillSiteData(data)
 	tpl, err := template.ParseFS(authFS, "templates/auth.html")
 	if err != nil {
 		http.Error(w, err.Error(), 500)
@@ -393,18 +393,22 @@ func (h *Auth) verifyEmail(w http.ResponseWriter, r *http.Request) {
 	}
 	fmt.Fprintf(w, verifyPageHTML, msg)
 }
+func (h *Auth) loginError(w http.ResponseWriter, r *http.Request, status int, msg string) {
+	data := h.authFormData(r.Context(), w, r, false)
+	data["Error"] = msg
+	w.WriteHeader(status)
+	renderAuth(w, data)
+}
 func (h *Auth) loginSubmit(w http.ResponseWriter, r *http.Request) {
 	if e := h.captchaCheck(r.Context(), "login", r, false); e != nil {
-		w.WriteHeader(401)
-		renderAuth(w, map[string]any{"CSRF": csrfOf(h.Sessions, w, r), "Error": "请完成验证码后再登录"})
+		h.loginError(w, r, 401, "请完成验证码后再登录")
 		return
 	}
 	identifier := strings.TrimSpace(r.PostFormValue("email"))
 	lock := strings.ToLower(identifier)
 	if h.Lockout != nil {
 		if locked, e := h.Lockout.Locked(r.Context(), lock); e == nil && locked {
-			w.WriteHeader(429)
-			renderAuth(w, map[string]any{"CSRF": csrfOf(h.Sessions, w, r), "Error": "尝试次数过多，请稍后再试"})
+			h.loginError(w, r, 429, "尝试次数过多，请稍后再试")
 			return
 		}
 	}
@@ -431,13 +435,11 @@ func (h *Auth) loginSubmit(w http.ResponseWriter, r *http.Request) {
 			_ = h.Lockout.Fail(r.Context(), lock)
 		}
 		time.Sleep(300 * time.Millisecond)
-		w.WriteHeader(401)
-		renderAuth(w, map[string]any{"CSRF": csrfOf(h.Sessions, w, r), "Error": "邮箱、手机号或密码错误"})
+		h.loginError(w, r, 401, "邮箱、手机号或密码错误")
 		return
 	}
 	if !u.Verified {
-		w.WriteHeader(401)
-		renderAuth(w, map[string]any{"CSRF": csrfOf(h.Sessions, w, r), "Error": "请先完成邮箱验证"})
+		h.loginError(w, r, 401, "请先完成邮箱验证")
 		return
 	}
 	if h.Lockout != nil {

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>账单支付 - LumeIDC</title>
+<title>{{if .Recharge}}余额充值{{else}}账单支付{{end}} - {{.SiteName}}</title>
 <link rel="stylesheet" href="/assets/vendor/bootstrap-5.3.3/css/bootstrap.min.css">
 <link rel="stylesheet" href="/assets/css/lume.css">
 </head>
@@ -11,8 +11,8 @@
 <main class="fx-pay-wrap">
   <div class="fx-pay-card">
     <div class="fx-pay-brand">
-      <span class="fx-brand-mark">L</span>
-      <span>Lume<span class="fx-brand-accent">IDC</span></span>
+      <span class="fx-brand-mark">{{.SiteMark}}</span>
+      <span>{{.SiteName}}</span>
     </div>
     <span class="eyebrow">SECURE PAYMENT</span>
     <h1>{{if .Recharge}}余额充值{{else}}账单支付{{end}}</h1>

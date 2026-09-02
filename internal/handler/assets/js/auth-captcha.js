@@ -1,6 +1,35 @@
 (() => {
   'use strict'
   const scripts = new Map()
+  const RESEND_SECONDS = 60
+  const resendTimers = new WeakMap()
+
+  function startResendCountdown(button) {
+    if (resendTimers.has(button)) return
+    if (!button.dataset.resendLabel) button.dataset.resendLabel = button.textContent
+    const until = Date.now() + RESEND_SECONDS * 1000
+    button.dataset.cooldownUntil = String(until)
+    const timer = window.setInterval(() => {
+      const remaining = Math.max(0, Math.ceil((until - Date.now()) / 1000))
+      if (remaining <= 0) {
+        window.clearInterval(timer)
+        resendTimers.delete(button)
+        button.disabled = false
+        button.textContent = button.dataset.resendLabel
+        return
+      }
+      button.textContent = remaining + '秒后可重新发送'
+      button.disabled = true
+    }, 250)
+    resendTimers.set(button, timer)
+  }
+
+  function enforceResendCooldown(button) {
+    if (button && button.dataset.cooldownUntil && Number(button.dataset.cooldownUntil) > Date.now()) {
+      button.disabled = true
+      if (!resendTimers.has(button)) startResendCountdown(button)
+    }
+  }
 
   function loadScript(url) {
     if (scripts.has(url)) return scripts.get(url)
@@ -105,22 +134,17 @@
     const form = formOf(box)
     if (!window.Corptcha || typeof window.Corptcha.render !== 'function') throw new Error('Corptcha SDK 初始化失败')
     const mount = document.createElement('div')
-    const button = document.createElement('button')
-    button.type = 'button'
-    button.className = 'ui-btn ui-btn-secondary'
-    button.textContent = '开始人机验证'
-    box.append(mount, button)
+    box.append(mount)
     const widget = window.Corptcha.render(mount, {
       siteKey: config.public_id,
       apiBaseUrl: config.api_base_url,
       purpose: config.purpose || config.scene || 'login',
-      autoExecute: false,
+      autoExecute: true,
       onSuccess: token => setFields(form, { captcha_token: token }),
       onError: () => { clearExternal(form); form.dataset.externalCaptchaReady = '0' },
       onExpired: () => { clearExternal(form); form.dataset.externalCaptchaReady = '0' }
     })
     if (!widget || typeof widget.execute !== 'function') throw new Error('Corptcha SDK 版本不受支持')
-    button.addEventListener('click', () => widget.execute())
   }
 
   async function initExternal(box) {
@@ -191,7 +215,21 @@
       if (code) code.required = requiresCode
       const localCode = dynamicCode.querySelector('[data-captcha-answer]')
       if (localCode) localCode.required = requiresCode
+      const codeCaptcha = dynamicCode.querySelector('[data-captcha-scene]')
+      if (codeCaptcha) {
+        if (requiresCode) {
+          const captchaScene = mode === 'phone' ? 'phone_code' : 'email_code'
+          if (codeCaptcha.dataset.captchaScene !== captchaScene) {
+            codeCaptcha.dataset.captchaScene = captchaScene
+            loadLocal(codeCaptcha)
+          }
+        } else {
+          codeCaptcha.dataset.captchaScene = 'dynamic'
+        }
+      }
     }
+    const sendCodeButton = dynamicCode ? dynamicCode.querySelector('button[onclick*="requestRegisterCode"]') : null
+    if (sendCodeButton) enforceResendCooldown(sendCodeButton)
     const directLocal = form.querySelector('[data-register-direct-captcha]')
     if (directLocal) {
       directLocal.style.display = requiresCode ? 'none' : 'block'
@@ -223,15 +261,27 @@
   }
 
   async function requestRegisterCode(button) {
+    if (button.disabled) return
     const form = button.closest('form')
     const data = new FormData(form)
     data.set('mode', currentMode(form))
-    const response = await fetch('/auth/register-code', { method: 'POST', body: data, credentials: 'same-origin' })
-    alert(await response.text())
-    clearExternal(form)
-    form.dataset.externalCaptchaReady = '0'
-    resetExternalCaptcha(form)
-    form.querySelectorAll('[data-captcha-scene]').forEach(loadLocal)
+    const original = button.textContent
+    button.disabled = true
+    let ok = false
+    try {
+      const response = await fetch('/auth/register-code', { method: 'POST', body: data, credentials: 'same-origin' })
+      ok = response.status === 202
+      alert(await response.text())
+      clearExternal(form)
+      form.dataset.externalCaptchaReady = '0'
+      resetExternalCaptcha(form)
+      form.querySelectorAll('[data-captcha-scene]').forEach(loadLocal)
+    } catch (_) {
+      button.textContent = original
+    } finally {
+      if (ok) startResendCountdown(button)
+      else if (!resendTimers.has(button)) button.disabled = false
+    }
   }
 
   function bindForm(form) {

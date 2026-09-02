@@ -22,7 +22,7 @@
     </label>
   </div>
   <div class="admin-table-wrap">
-    <table class="admin-table" id="annTbody">
+    <table class="admin-table" id="annTbody" data-pageable>
       <thead>
         <tr>
           <th scope="col">ID</th>
@@ -43,7 +43,7 @@
           <td>{{.CreatedAt.Format "2006-01-02 15:04"}}</td>
           <td class="td-actions">
             <a class="admin-row-btn" href="/admin/announcements/edit?id={{.ID}}">编辑</a>
-            <form method="post" action="/admin/announcements/{{.ID}}/delete" class="inline-form" data-confirm="确认删除公告「{{.Title}}」？">
+            <form method="post" action="/admin/announcements/{{.ID}}/delete" class="inline-form" data-confirm="确认删除公告「{{.Title}}」？" data-danger>
               <input type="hidden" name="_csrf" value="{{$.CSRF}}">
               <button class="admin-row-btn is-danger" type="submit">删除</button>
             </form>

@@ -78,6 +78,10 @@
 
       <div class="admin-nav-group">
         <span class="admin-nav-label">系统设置</span>
+        <a href="/admin/site" class="admin-nav-item {{if eq .Page "admin_site.html"}}is-active{{end}}">
+          <span class="admin-nav-bar"></span>
+          <span>站点设置</span>
+        </a>
         <a href="/admin/gateway" class="admin-nav-item {{if eq .Page "admin_gateway.html"}}is-active{{end}}">
           <span class="admin-nav-bar"></span>
           <span>支付网关</span>

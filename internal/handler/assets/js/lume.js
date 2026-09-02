@@ -118,14 +118,17 @@
   }
   var confirmResolve = null;
   var lastFocus = null;
-  function openConfirm(msg, okLabel) {
+  function openConfirm(msg, okLabel, danger) {
     ensureConfirmBox();
     lastFocus = document.activeElement;
     confirmBox.querySelector('.ui-confirm-msg').textContent = msg;
-    confirmBox.querySelector('[data-ui-ok]').textContent = okLabel || '确认';
+    var ok = confirmBox.querySelector('[data-ui-ok]');
+    ok.textContent = okLabel || '确认';
+    ok.classList.toggle('ui-btn-danger', !!danger);
+    ok.classList.toggle('ui-btn-secondary', false);
     confirmBox.classList.add('is-open');
     document.body.classList.add('ui-modal-lock');
-    confirmBox.querySelector('[data-ui-ok]').focus();
+    ok.focus();
     return new Promise(function (resolve) { confirmResolve = resolve; });
   }
   function closeConfirm(result) {
@@ -154,7 +157,8 @@
       var msg = form.getAttribute('data-confirm');
       if (!msg) return;
       e.preventDefault();
-      openConfirm(msg, '确认执行').then(function (ok) {
+      var danger = form.hasAttribute('data-danger');
+      openConfirm(msg, '确认执行', danger).then(function (ok) {
         if (!ok) return;
         form.dataset.confirmed = '1';
         // 确认后再走一次完整的提交流程（含锁按钮）
@@ -210,32 +214,136 @@
       if (!table) return;
       var tbody = table.tBodies[0];
       if (!tbody) return;
+      // 命中计数徽标（放筛选框最右侧）
+      var countEl = null;
+      var bar = input.closest('.list-filter');
+      if (bar) {
+        countEl = document.createElement('span');
+        countEl.className = 'list-filter-count';
+        countEl.setAttribute('aria-hidden', 'true');
+        bar.appendChild(countEl);
+      }
+      // 空状态占位行不计入数据行（admin-table-empty / filter-empty-row）
+      function isDataRow(row) {
+        var cls = row.className || '';
+        return cls.indexOf('filter-empty-row') === -1 && cls.indexOf('admin-table-empty') === -1;
+      }
+      var dataRows = Array.prototype.filter.call(tbody.rows, isDataRow);
+      var total = dataRows.length;
       var emptyRow = null;
+      function showEmpty(visible, q) {
+        if (q && visible === 0 && total > 0) {
+          if (!emptyRow) {
+            emptyRow = document.createElement('tr');
+            emptyRow.className = 'filter-empty-row';
+            emptyRow.innerHTML = '<td colspan="99" class="admin-table-empty">没有匹配的结果</td>';
+          }
+          if (!emptyRow.parentNode) tbody.appendChild(emptyRow);
+        } else if (emptyRow && emptyRow.parentNode) {
+          emptyRow.remove();
+        }
+      }
       input.addEventListener('input', function () {
         var q = input.value.trim().toLowerCase();
         var visible = 0;
         Array.prototype.forEach.call(tbody.rows, function (row) {
-          if (row.classList.contains('filter-empty-row')) return;
+          if (!isDataRow(row)) return;
           var hit = !q || row.textContent.toLowerCase().indexOf(q) !== -1;
           row.style.display = hit ? '' : 'none';
           if (hit) visible++;
         });
-        // 空结果提示行
-        if (!emptyRow) {
-          emptyRow = document.createElement('tr');
-          emptyRow.className = 'filter-empty-row';
-          emptyRow.innerHTML = '<td colspan="99" class="admin-table-empty">没有匹配的结果</td>';
+        showEmpty(visible, q);
+        if (countEl) {
+          if (q && total > 1) {
+            countEl.textContent = visible + ' / ' + total;
+            countEl.classList.add('is-on');
+          } else {
+            countEl.textContent = '';
+            countEl.classList.remove('is-on');
+          }
         }
-        if (visible === 0 && q) {
-          if (!emptyRow.parentNode) tbody.appendChild(emptyRow);
-        } else if (emptyRow.parentNode) {
-          emptyRow.remove();
-        }
+        // 通知分页器：搜索中展示全部命中行，清空后恢复分页
+        table.dispatchEvent(new CustomEvent('lume:filter', { detail: { q: q } }));
       });
       // Esc 清空
       input.addEventListener('keydown', function (e) {
         if (e.key === 'Escape') { input.value = ''; input.dispatchEvent(new Event('input')); }
       });
+    });
+  }
+
+  /* ---------- 客户端分页（data-pageable 表格，与筛选联动） ---------- */
+  function bindPagination() {
+    document.querySelectorAll('table[data-pageable]').forEach(function (table) {
+      var tbody = table.tBodies[0];
+      if (!tbody) return;
+      function isDataRow(row) {
+        var cls = row.className || '';
+        return cls.indexOf('filter-empty-row') === -1 && cls.indexOf('admin-table-empty') === -1;
+      }
+      var rows = Array.prototype.filter.call(tbody.rows, isDataRow);
+      var per = parseInt(table.getAttribute('data-page-size'), 10) || 20;
+      if (!rows.length) return;
+      var page = 1;
+      var wrap = table.parentNode;
+      if (!wrap) return;
+      var pager = document.createElement('div');
+      pager.className = 'ui-pager';
+      pager.innerHTML =
+        '<span class="ui-pager-info"></span>' +
+        '<div class="ui-pager-nav">' +
+        '<button type="button" class="ui-pg-btn" data-pg="prev">‹ 上一页</button>' +
+        '<span class="ui-pg-pos" data-pg-pos></span>' +
+        '<button type="button" class="ui-pg-btn" data-pg="next">下一页 ›</button>' +
+        '</div>';
+      if (wrap.nextSibling) wrap.parentNode.insertBefore(pager, wrap.nextSibling);
+      else wrap.parentNode.appendChild(pager);
+      var info = pager.querySelector('.ui-pager-info');
+      var pos = pager.querySelector('[data-pg-pos]');
+      var total = rows.length;
+      var pages = Math.max(1, Math.ceil(total / per));
+      function render() {
+        var start = (page - 1) * per;
+        var end = Math.min(start + per, total);
+        rows.forEach(function (row, i) {
+          row.style.display = (i >= start && i < end) ? '' : 'none';
+        });
+        pos.textContent = page + ' / ' + pages;
+        info.textContent = '共 ' + total + ' 条';
+        pager.querySelector('[data-pg="prev"]').disabled = page <= 1;
+        pager.querySelector('[data-pg="next"]').disabled = page >= pages;
+        pager.style.display = total > per ? 'flex' : 'none';
+      }
+      pager.addEventListener('click', function (e) {
+        var btn = e.target.closest('[data-pg]');
+        if (!btn) return;
+        if (btn.getAttribute('data-pg') === 'prev') page = Math.max(1, page - 1);
+        else page = Math.min(pages, page + 1);
+        render();
+      });
+      table.addEventListener('lume:filter', function (e) {
+        if (e.detail.q) {
+          // 搜索态由筛选逻辑直接控制每行显隐，这里仅收起分页条
+          pager.style.display = 'none';
+        } else {
+          page = 1;
+          render();
+        }
+      });
+      render();
+    });
+  }
+
+  /* ---------- “/” 聚焦首个表格筛选框 ---------- */
+  function bindFilterShortcut() {
+    document.addEventListener('keydown', function (e) {
+      var tag = (e.target && (e.target.tagName || '').toLowerCase()) || '';
+      if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      if (e.key === '/') {
+        var first = document.querySelector('input[data-table-filter]');
+        if (first) { e.preventDefault(); first.focus(); first.select(); }
+      }
     });
   }
 
@@ -277,15 +385,44 @@
     });
   }
 
-  /* ---------- 目录导入：全选 ---------- */
+  /* ---------- 目录导入：全选 + 选中计数 ---------- */
   function bindSelectAll() {
     var master = document.getElementById('selectAllImport');
-    if (!master) return;
-    master.addEventListener('change', function () {
-      document.querySelectorAll('input[name="import"]:not(:disabled)').forEach(function (cb) {
-        cb.checked = master.checked;
+    var boxes = document.querySelectorAll('input[name="import"]:not(:disabled)');
+    var countEl = document.getElementById('importCount');
+    var submit = document.getElementById('importSubmit');
+    function refresh() {
+      if (!countEl && !submit) return;
+      var checked = Array.prototype.filter.call(
+        document.querySelectorAll('input[name="import"]:not(:disabled)'), function (cb) { return cb.checked; }).length;
+      if (submit) {
+        submit.disabled = checked === 0;
+      }
+      if (countEl) countEl.textContent = checked ? '已选 ' + checked + ' 项' : '';
+    }
+    if (master) {
+      master.addEventListener('change', function () {
+        document.querySelectorAll('input[name="import"]:not(:disabled)').forEach(function (cb) {
+          cb.checked = master.checked;
+        });
+        refresh();
       });
+    }
+    document.querySelectorAll('input[name="import"]').forEach(function (cb) {
+      cb.addEventListener('change', refresh);
     });
+    // 校验主选框状态
+    function syncMaster() {
+      if (!master) return;
+      var all = document.querySelectorAll('input[name="import"]:not(:disabled)');
+      var checked = Array.prototype.filter.call(all, function (cb) { return cb.checked; }).length;
+      master.checked = all.length > 0 && checked === all.length;
+      master.indeterminate = checked > 0 && checked < all.length;
+    }
+    document.querySelectorAll('input[name="import"]').forEach(function (cb) {
+      cb.addEventListener('change', syncMaster);
+    });
+    refresh();
   }
 
   /* ---------- 数字输入框：滚轮不改变数值（防误触） ---------- */
@@ -333,6 +470,8 @@
     bindFormBehavior();
     bindCopy();
     bindTableFilter();
+    bindPagination();
+    bindFilterShortcut();
     bindDetailsAccordion();
     bindEscape();
     bindAutoDismiss();

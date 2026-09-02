@@ -24,7 +24,7 @@
     </label>
   </div>
   <div class="admin-table-wrap">
-    <table class="admin-table" id="tblGateway">
+    <table class="admin-table" id="tblGateway" data-pageable>
       <thead>
         <tr>
           <th scope="col">编码</th>
@@ -93,7 +93,7 @@
                 </div>
               </form>
             </dialog>
-            <form method="post" action="/admin/gateway/{{.Code}}/delete" class="inline-form" data-confirm="确认删除网关「{{.Name}}」？用户将无法使用该通道支付。">
+            <form method="post" action="/admin/gateway/{{.Code}}/delete" class="inline-form" data-confirm="确认删除网关「{{.Name}}」？用户将无法使用该通道支付。" data-danger>
               <input type="hidden" name="_csrf" value="{{$.CSRF}}">
               <button class="admin-row-btn is-danger" type="submit">删除</button>
             </form>

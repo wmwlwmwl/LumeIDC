@@ -22,7 +22,7 @@
     </label>
   </div>
   <div class="admin-table-wrap">
-    <table class="admin-table" id="tblProducts">
+    <table class="admin-table" id="tblProducts" data-pageable>
       <thead>
         <tr>
           <th scope="col">ID</th>
@@ -53,10 +53,15 @@
           <td>{{if .RequiresIdentity}}<span class="badge badge-warn">需要实名</span>{{else}}<span class="text-muted">不需要</span>{{end}}</td>
           <td class="td-actions">
             <a href="/admin/products/{{.ID}}/edit" class="admin-row-btn">编辑</a>
-            <form method="post" action="/admin/products/{{.ID}}/delete" class="inline-form" data-confirm="确认删除产品「{{.A}}」？删除后无法恢复。">
-              <input type="hidden" name="_csrf" value="{{$.CSRF}}">
-              <button class="admin-row-btn is-danger" type="submit">删除</button>
-            </form>
+            <details class="admin-action-pop">
+              <summary>更多</summary>
+              <div class="admin-action-menu">
+                <form method="post" action="/admin/products/{{.ID}}/delete" data-confirm="确认删除产品「{{.A}}」？删除后无法恢复。" data-danger>
+                  <input type="hidden" name="_csrf" value="{{$.CSRF}}">
+                  <button class="admin-pop-item is-danger" type="submit">删除产品</button>
+                </form>
+              </div>
+            </details>
           </td>
         </tr>
         {{end}}

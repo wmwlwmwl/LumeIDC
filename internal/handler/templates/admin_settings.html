@@ -1,112 +1,398 @@
 {{define "page"}}
 <div class="admin-page-header">
-  <div class="admin-page-title"><span class="eyebrow">SYSTEM / SECURITY</span><h1>系统设置</h1><p>注册登录、图形验证码、短信和实名认证彼此独立配置。</p></div>
+  <div class="admin-page-title">
+    <span class="eyebrow">SYSTEM / SETTINGS</span>
+    <h1>系统设置</h1>
+    <p>邮件、注册登录、验证码、短信与实名认证各模块相互独立。</p>
+  </div>
+  <div class="admin-page-actions">
+    <span class="text-muted small">每个模块单独保存</span>
+  </div>
 </div>
+
 {{if .Error}}<div class="ui-alert ui-alert-error" role="alert">{{.Error}}</div>{{end}}
-{{if .Msg}}<div class="ui-alert ui-alert-success" role="status">已保存</div>{{end}}
+{{if .Msg}}<div class="ui-alert ui-alert-success" role="status">设置已保存</div>{{end}}
 
-<form method="post" action="/admin/settings" class="admin-panel admin-form-narrow">
-  <input type="hidden" name="_csrf" value="{{.CSRF}}"><input type="hidden" name="settings_section" value="smtp">
-  <div class="admin-panel-header"><h2>邮件服务</h2></div><div class="admin-panel-body">
-    <label for="smtp-host">SMTP 主机</label><input id="smtp-host" name="smtp_host" value="{{index .ServersList "smtp_host"}}" placeholder="smtp.example.com">
-    <label for="smtp-port">端口</label><input id="smtp-port" name="smtp_port" value="{{index .ServersList "smtp_port"}}" placeholder="587">
-    <label for="smtp-user">用户名</label><input id="smtp-user" name="smtp_user" value="{{index .ServersList "smtp_user"}}">
-    <label for="smtp-pass">密码</label><input id="smtp-pass" name="smtp_pass" type="password" autocomplete="new-password" placeholder="留空保持原密码">
-    <label for="smtp-from">发件人</label><input id="smtp-from" name="smtp_from" value="{{index .ServersList "smtp_from"}}" placeholder="noreply@example.com">
-    <label class="check-line"><input type="checkbox" name="notify_email_enabled" value="1" {{if eq (index .ServersList "notify_email_enabled") "1"}}checked{{end}}> 开启邮件发送</label>
-    <div class="admin-form-actions"><button class="ui-btn" type="submit">保存邮件设置 <span>→</span></button></div>
-  </div>
-</form>
+<div class="admin-settings">
+  <nav class="admin-settings-tabs" role="tablist" aria-label="设置模块">
+    <button type="button" class="admin-settings-tab is-active" role="tab" aria-selected="true" aria-controls="sec-smtp" data-settings-tab data-target="#sec-smtp">邮件服务</button>
+    <button type="button" class="admin-settings-tab" role="tab" aria-selected="false" aria-controls="sec-registration" data-settings-tab data-target="#sec-registration">注册与登录</button>
+    <button type="button" class="admin-settings-tab" role="tab" aria-selected="false" aria-controls="sec-captcha" data-settings-tab data-target="#sec-captcha">图形验证码</button>
+    <button type="button" class="admin-settings-tab" role="tab" aria-selected="false" aria-controls="sec-external" data-settings-tab data-target="#sec-external">外部人机验证</button>
+    <button type="button" class="admin-settings-tab" role="tab" aria-selected="false" aria-controls="sec-sms" data-settings-tab data-target="#sec-sms">短信服务</button>
+    <button type="button" class="admin-settings-tab" role="tab" aria-selected="false" aria-controls="sec-manual" data-settings-tab data-target="#sec-manual">人工实名审核</button>
+    <button type="button" class="admin-settings-tab" role="tab" aria-selected="false" aria-controls="sec-verify" data-settings-tab data-target="#sec-verify">自动实名插件</button>
+  </nav>
+  <div class="admin-settings-panes">
 
-<form method="post" action="/admin/settings" class="admin-panel admin-form-narrow">
-  <input type="hidden" name="_csrf" value="{{.CSRF}}"><input type="hidden" name="settings_section" value="registration">
-  <div class="admin-panel-header"><h2>注册与登录</h2></div><div class="admin-panel-body">
-    <label class="check-line"><input type="checkbox" name="registration_email_enabled" value="1" {{if eq (index .ServersList "registration_email_enabled") "1"}}checked{{end}}> 开启邮箱注册</label>
-    <label class="check-line"><input type="checkbox" name="registration_phone_enabled" value="1" {{if eq (index .ServersList "registration_phone_enabled") "1"}}checked{{end}}> 开启手机号独立注册</label>
-    <label class="check-line"><input type="checkbox" name="registration_email_verification_required" value="1" {{if eq (index .ServersList "registration_email_verification_required") "1"}}checked{{end}}> 邮箱注册需要邮箱验证码</label>
-    <label class="check-line"><input type="checkbox" name="registration_phone_verification_required" value="1" {{if eq (index .ServersList "registration_phone_verification_required") "1"}}checked{{end}}> 手机号注册需要短信验证码</label>
-    <label class="check-line"><input type="checkbox" name="registration_show_all_methods" value="1" {{if eq (index .ServersList "registration_show_all_methods") "1"}}checked{{end}}> 手机号、邮箱注册同时展示</label>
-    <label class="check-line"><input type="checkbox" name="login_phone_otp_enabled" value="1" {{if eq (index .ServersList "login_phone_otp_enabled") "1"}}checked{{end}}> 开启手机号短信验证码登录</label>
-    <p class="text-muted small">手机号独立注册不要求邮箱；邮箱与手机号是两个独立注册渠道。</p>
-    <div class="admin-form-actions"><button class="ui-btn" type="submit">保存注册登录设置 <span>→</span></button></div>
-  </div>
-</form>
+    <form id="sec-smtp" method="post" action="/admin/settings" class="admin-panel admin-settings-form admin-settings-pane is-active" role="tabpanel" aria-labelledby="sec-smtp">
+      <input type="hidden" name="_csrf" value="{{.CSRF}}"><input type="hidden" name="settings_section" value="smtp">
+      <div class="admin-panel-header"><h2>邮件服务</h2><span class="text-muted small">多 SMTP 账号 · 轮流负载 · 失败冷却切换</span></div>
+      <div class="admin-panel-body">
+        <input type="hidden" name="smtp_accounts" id="smtpAccountsJSON">
+        <textarea id="smtpAcctSeed" class="visually-hidden" aria-hidden="true" tabindex="-1">{{index .ServersList "smtp_accounts"}}</textarea>
 
-<form method="post" action="/admin/settings" class="admin-panel admin-form-narrow">
-  <input type="hidden" name="_csrf" value="{{.CSRF}}"><input type="hidden" name="settings_section" value="captcha">
-  <div class="admin-panel-header"><h2>本地图形验证码</h2></div><div class="admin-panel-body">
-    <label class="check-line"><input type="checkbox" name="captcha_enabled" value="1" {{if eq (index .ServersList "captcha_enabled") "1"}}checked{{end}}> 开启本地图形验证码</label>
-    <p class="text-muted small">本模块在本机生成 PNG 图片，独立于短信验证码、邮箱验证码和实名认证。</p>
-    <label class="check-line"><input type="checkbox" name="captcha_register_enabled" value="1" {{if eq (index .ServersList "captcha_register_enabled") "1"}}checked{{end}}> 直接注册时必须完成人机验证（开关 E）</label>
-    <label class="check-line"><input type="checkbox" name="captcha_login_enabled" value="1" {{if eq (index .ServersList "captcha_login_enabled") "1"}}checked{{end}}> 用户登录</label>
-    <label class="check-line"><input type="checkbox" name="captcha_admin_login_enabled" value="1" {{if eq (index .ServersList "captcha_admin_login_enabled") "1"}}checked{{end}}> 管理员登录</label>
-    <label class="check-line"><input type="checkbox" name="captcha_email_code_enabled" value="1" {{if eq (index .ServersList "captcha_email_code_enabled") "1"}}checked{{end}}> 邮箱发码</label>
-    <label class="check-line"><input type="checkbox" name="captcha_phone_code_enabled" value="1" {{if eq (index .ServersList "captcha_phone_code_enabled") "1"}}checked{{end}}> 手机发码</label>
-    <label class="check-line"><input type="checkbox" name="captcha_password_reset_enabled" value="1" {{if eq (index .ServersList "captcha_password_reset_enabled") "1"}}checked{{end}}> 找回密码</label>
-    <div class="admin-form-actions"><button class="ui-btn" type="submit">保存图形验证码设置 <span>→</span></button></div>
-  </div>
-</form>
+        <div class="smtp-editor-head">
+          <strong>SMTP 账号列表</strong>
+          <span class="text-muted small">每封邮件按顺序轮流使用账号发送；发送失败的账号进入冷却并自动切换到下一个。保存后生效。</span>
+        </div>
+        <div class="smtp-acct-list" id="smtpAcctList"></div>
+        <p class="smtp-empty-hint" id="smtpEmptyHint" hidden>还没有账号，点下方「添加账号」开始配置。</p>
 
-<form method="post" action="/admin/settings" class="admin-panel admin-form-narrow">
-  <input type="hidden" name="_csrf" value="{{.CSRF}}"><input type="hidden" name="settings_section" value="external_captcha">
-  <div class="admin-panel-header"><h2>外部人机验证 Widget</h2></div><div class="admin-panel-body">
-    <label for="captcha-provider">Provider</label><select id="captcha-provider" name="captcha_provider"><option value="">未配置</option><option value="geetest" {{if eq (index .ServersList "captcha_provider") "geetest"}}selected{{end}}>Geetest</option><option value="vaptcha" {{if eq (index .ServersList "captcha_provider") "vaptcha"}}selected{{end}}>Vaptcha</option><option value="corptcha" {{if eq (index .ServersList "captcha_provider") "corptcha"}}selected{{end}}>Corptcha</option></select>
-    <label class="check-line"><input type="checkbox" name="external_captcha_register_enabled" value="1" {{if eq (index .ServersList "external_captcha_register_enabled") "1"}}checked{{end}}> 直接注册普通场景</label>
-    <label class="check-line"><input type="checkbox" name="external_captcha_login_enabled" value="1" {{if eq (index .ServersList "external_captcha_login_enabled") "1"}}checked{{end}}> 用户密码登录场景</label>
-    <label class="check-line"><input type="checkbox" name="external_captcha_phone_login_code_enabled" value="1" {{if eq (index .ServersList "external_captcha_phone_login_code_enabled") "1"}}checked{{end}}> 手机号验证码登录发码场景</label>
-    <p class="text-muted small">外部 widget 不用于管理员登录，也不会替代 B/D 注册发码的本地强制图片验证码。</p>
-    <label for="captcha-geetest-id">Geetest Captcha ID</label><input id="captcha-geetest-id" name="captcha_geetest_id" value="{{index .ServersList "captcha_geetest_id"}}">
-    <label for="captcha-geetest-key">Geetest Captcha Key</label><input id="captcha-geetest-key" name="captcha_geetest_key" type="password" placeholder="留空保持原密钥">
-    <label for="captcha-vaptcha-vid">Vaptcha VID</label><input id="captcha-vaptcha-vid" name="captcha_vaptcha_vid" value="{{index .ServersList "captcha_vaptcha_vid"}}">
-    <label for="captcha-vaptcha-key">Vaptcha VKey</label><input id="captcha-vaptcha-key" name="captcha_vaptcha_key" type="password" placeholder="留空保持原密钥">
-    <label for="captcha-corptcha-site">Corptcha Site Key</label><input id="captcha-corptcha-site" name="captcha_corptcha_site_key" value="{{index .ServersList "captcha_corptcha_site_key"}}">
-    <label for="captcha-corptcha-secret">Corptcha Secret</label><input id="captcha-corptcha-secret" name="captcha_corptcha_secret" type="password" placeholder="留空保持原密钥">
-    <div class="admin-form-actions"><button class="ui-btn" type="submit">保存外部验证码设置 <span>→</span></button></div>
-  </div>
-</form>
+        <div class="admin-form-row">
+          <div class="admin-form-col admin-form-col-sm">
+            <label for="smtp-cooldown">失败冷却（秒）</label>
+            <input id="smtp-cooldown" name="smtp_cooldown_seconds" type="number" min="1" max="86400" value="{{index .ServersList "smtp_cooldown_seconds"}}" placeholder="60">
+          </div>
+          <div class="admin-form-col">
+            <label class="check-line" style="margin-top:24px"><input type="checkbox" name="notify_email_forward_enabled" value="1" {{if eq (index .ServersList "notify_email_forward_enabled") "1"}}checked{{end}}> 站内信同步到邮箱</label>
+          </div>
+        </div>
+        <p class="text-muted small">「站内信同步到邮箱」开启后，支付、实名、到期等服务通知在写入「消息中心」的同时，会向用户邮箱发送一封同内容邮件；关闭则只写站内信。注册/验证码邮件不受此开关影响（配置好任一启用账号即可发送）。</p>
 
-<form method="post" action="/admin/settings" class="admin-panel admin-form-narrow">
-  <input type="hidden" name="_csrf" value="{{.CSRF}}"><input type="hidden" name="settings_section" value="sms">
-  <div class="admin-panel-header"><h2>短信服务</h2></div><div class="admin-panel-body">
-    <label for="sms-provider">SMS provider</label><select id="sms-provider" name="sms_provider"><option value="">未配置</option><option value="aliyun" {{if eq (index .ServersList "sms_provider") "aliyun"}}selected{{end}}>Aliyun 号码认证</option><option value="aliyun_sms" {{if eq (index .ServersList "sms_provider") "aliyun_sms"}}selected{{end}}>Aliyun SMS</option><option value="stay33" {{if eq (index .ServersList "sms_provider") "stay33"}}selected{{end}}>Stay33</option></select>
-    <label for="sms-access-key">Aliyun AccessKey</label><input id="sms-access-key" name="sms_access_key" value="{{index .ServersList "sms_access_key"}}">
-    <label for="sms-username">Stay33 用户名</label><input id="sms-username" name="sms_username" value="{{index .ServersList "sms_username"}}">
-    <label for="sms-secret-key">Secret / Token</label><input id="sms-secret-key" name="sms_secret_key" type="password" autocomplete="new-password" placeholder="留空保持原密钥">
-    <label for="sms-sign-name">短信签名</label><input id="sms-sign-name" name="sms_sign_name" value="{{index .ServersList "sms_sign_name"}}">
-    <label for="sms-template-code">Aliyun SMS 模板 Code</label><input id="sms-template-code" name="sms_template_code" value="{{index .ServersList "sms_template_code"}}">
-    <label for="sms-endpoint">Stay33 endpoint（留空使用默认地址）</label><input id="sms-endpoint" name="sms_endpoint" value="{{index .ServersList "sms_endpoint"}}">
-    <div class="admin-form-actions"><button class="ui-btn" type="submit">保存短信设置 <span>→</span></button></div>
-  </div>
-</form>
+        <div class="admin-form-actions">
+          <button class="ui-btn" type="submit">保存邮件设置 <span>→</span></button>
+          <button type="button" class="ui-btn ui-btn-secondary" data-acct-add>+ 添加账号</button>
+        </div>
 
-<form method="post" action="/admin/settings" class="admin-panel admin-form-narrow">
-  <input type="hidden" name="_csrf" value="{{.CSRF}}"><input type="hidden" name="settings_section" value="manual_identity">
-  <div class="admin-panel-header"><h2>人工实名审核</h2></div><div class="admin-panel-body">
-    <label class="check-line"><input type="checkbox" name="manual_identity_enabled" value="1" {{if eq (index .ServersList "manual_identity_enabled") "1"}}checked{{end}}> 开启人工实名审核模块</label>
-    <label class="check-line"><input type="checkbox" name="manual_identity_requires_verified_phone" value="1" {{if eq (index .ServersList "manual_identity_requires_verified_phone") "1"}}checked{{end}}> 提交人工实名前必须验证手机号</label>
-    <p class="text-muted small">人工实名独立于自动实名插件；可提交姓名、身份证号和身份证正反面照片，由管理员单独审核。</p>
-    <div class="admin-form-actions"><button class="ui-btn" type="submit">保存人工审核设置 <span>→</span></button></div>
-  </div>
-</form>
+        <div class="smtp-test">
+          <div class="smtp-test-head"><strong>整链路测试（自动轮流负载）</strong><span class="text-muted small">保存后向指定邮箱发一封测试邮件，验证账号列表与自动切换是否生效</span></div>
+          <div class="smtp-test-row">
+            <input id="test-mail-to" type="email" placeholder="收件邮箱" autocomplete="off">
+            <button type="button" class="ui-btn ui-btn-secondary" id="testMailBtn">发送整链路测试</button>
+          </div>
+          <p class="smtp-test-status" id="testMailStatus" role="status"></p>
+        </div>
+      </div>
+    </form>
 
-<form method="post" action="/admin/settings" class="admin-panel admin-form-narrow">
-  <input type="hidden" name="_csrf" value="{{.CSRF}}"><input type="hidden" name="settings_section" value="automatic_identity">
-  <div class="admin-panel-header"><h2>自动实名认证插件</h2></div><div class="admin-panel-body">
-    <label for="verification-provider">自动实名 provider</label><select id="verification-provider" name="verification_provider"><option value="">未配置</option><option value="baidu_face" {{if eq (index .ServersList "verification_provider") "baidu_face"}}selected{{end}}>BaiduFace</option><option value="leaf_face" {{if eq (index .ServersList "verification_provider") "leaf_face"}}selected{{end}}>LeafFace</option><option value="smapi" {{if eq (index .ServersList "verification_provider") "smapi"}}selected{{end}}>Smapi</option><option value="stay33" {{if eq (index .ServersList "verification_provider") "stay33"}}selected{{end}}>Stay33</option></select>
-    <p class="text-muted small">自动认证通过后直接写入自动任务状态，不进入人工审核队列。</p>
-    <label for="verification-baidu-api-key">BaiduFace API Key</label><input id="verification-baidu-api-key" name="verification_baidu_api_key" value="{{index .ServersList "verification_baidu_api_key"}}">
-    <label for="verification-baidu-plan">BaiduFace Plan ID</label><input id="verification-baidu-plan" name="verification_baidu_plan_id" value="{{index .ServersList "verification_baidu_plan_id"}}">
-    <label for="verification-baidu-secret">BaiduFace Secret</label><input id="verification-baidu-secret" name="verification_baidu_secret_key" type="password" placeholder="留空保持原密钥">
-    <label for="verification-leaf-id">LeafFace App ID</label><input id="verification-leaf-id" name="verification_leaf_app_id" value="{{index .ServersList "verification_leaf_app_id"}}">
-    <label for="verification-leaf-secret">LeafFace App Secret</label><input id="verification-leaf-secret" name="verification_leaf_app_secret" type="password" placeholder="留空保持原密钥">
-    <label for="verification-leaf-base">LeafFace API Base</label><input id="verification-leaf-base" name="verification_leaf_api_base" value="{{index .ServersList "verification_leaf_api_base"}}">
-    <label for="verification-smapi-url">Smapi API URL</label><input id="verification-smapi-url" name="verification_smapi_api_url" value="{{index .ServersList "verification_smapi_api_url"}}">
-    <label for="verification-smapi-product">Smapi Product Code</label><input id="verification-smapi-product" name="verification_smapi_product_code" value="{{index .ServersList "verification_smapi_product_code"}}">
-    <label for="verification-smapi-secret">Smapi Secret</label><input id="verification-smapi-secret" name="verification_smapi_secret_key" type="password" placeholder="留空保持原密钥">
-    <label for="verification-stay33-url">Stay33 API URL</label><input id="verification-stay33-url" name="verification_stay33_api_url" value="{{index .ServersList "verification_stay33_api_url"}}">
-    <label for="verification-stay33-code">Stay33 Biz Code</label><input id="verification-stay33-code" name="verification_stay33_biz_code" value="{{index .ServersList "verification_stay33_biz_code"}}">
-    <label for="verification-stay33-secret">Stay33 API Secret</label><input id="verification-stay33-secret" name="verification_stay33_secret_key" type="password" placeholder="留空保持原密钥">
-    <div class="admin-form-actions"><button class="ui-btn" type="submit">保存自动实名设置 <span>→</span></button></div>
+    <form id="sec-registration" method="post" action="/admin/settings" class="admin-panel admin-settings-form admin-settings-pane" role="tabpanel" aria-labelledby="sec-registration">
+      <input type="hidden" name="_csrf" value="{{.CSRF}}"><input type="hidden" name="settings_section" value="registration">
+      <div class="admin-panel-header"><h2>注册与登录</h2><span class="text-muted small">邮箱 / 手机号独立渠道</span></div>
+      <div class="admin-panel-body">
+        <label class="check-line"><input type="checkbox" name="registration_email_enabled" value="1" {{if eq (index .ServersList "registration_email_enabled") "1"}}checked{{end}}> 开启邮箱注册</label>
+        <label class="check-line"><input type="checkbox" name="registration_phone_enabled" value="1" {{if eq (index .ServersList "registration_phone_enabled") "1"}}checked{{end}}> 开启手机号独立注册</label>
+        <label class="check-line"><input type="checkbox" name="registration_email_verification_required" value="1" {{if eq (index .ServersList "registration_email_verification_required") "1"}}checked{{end}}> 邮箱注册需要邮箱验证码</label>
+        <label class="check-line"><input type="checkbox" name="registration_phone_verification_required" value="1" {{if eq (index .ServersList "registration_phone_verification_required") "1"}}checked{{end}}> 手机号注册需要短信验证码</label>
+        <label class="check-line"><input type="checkbox" name="registration_show_all_methods" value="1" {{if eq (index .ServersList "registration_show_all_methods") "1"}}checked{{end}}> 手机号、邮箱注册同时展示</label>
+        <label class="check-line"><input type="checkbox" name="login_phone_otp_enabled" value="1" {{if eq (index .ServersList "login_phone_otp_enabled") "1"}}checked{{end}}> 开启手机号短信验证码登录</label>
+        <p class="text-muted small">手机号独立注册不要求邮箱；邮箱与手机号是两个独立注册渠道。</p>
+        <div class="admin-form-actions"><button class="ui-btn" type="submit">保存注册登录设置 <span>→</span></button></div>
+      </div>
+    </form>
+
+    <form id="sec-captcha" method="post" action="/admin/settings" class="admin-panel admin-settings-form admin-settings-pane" role="tabpanel" aria-labelledby="sec-captcha">
+      <input type="hidden" name="_csrf" value="{{.CSRF}}"><input type="hidden" name="settings_section" value="captcha">
+      <div class="admin-panel-header"><h2>本地图形验证码</h2><span class="text-muted small">本机生成 PNG 验证图</span></div>
+      <div class="admin-panel-body">
+        <label class="check-line"><input type="checkbox" name="captcha_enabled" value="1" {{if eq (index .ServersList "captcha_enabled") "1"}}checked{{end}}> 开启本地图形验证码</label>
+        <label class="check-line"><input type="checkbox" name="captcha_register_enabled" value="1" {{if eq (index .ServersList "captcha_register_enabled") "1"}}checked{{end}}> 直接注册时必须完成人机验证（开关 E）</label>
+        <label class="check-line"><input type="checkbox" name="captcha_login_enabled" value="1" {{if eq (index .ServersList "captcha_login_enabled") "1"}}checked{{end}}> 用户登录</label>
+        <label class="check-line"><input type="checkbox" name="captcha_admin_login_enabled" value="1" {{if eq (index .ServersList "captcha_admin_login_enabled") "1"}}checked{{end}}> 管理员登录</label>
+        <label class="check-line"><input type="checkbox" name="captcha_email_code_enabled" value="1" {{if eq (index .ServersList "captcha_email_code_enabled") "1"}}checked{{end}}> 邮箱发码</label>
+        <label class="check-line"><input type="checkbox" name="captcha_phone_code_enabled" value="1" {{if eq (index .ServersList "captcha_phone_code_enabled") "1"}}checked{{end}}> 手机发码</label>
+        <label class="check-line"><input type="checkbox" name="captcha_password_reset_enabled" value="1" {{if eq (index .ServersList "captcha_password_reset_enabled") "1"}}checked{{end}}> 找回密码</label>
+        <div class="admin-form-actions"><button class="ui-btn" type="submit">保存图形验证码设置 <span>→</span></button></div>
+      </div>
+    </form>
+
+    <form id="sec-external" method="post" action="/admin/settings" class="admin-panel admin-settings-form admin-settings-pane" role="tabpanel" aria-labelledby="sec-external">
+      <input type="hidden" name="_csrf" value="{{.CSRF}}"><input type="hidden" name="settings_section" value="external_captcha">
+      <div class="admin-panel-header"><h2>外部人机验证 Widget</h2><span class="text-muted small">选择供应商后显示对应密钥</span></div>
+      <div class="admin-panel-body">
+        <label for="captcha-provider">Provider</label>
+        <select id="captcha-provider" name="captcha_provider">
+          <option value="">未配置</option>
+          <option value="geetest" {{if eq (index .ServersList "captcha_provider") "geetest"}}selected{{end}}>Geetest</option>
+          <option value="vaptcha" {{if eq (index .ServersList "captcha_provider") "vaptcha"}}selected{{end}}>Vaptcha</option>
+          <option value="corptcha" {{if eq (index .ServersList "captcha_provider") "corptcha"}}selected{{end}}>Corptcha</option>
+        </select>
+        <div class="settings-subfields" data-captcha-for="geetest" hidden>
+          <label for="captcha-geetest-id">Geetest Captcha ID</label><input id="captcha-geetest-id" name="captcha_geetest_id" value="{{index .ServersList "captcha_geetest_id"}}">
+          <label for="captcha-geetest-key">Geetest Captcha Key</label><input id="captcha-geetest-key" name="captcha_geetest_key" type="password" placeholder="留空保持原密钥">
+        </div>
+        <div class="settings-subfields" data-captcha-for="vaptcha" hidden>
+          <label for="captcha-vaptcha-vid">Vaptcha VID</label><input id="captcha-vaptcha-vid" name="captcha_vaptcha_vid" value="{{index .ServersList "captcha_vaptcha_vid"}}">
+          <label for="captcha-vaptcha-key">Vaptcha VKey</label><input id="captcha-vaptcha-key" name="captcha_vaptcha_key" type="password" placeholder="留空保持原密钥">
+        </div>
+        <div class="settings-subfields" data-captcha-for="corptcha" hidden>
+          <label for="captcha-corptcha-site">Corptcha Site Key</label><input id="captcha-corptcha-site" name="captcha_corptcha_site_key" value="{{index .ServersList "captcha_corptcha_site_key"}}">
+          <label for="captcha-corptcha-secret">Corptcha Secret</label><input id="captcha-corptcha-secret" name="captcha_corptcha_secret" type="password" placeholder="留空保持原密钥">
+        </div>
+        <label class="check-line"><input type="checkbox" name="external_captcha_register_enabled" value="1" {{if eq (index .ServersList "external_captcha_register_enabled") "1"}}checked{{end}}> 直接注册普通场景</label>
+        <label class="check-line"><input type="checkbox" name="external_captcha_login_enabled" value="1" {{if eq (index .ServersList "external_captcha_login_enabled") "1"}}checked{{end}}> 用户密码登录场景</label>
+        <label class="check-line"><input type="checkbox" name="external_captcha_phone_login_code_enabled" value="1" {{if eq (index .ServersList "external_captcha_phone_login_code_enabled") "1"}}checked{{end}}> 手机号验证码登录发码场景</label>
+        <p class="text-muted small">外部 widget 不用于管理员登录，也不会替代 B/D 注册发码的本地强制图片验证码。</p>
+        <div class="admin-form-actions"><button class="ui-btn" type="submit">保存外部验证码设置 <span>→</span></button></div>
+      </div>
+    </form>
+
+    <form id="sec-sms" method="post" action="/admin/settings" class="admin-panel admin-settings-form admin-settings-pane" role="tabpanel" aria-labelledby="sec-sms">
+      <input type="hidden" name="_csrf" value="{{.CSRF}}"><input type="hidden" name="settings_section" value="sms">
+      <div class="admin-panel-header"><h2>短信服务</h2><span class="text-muted small">选择供应商后显示对应字段</span></div>
+      <div class="admin-panel-body">
+        <label for="sms-provider">SMS provider</label>
+        <select id="sms-provider" name="sms_provider">
+          <option value="">未配置</option>
+          <option value="aliyun" {{if eq (index .ServersList "sms_provider") "aliyun"}}selected{{end}}>Aliyun 号码认证</option>
+          <option value="aliyun_sms" {{if eq (index .ServersList "sms_provider") "aliyun_sms"}}selected{{end}}>Aliyun SMS</option>
+          <option value="stay33" {{if eq (index .ServersList "sms_provider") "stay33"}}selected{{end}}>Stay33</option>
+        </select>
+        <div class="settings-subfields" data-sms-for="aliyun aliyun_sms" hidden>
+          <label for="sms-access-key">Aliyun AccessKey</label><input id="sms-access-key" name="sms_access_key" value="{{index .ServersList "sms_access_key"}}">
+          <label for="sms-sign-name">短信签名</label><input id="sms-sign-name" name="sms_sign_name" value="{{index .ServersList "sms_sign_name"}}">
+          <label for="sms-template-code">Aliyun SMS 模板 Code</label><input id="sms-template-code" name="sms_template_code" value="{{index .ServersList "sms_template_code"}}">
+        </div>
+        <div class="settings-subfields" data-sms-for="stay33" hidden>
+          <label for="sms-username">Stay33 用户名</label><input id="sms-username" name="sms_username" value="{{index .ServersList "sms_username"}}">
+          <label for="sms-endpoint">Stay33 endpoint（留空使用默认地址）</label><input id="sms-endpoint" name="sms_endpoint" value="{{index .ServersList "sms_endpoint"}}">
+        </div>
+        <label for="sms-secret-key">Secret / Token</label><input id="sms-secret-key" name="sms_secret_key" type="password" autocomplete="new-password" placeholder="留空保持原密钥">
+        <div class="admin-form-actions"><button class="ui-btn" type="submit">保存短信设置 <span>→</span></button></div>
+      </div>
+    </form>
+
+    <form id="sec-manual" method="post" action="/admin/settings" class="admin-panel admin-settings-form admin-settings-pane" role="tabpanel" aria-labelledby="sec-manual">
+      <input type="hidden" name="_csrf" value="{{.CSRF}}"><input type="hidden" name="settings_section" value="manual_identity">
+      <div class="admin-panel-header"><h2>人工实名审核</h2><span class="text-muted small">姓名、证件号与证件照</span></div>
+      <div class="admin-panel-body">
+        <label class="check-line"><input type="checkbox" name="manual_identity_enabled" value="1" {{if eq (index .ServersList "manual_identity_enabled") "1"}}checked{{end}}> 开启人工实名审核模块</label>
+        <label class="check-line"><input type="checkbox" name="manual_identity_requires_verified_phone" value="1" {{if eq (index .ServersList "manual_identity_requires_verified_phone") "1"}}checked{{end}}> 提交人工实名前必须验证手机号</label>
+        <p class="text-muted small">人工实名独立于自动实名插件；可提交姓名、身份证号和身份证正反面照片，由管理员单独审核。</p>
+        <div class="admin-form-actions"><button class="ui-btn" type="submit">保存人工审核设置 <span>→</span></button></div>
+      </div>
+    </form>
+
+    <form id="sec-verify" method="post" action="/admin/settings" class="admin-panel admin-settings-form admin-settings-pane" role="tabpanel" aria-labelledby="sec-verify">
+      <input type="hidden" name="_csrf" value="{{.CSRF}}"><input type="hidden" name="settings_section" value="automatic_identity">
+      <div class="admin-panel-header"><h2>自动实名认证插件</h2><span class="text-muted small">选择插件后显示对应密钥</span></div>
+      <div class="admin-panel-body">
+        <label for="verification-provider">自动实名 provider</label>
+        <select id="verification-provider" name="verification_provider">
+          <option value="">未配置</option>
+          <option value="baidu_face" {{if eq (index .ServersList "verification_provider") "baidu_face"}}selected{{end}}>BaiduFace</option>
+          <option value="leaf_face" {{if eq (index .ServersList "verification_provider") "leaf_face"}}selected{{end}}>LeafFace</option>
+          <option value="smapi" {{if eq (index .ServersList "verification_provider") "smapi"}}selected{{end}}>Smapi</option>
+          <option value="stay33" {{if eq (index .ServersList "verification_provider") "stay33"}}selected{{end}}>Stay33</option>
+        </select>
+        <div class="settings-subfields" data-verify-for="baidu_face" hidden>
+          <label for="verification-baidu-api-key">BaiduFace API Key</label><input id="verification-baidu-api-key" name="verification_baidu_api_key" value="{{index .ServersList "verification_baidu_api_key"}}">
+          <label for="verification-baidu-plan">BaiduFace Plan ID</label><input id="verification-baidu-plan" name="verification_baidu_plan_id" value="{{index .ServersList "verification_baidu_plan_id"}}">
+          <label for="verification-baidu-secret">BaiduFace Secret</label><input id="verification-baidu-secret" name="verification_baidu_secret_key" type="password" placeholder="留空保持原密钥">
+        </div>
+        <div class="settings-subfields" data-verify-for="leaf_face" hidden>
+          <label for="verification-leaf-id">LeafFace App ID</label><input id="verification-leaf-id" name="verification_leaf_app_id" value="{{index .ServersList "verification_leaf_app_id"}}">
+          <label for="verification-leaf-secret">LeafFace App Secret</label><input id="verification-leaf-secret" name="verification_leaf_app_secret" type="password" placeholder="留空保持原密钥">
+          <label for="verification-leaf-base">LeafFace API Base（留空使用默认地址）</label><input id="verification-leaf-base" name="verification_leaf_api_base" value="{{index .ServersList "verification_leaf_api_base"}}">
+        </div>
+        <div class="settings-subfields" data-verify-for="smapi" hidden>
+          <label for="verification-smapi-app-key">Smapi App Key</label><input id="verification-smapi-app-key" name="verification_smapi_app_key" value="{{index .ServersList "verification_smapi_app_key"}}">
+          <label for="verification-smapi-secret">Smapi App Secret</label><input id="verification-smapi-secret" name="verification_smapi_secret_key" type="password" placeholder="留空保持原密钥">
+          <label for="verification-smapi-url">Smapi API URL（留空使用默认地址）</label><input id="verification-smapi-url" name="verification_smapi_api_url" value="{{index .ServersList "verification_smapi_api_url"}}">
+          <label for="verification-smapi-product">Smapi Product Code</label><input id="verification-smapi-product" name="verification_smapi_product_code" value="{{index .ServersList "verification_smapi_product_code"}}">
+        </div>
+        <div class="settings-subfields" data-verify-for="stay33" hidden>
+          <label for="verification-stay33-api-key">Stay33 API Key</label><input id="verification-stay33-api-key" name="verification_stay33_api_key" value="{{index .ServersList "verification_stay33_api_key"}}">
+          <label for="verification-stay33-secret">Stay33 API Secret</label><input id="verification-stay33-secret" name="verification_stay33_secret_key" type="password" placeholder="留空保持原密钥">
+          <label for="verification-stay33-url">Stay33 API URL（留空使用默认地址）</label><input id="verification-stay33-url" name="verification_stay33_api_url" value="{{index .ServersList "verification_stay33_api_url"}}">
+          <label for="verification-stay33-code">Stay33 Biz Code</label><input id="verification-stay33-code" name="verification_stay33_biz_code" value="{{index .ServersList "verification_stay33_biz_code"}}">
+        </div>
+        <p class="text-muted small">自动认证通过后直接写入自动任务状态，不进入人工审核队列。</p>
+        <div class="admin-form-actions"><button class="ui-btn" type="submit">保存自动实名设置 <span>→</span></button></div>
+      </div>
+    </form>
+
   </div>
-</form>
+</div>
+
+<script>
+(function () {
+  var STORE = 'lumeSettingsTab';
+
+  // 供应商选择：只显示当前选中的凭据区，隐藏字段禁用（避免误提交清空其它供应商配置）
+  function groupsFor(selectId, attr) {
+    var sel = document.getElementById(selectId);
+    if (!sel) return;
+    var groups = Array.prototype.slice.call(document.querySelectorAll('[' + attr + ']'));
+    if (!groups.length) return;
+    function apply() {
+      var v = sel.value;
+      groups.forEach(function (g) {
+        var on = (g.getAttribute(attr) || '').split(/\s+/).indexOf(v) !== -1;
+        g.hidden = !on;
+        Array.prototype.forEach.call(g.querySelectorAll('input,select,textarea'), function (f) { f.disabled = !on; });
+      });
+    }
+    sel.addEventListener('change', apply);
+    apply();
+  }
+  groupsFor('captcha-provider', 'data-captcha-for');
+  groupsFor('sms-provider', 'data-sms-for');
+  groupsFor('verification-provider', 'data-verify-for');
+
+  // 顶部 Tab：一次只显示一个设置模块，记住上次停留的模块
+  var tabs = Array.prototype.slice.call(document.querySelectorAll('[data-settings-tab]'));
+  var panels = Array.prototype.slice.call(document.querySelectorAll('.admin-settings-pane'));
+  function activate(id) {
+    tabs.forEach(function (b) {
+      var on = b.getAttribute('data-target') === '#' + id;
+      b.classList.toggle('is-active', on);
+      b.setAttribute('aria-selected', on ? 'true' : 'false');
+    });
+    panels.forEach(function (p) { p.classList.toggle('is-active', p.id === id); });
+  }
+  tabs.forEach(function (b) {
+    b.addEventListener('click', function () {
+      var id = b.getAttribute('data-target').slice(1);
+      activate(id);
+      try { sessionStorage.setItem(STORE, id); } catch (e) {}
+    });
+  });
+  var first = tabs.length ? tabs[0].getAttribute('data-target').slice(1) : null;
+  var stored = null;
+  try { stored = sessionStorage.getItem(STORE); } catch (e) {}
+  if (stored && panels.some(function (p) { return p.id === stored; })) activate(stored);
+  else if (first) activate(first);
+})();
+
+// 邮件服务：多 SMTP 账号编辑器 + 整链路/单账号测试
+(function () {
+  var form = document.getElementById('sec-smtp');
+  var csrf = form && form.querySelector('input[name="_csrf"]') ? form.querySelector('input[name="_csrf"]').value : '';
+  var targetInput = document.getElementById('test-mail-to');
+  function toInput() { return (targetInput && targetInput.value || '').trim(); }
+  function setStatus(el, msg, ok) {
+    if (!el) return;
+    el.textContent = msg || '';
+    el.className = 'smtp-test-status' + (ok ? ' is-ok' : (msg ? ' is-err' : ''));
+  }
+  function sendTest(idx, to, btn, done, progressText) {
+    btn.disabled = true;
+    btn.classList.add('is-loading');
+    done(progressText || '正在发送…', true);
+    var ctrl = new AbortController();
+    var timer = setTimeout(function () { ctrl.abort(); done('发送超时（超过 20 秒未响应），请检查 SMTP 配置', false); }, 20000);
+    var body = new URLSearchParams();
+    body.set('_csrf', csrf);
+    body.set('email', to);
+    if (idx >= 0) body.set('account_index', String(idx));
+    fetch('/admin/settings/test-email', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
+      body: body,
+      signal: ctrl.signal
+    }).then(function (res) {
+      return res.json().catch(function () { return { ok: false, msg: '请求失败（HTTP ' + res.status + '）' }; });
+    }).then(function (j) {
+      if (j && j.ok) done(j.msg || '已发送', true);
+      else done((j && j.msg) || '发送失败，请检查配置', false);
+    }).catch(function (e) {
+      if (!(e && e.name === 'AbortError')) done('网络错误，请重试', false);
+    }).then(function () {
+      clearTimeout(timer);
+      btn.disabled = false;
+      btn.classList.remove('is-loading');
+    });
+  }
+
+  // 整链路测试
+  var wholeBtn = document.getElementById('testMailBtn');
+  var wholeStatus = document.getElementById('testMailStatus');
+  function sendWhole() {
+    var to = toInput();
+    if (!to || to.indexOf('@') < 1) { setStatus(wholeStatus, '请输入有效的收件邮箱', false); if (targetInput) targetInput.focus(); return; }
+    sendTest(-1, to, wholeBtn, function (m, ok) { setStatus(wholeStatus, m, ok); }, '正在按账号轮流发送…');
+  }
+  if (wholeBtn) wholeBtn.addEventListener('click', sendWhole);
+  if (targetInput) targetInput.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); if (wholeBtn) wholeBtn.click(); } });
+
+  // 账号列表编辑器
+  var list = document.getElementById('smtpAcctList');
+  var jsonInput = document.getElementById('smtpAccountsJSON');
+  var seed = document.getElementById('smtpAcctSeed');
+  var emptyHint = document.getElementById('smtpEmptyHint');
+  var model = [];
+  if (seed) {
+    try { var parsed = JSON.parse(seed.value || '[]'); if (Array.isArray(parsed)) model = parsed; } catch (e) {}
+  }
+  function escAttr(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;'); }
+  function sync() {
+    if (jsonInput) jsonInput.value = JSON.stringify(model);
+    if (emptyHint) emptyHint.hidden = model.length > 0;
+  }
+  function render() {
+    if (!list) return;
+    list.innerHTML = model.map(function (a, i) {
+      a = a || {};
+      var checked = a.enabled === false ? '' : ' checked';
+      return '<div class="smtp-acct" data-i="' + i + '">' +
+        '<div class="smtp-acct-head">' +
+          '<span class="smtp-acct-num">账号 ' + (i + 1) + '</span>' +
+          '<input class="smtp-acct-name" data-k="name" placeholder="备注名（可空）" value="' + escAttr(a.name) + '">' +
+          '<label class="check-line smtp-acct-enable"><input type="checkbox" data-k="enabled"' + checked + '> 启用</label>' +
+          '<span class="smtp-acct-ops">' +
+            '<button type="button" class="admin-row-btn" data-act="up" title="上移">↑</button>' +
+            '<button type="button" class="admin-row-btn" data-act="down" title="下移">↓</button>' +
+            '<button type="button" class="admin-row-btn is-danger" data-act="del">删除</button>' +
+          '</span>' +
+        '</div>' +
+        '<div class="smtp-acct-grid">' +
+          '<label><span>SMTP 主机 *</span><input data-k="host" placeholder="smtp.example.com" value="' + escAttr(a.host) + '" required></label>' +
+          '<label><span>端口</span><input data-k="port" type="number" min="1" max="65535" value="' + (a.port || 587) + '"></label>' +
+          '<label><span>用户名</span><input data-k="user" placeholder="账号 / 发信邮箱" value="' + escAttr(a.user) + '" autocomplete="off"></label>' +
+          '<label><span>密码</span><input data-k="pass" type="password" placeholder="留空保持原密码" autocomplete="new-password"></label>' +
+          '<label><span>发件人</span><input data-k="from" placeholder="发件地址（可空，默认用户名）" value="' + escAttr(a.from) + '" autocomplete="off"></label>' +
+        '</div>' +
+        '<div class="smtp-acct-foot">' +
+          '<button type="button" class="admin-row-btn is-success" data-act="test">测试此账号</button>' +
+          '<span class="smtp-acct-status"></span>' +
+        '</div>' +
+      '</div>';
+    }).join('');
+    sync();
+  }
+  if (!list || !jsonInput) return;
+  list.addEventListener('input', function (e) {
+    var t = e.target;
+    if (!t || !t.dataset || !t.dataset.k) return;
+    var row = t.closest('[data-i]'); if (!row) return;
+    var i = +row.getAttribute('data-i'); var k = t.dataset.k;
+    model[i] = model[i] || {};
+    if (k === 'port') { var p = parseInt(t.value, 10); model[i].port = (isNaN(p) ? 0 : p); }
+    else if (k === 'enabled') { model[i].enabled = t.checked; }
+    else { model[i][k] = t.value; }
+    sync();
+  });
+  list.addEventListener('change', function (e) {
+    var t = e.target;
+    if (t && t.dataset && t.dataset.k === 'enabled' && t.closest('[data-i]')) {
+      var i = +t.closest('[data-i]').getAttribute('data-i');
+      model[i] = model[i] || {}; model[i].enabled = t.checked; sync();
+    }
+  });
+  list.addEventListener('click', function (e) {
+    var btn = e.target.closest('[data-act]'); if (!btn) return;
+    var row = btn.closest('[data-i]'); var i = row ? +row.getAttribute('data-i') : -1;
+    var act = btn.getAttribute('data-act');
+    if (act === 'del') { if (i >= 0) { model.splice(i, 1); render(); } return; }
+    if (act === 'up') { if (i > 0) { var t = model[i - 1]; model[i - 1] = model[i]; model[i] = t; render(); } return; }
+    if (act === 'down') { if (i >= 0 && i < model.length - 1) { var t2 = model[i + 1]; model[i + 1] = model[i]; model[i] = t2; render(); } return; }
+    if (act === 'test') {
+      var to = toInput();
+      var status = row.querySelector('.smtp-acct-status');
+      if (!to || to.indexOf('@') < 1) { setStatus(status, '请先在下方「整链路测试」的收件邮箱填写有效地址', false); if (targetInput) targetInput.focus(); return; }
+      sendTest(i, to, btn, function (m, ok) { setStatus(status, m, ok); });
+    }
+  });
+  document.querySelectorAll('[data-acct-add]').forEach(function (b) {
+    b.addEventListener('click', function () {
+      model.push({ name: '', host: '', port: 587, user: '', pass: '', from: '', enabled: true });
+      render();
+      var last = list.lastElementChild;
+      if (last) last.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    });
+  });
+  render();
+})();
+</script>
 {{end}}

@@ -176,6 +176,8 @@ type payPageData struct {
 	CSRF        string // 余额支付表单必填，否则会被 CSRF 中间件拦截
 	Gateways    []payGatewayView
 	Recharge    bool
+	SiteName    string
+	SiteMark    string
 }
 
 type payGatewayView struct {
@@ -216,6 +218,9 @@ func (h *Pay) payPage(w http.ResponseWriter, r *http.Request) {
 	var kind string
 	_ = h.Payment.DB.QueryRowContext(r.Context(), `SELECT kind FROM invoices WHERE id=$1`, id).Scan(&kind)
 	data := payPageData{InvoiceNo: no, Amount: amount, InvoiceID: r.PathValue("invoiceID"), CSRF: csrfOf(sessionsStore, w, r), Recharge: kind == "recharge"}
+	si := currentSiteInfo()
+	data.SiteName = si.Name
+	data.SiteMark = siteFirstMark(si.Name)
 	if bal, err := h.Balance.Get(r.Context(), userID); err == nil {
 		data.UserBalance = bal
 	}

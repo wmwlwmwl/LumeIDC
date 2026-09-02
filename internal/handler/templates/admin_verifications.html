@@ -3,7 +3,20 @@
 {{if .Error}}<div class="ui-alert ui-alert-error" role="alert">{{.Error}}</div>{{end}}
 {{if .Msg}}<div class="ui-alert ui-alert-success" role="status">{{.Msg}}</div>{{end}}
 <div class="admin-panel"><div class="admin-table-wrap"><table class="admin-table"><thead><tr><th scope="col">申请 ID</th><th scope="col">用户</th><th scope="col">手机号</th><th scope="col">提交时间</th><th scope="col">状态</th><th scope="col">操作</th></tr></thead><tbody>
-{{range .Rows}}<tr><td class="td-id">{{.ID}}</td><td>{{.Email}}</td><td>{{.Phone}}</td><td>{{.SubmittedAt.Format "2006-01-02 15:04"}}</td><td>待人工审核</td><td><a class="admin-row-btn" href="/admin/verifications/{{.ID}}">查看</a></td></tr>{{end}}
+{{range .Rows}}<tr>
+  <td class="td-id">{{.ID}}</td>
+  <td>{{.Email}}</td>
+  <td>{{.Phone}}</td>
+  <td>{{.SubmittedAt.Format "2006-01-02 15:04"}}</td>
+  <td>待人工审核</td>
+  <td class="td-actions">
+    <form method="post" action="/admin/verifications/{{.ID}}/approve" class="inline-form" data-confirm="确认通过用户 {{.Email}} 的实名认证？">
+      <input type="hidden" name="_csrf" value="{{.CSRF}}">
+      <button class="admin-row-btn is-success" type="submit">通过</button>
+    </form>
+    <a class="admin-row-btn" href="/admin/verifications/{{.ID}}">详情</a>
+  </td>
+</tr>{{end}}
 {{if not .Rows}}<tr><td colspan="6" class="admin-table-empty">暂无待审核申请</td></tr>{{end}}
 </tbody></table></div></div>
 {{end}}

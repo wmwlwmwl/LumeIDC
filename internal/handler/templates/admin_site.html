@@ -1,0 +1,50 @@
+{{define "page"}}
+<div class="admin-page-header">
+  <div class="admin-page-title">
+    <span class="eyebrow">SITE / BRANDING</span>
+    <h1>站点设置</h1>
+    <p>站点名称、SEO 描述与关键词、客服联系方式，保存后全站生效</p>
+  </div>
+</div>
+
+{{if .Error}}<div class="ui-alert ui-alert-error" role="alert">{{.Error}}</div>{{end}}
+{{if .Msg}}<div class="ui-alert ui-alert-success" role="status">站点设置已保存，全站标题与品牌已更新</div>{{end}}
+
+<form method="post" action="/admin/site" class="admin-panel admin-form-narrow">
+  <input type="hidden" name="_csrf" value="{{.CSRF}}">
+  <div class="admin-panel-header"><h2>品牌与 SEO</h2></div>
+  <div class="admin-panel-body">
+    <label for="site-name">站点名称</label>
+    <input id="site-name" name="site_name" value="{{index .ServersList "site_name"}}" placeholder="LumeIDC" required maxlength="128">
+    <p class="text-muted small">用于前台导航、登录/注册页、浏览器标题、支付页与邮件品牌。</p>
+
+    <label for="site-description">站点描述</label>
+    <textarea id="site-description" name="site_description" rows="3" placeholder="一段话介绍你的平台（用于 SEO/分享），可留空">{{index .ServersList "site_description"}}</textarea>
+
+    <label for="site-keywords">站点关键词</label>
+    <input id="site-keywords" name="site_keywords" value="{{index .ServersList "site_keywords"}}" placeholder="云服务器, IDC, 虚拟主机" maxlength="512">
+    <p class="text-muted small">多个关键词用英文逗号分隔；留空则不输出 meta。</p>
+  </div>
+
+  <div class="admin-panel-header"><h2>客服联系方式</h2></div>
+  <div class="admin-panel-body">
+    <div class="admin-form-row">
+      <div class="admin-form-col">
+        <label for="service-email">服务邮箱</label>
+        <input id="service-email" name="service_email" type="email" value="{{index .ServersList "service_email"}}" placeholder="support@example.com" maxlength="128">
+      </div>
+      <div class="admin-form-col">
+        <label for="service-phone">服务电话</label>
+        <input id="service-phone" name="service_phone" type="tel" value="{{index .ServersList "service_phone"}}" placeholder="400-000-0000" maxlength="64">
+      </div>
+    </div>
+    <label for="service-hours">工作时间</label>
+    <input id="service-hours" name="service_hours" value="{{index .ServersList "service_hours"}}" placeholder="周一至周五 9:00-18:00" maxlength="128">
+    <p class="text-muted small">联系方式会显示在登录/注册页底部；未填写则隐藏。</p>
+
+    <div class="admin-form-actions">
+      <button class="ui-btn" type="submit">保存站点设置 <span>→</span></button>
+    </div>
+  </div>
+</form>
+{{end}}

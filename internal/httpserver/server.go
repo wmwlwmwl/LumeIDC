@@ -101,12 +101,13 @@ func Build(cfg *config.Config) (*App, error) {
 	}
 	balanceRepo := &repo.Balance{DB: database}
 	handler.SetBalanceRepo(balanceRepo)
+	handler.SetSiteRepo(settingsRepo)
 	notifier := &service.Notifier{DB: database, Settings: settingsRepo}
 	identity.Notifier = notifier
 	identity.Settings = settingsRepo
 	identity.BaseURL = cfg.BaseURL
 	identity.Verification = service.NewConfiguredVerificationProvider(settingsRepo, cfg.BaseURL)
-	auth.Challenges = &service.AuthChallengeService{Store: &repo.AuthChallenges{DB: database}, SMS: identity.OTP, EmailSend: notifier.SendMail, Key: []byte(cfg.SecretKey)}
+	auth.Challenges = &service.AuthChallengeService{Store: &repo.AuthChallenges{DB: database}, SMS: identity.OTP, EmailSend: notifier.SendMail, SiteName: notifier.SiteName, Key: []byte(cfg.SecretKey)}
 	auth.Captcha = service.NewConfiguredCaptchaProvider(settingsRepo)
 	auth.Notifier = notifier
 	paymentSvc := &service.Payment{
