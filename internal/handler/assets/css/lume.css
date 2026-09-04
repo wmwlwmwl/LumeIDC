@@ -1717,7 +1717,7 @@ textarea { padding: 10px 12px; min-height: 80px; resize: vertical; }
 
 /* ---- 确认弹窗 ---- */
 .ui-confirm {
-  position: fixed; inset: 0; z-index: 90;
+  position: fixed; inset: 0; z-index: 200;
   display: none; align-items: center; justify-content: center;
   padding: 20px;
   background: rgba(16,24,40,.45); backdrop-filter: blur(4px);

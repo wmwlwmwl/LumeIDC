@@ -40,7 +40,7 @@
 <section class="zj-overview-panel zj-operation-section" data-overview-panel="login"><h4 class="zj-section-title">登录信息</h4>
 <table style="font-size:.88rem"><tbody>
 <tr><td class="muted" width="90">用户名</td><td>{{.Overview.Detail.Username}}</td></tr>
-<tr><td class="muted">密码</td><td><span id="zjmfPw">{{.Password}}{{if not .Password}}{{.Overview.Detail.Password}}{{end}}</span> <button class="cbtn" style="background:#4f46e5;font-size:.75rem;padding:2px 8px" onclick="zjmfCopy(this)">复制</button></td></tr>
+<tr><td class="muted">密码</td><td><span id="zjmfPw">{{.Overview.Detail.Password}}{{if not .Overview.Detail.Password}}{{.Password}}{{end}}</span> <button class="cbtn" style="background:#4f46e5;font-size:.75rem;padding:2px 8px" onclick="zjmfCopy(this)">复制</button></td></tr>
 {{if .Overview.Detail.Port}}<tr><td class="muted">端口</td><td>{{.Overview.Detail.Port}}</td></tr>{{end}}
 </tbody></table>
 <button type="button" class="cbtn" onclick="openPwModal()">重置密码</button>
@@ -103,7 +103,7 @@ document.querySelectorAll('.cbtn').forEach(b=>b.style.cssText+=';color:#fff;bord
 window.zjmfCopy=btn=>navigator.clipboard.writeText(document.getElementById('zjmfPw').textContent).then(()=>{btn.textContent='已复制';setTimeout(()=>btn.textContent='复制',1200);});
 function password(input,chars){let pw;do{pw='';for(let i=0;i<12;i++)pw+=chars[Math.floor(Math.random()*chars.length)];}while(!/[A-Z]/.test(pw)||!/[a-z]/.test(pw)||!/[0-9]/.test(pw)||pw[0]==='/');input.value=pw;input.focus();}
 window.fillPw=()=>password(document.getElementById('zjmfPwInput'),'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789~!@#$&*()_-+=');
-window.openPwModal=()=>{const modal=document.getElementById('zjmfPwModal'),input=document.getElementById('zjmfPwInput'),current=document.getElementById('zjmfPw');input.value=current?current.textContent.trim():'';modal.hidden=false;input.focus();};
+window.openPwModal=()=>{document.getElementById('zjmfPwModal').hidden=false;fillPw();};
 window.closePwModal=()=>{document.getElementById('zjmfPwModal').hidden=true;};
 window.openReinstallModal=()=>{document.getElementById('zjmfReinstallModal').hidden=false;};
 window.closeReinstallModal=()=>{document.getElementById('zjmfReinstallModal').hidden=true;};
@@ -122,7 +122,7 @@ window.snapAct=async(fn,id)=>{if(!confirm('确认执行该操作？'))return;con
 
 let blocks={};
 window.loadBlocks=()=>api('/blocks').then(j=>{blocks=j.ok===1?(j.blocks||{}):{};renderNat();renderWeb();renderSg();renderSetting();}).catch(()=>{blocks={};renderNat();renderWeb();renderSg();renderSetting();});
-function empty(list,name){return !Array.isArray(list)?'':list.length?'':'暂无'+name;}
+function empty(list,name){if(!Array.isArray(list)||!list.length)return '暂无'+name;return '';}
 function renderNat(){const e=document.getElementById('zjNatOut'),list=blocks.nat_acl,msg=empty(list,'转发规则');if(msg){e.textContent=msg;return;}e.innerHTML='<table style="width:100%;font-size:.84rem"><tr><th>名称</th><th>外部地址</th><th>内部端口</th><th>协议</th><th>操作</th></tr>'+list.map(x=>{const id=Number(x.id)||0;return '<tr><td>'+esc(x.name)+'</td><td>'+esc(x.external)+'</td><td>'+esc(x.internal)+'</td><td>'+esc(x.protocol)+'</td><td>'+(id?'<button class="cbtn" onclick="natDel('+id+')">删除</button>':'默认')+'</td></tr>';}).join('')+'</table>';}
 function renderWeb(){const e=document.getElementById('zjNatWebOut'),list=blocks.nat_web,msg=empty(list,'站点');if(msg){e.textContent=msg;return;}e.innerHTML='<table style="width:100%;font-size:.84rem"><tr><th>域名</th><th>外部端口</th><th>内部端口</th><th>操作</th></tr>'+list.map(x=>'<tr><td>'+esc(x.domain)+'</td><td>'+esc(x.external)+'</td><td>'+esc(x.internal)+'</td><td><button class="cbtn" onclick="webDel('+(Number(x.id)||0)+')">删除</button></td></tr>').join('')+'</table>';}
 function renderSg(){const e=document.getElementById('zjSecOut'),list=blocks.security_groups,msg=empty(list,'安全组');if(msg){e.textContent=msg;return;}e.innerHTML='<table style="width:100%;font-size:.84rem"><tr><th>名称</th><th>描述</th><th>操作</th></tr>'+list.map(x=>{const id=Number(x.id)||0;return '<tr><td>'+esc(x.name)+'</td><td>'+esc(x.description||'-')+'</td><td><button class="cbtn" onclick="sgRules('+id+')">规则</button> <button class="cbtn" onclick="sgLink('+id+')">应用</button> <button class="cbtn" onclick="sgDel('+id+')">删除</button></td></tr>';}).join('')+'</table>';}

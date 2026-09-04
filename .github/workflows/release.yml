@@ -35,7 +35,9 @@ jobs:
             go build -trimpath -ldflags "-X main.version=$VERSION -s -w" \
               -o dist/lumeidc_${GOOS}_${GOARCH} ./cmd/lumeidc
           done
-          cd dist && sha256sum lumeidc_* > lumeidc_SHA256SUMS
+          cd dist
+          # 每个二进制一个独立 .sha256 侧车（程序侧按资产名精确匹配）
+          for f in lumeidc_*; do sha256sum "$f" > "$f.sha256"; done
       - uses: actions/upload-artifact@v4
         with:
           name: dist
@@ -45,14 +47,29 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # 需要完整历史与旧 tag 定位区间
+          fetch-tags: true
       - name: 下载构建产物
         uses: actions/download-artifact@v4
         with:
           name: dist
           path: dist
+      - name: 生成发布说明（自动拉取提交）
+        id: notes
+        run: |
+          TAG="${GITHUB_REF_NAME:-${{ inputs.tag }}}"
+          # 上一个 tag 作为区间起点；首个 release 无上一 tag 时生成初始发布说明
+          PREV=$(git describe --abbrev=0 --tags "${TAG}"^ 2>/dev/null || true)
+          if [ -n "$PREV" ]; then
+            git log --oneline --no-merges "$PREV..$TAG" | sed 's/^/- /' > notes.md
+          else
+            echo "- ${TAG} 初始发布" > notes.md
+          fi
       - name: 发布 Release
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*
           name: ${{ github.ref_name || inputs.tag }}
-          generate_release_notes: true
+          body_path: notes.md

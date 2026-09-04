@@ -97,6 +97,12 @@ func (p Provider) SnapshotAction(ctx context.Context, cfg server.Config, upstrea
 		}
 	}
 	f.Set("func", fn)
+	// 上游 createSnap/createBackup 以 id 定位磁盘（/disks/{id}/snapshots），
+	// 前端传的是 disk_id：映射为 id，避免 ModuleAction 误填主机 id。
+	if (fn == "createSnap" || fn == "createBackup") && f.Get("id") == "" && f.Get("disk_id") != "" {
+		f.Set("id", f.Get("disk_id"))
+		f.Del("disk_id")
+	}
 	return p.ModuleAction(ctx, cfg, upstreamHostID, f)
 }
 
