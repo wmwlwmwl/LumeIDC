@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -34,6 +35,7 @@ func main() {
 // 免手动重启（安装向导与完整应用分属两套路由，切换是必需的）。
 func runInstaller(version string) {
 	mux := http.NewServeMux()
+	handler.RegisterAssets(mux) // 安装向导页同样需要样式/脚本静态资源
 	inst := &handler.Installer{ConfigPath: "config.yaml"}
 	inst.Register(mux)
 	addr := installListenAddr()
@@ -47,14 +49,19 @@ func runInstaller(version string) {
 	done := make(chan struct{})
 	inst.OnInstalled = func(cfg *config.Config) {
 		signal.Stop(sigCh) // 安装阶段信号监听已无用，防止吞掉正式运行后的 SIGTERM
-		_ = srv.Close()
-		// 完整应用在新协程中运行；main 等待其退出，避免进程随之结束。
 		go func() {
+			// 先让"安装完成"页完整送达浏览器，再切关旧服务、启动完整应用。
+			time.Sleep(800 * time.Millisecond)
+			_ = srv.Close()
 			startApp(cfg, version)
 			close(done)
 		}()
 	}
-	log.Printf("LumeIDC 未安装，安装向导已启动: http://localhost%s/install", addr)
+	host := addr
+	if strings.HasPrefix(host, ":") {
+		host = "localhost" + host
+	}
+	log.Printf("LumeIDC 未安装，安装向导已启动: http://%s/install", host)
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}
@@ -90,5 +97,7 @@ func installListenAddr() string {
 	if a := os.Getenv("INSTALL_LISTEN"); a != "" {
 		return a
 	}
-	return "127.0.0.1:8080"
+	// ponytail: 安装向导默认监听全接口（:8080）而非回环，便于 1Panel/容器端口映射直达安装页；
+	// 代价是装完以前向导对公网可见，门槛依赖有效数据库凭据（需提交正确库连接才能创建管理员）。
+	return ":8080"
 }
