@@ -175,10 +175,15 @@ func (a *Admin) adminSiteSave(w http.ResponseWriter, r *http.Request) {
 	// 端口热切换后，旧端口正在优雅关闭：若用户显式带端口访问（如 yun.662662.xyz:9090），
 	// 跳转地址必须带上新端口，否则 303 落回已关闭的旧端口；域名直连（无端口、走反代）保持相对跳转。
 	// 反代透传的内网/回环主机（如 127.0.0.1:8080）不能作为跳转主机，否则浏览器会跳向内网地址。
-	target := "/admin/site?ok=1"
+	// 后台路径跳转直接按新 admin_path 构造：修改路径后旧前缀立即被屏蔽，不能依赖 middleware 改写。
+	newPath := strings.Trim(adminPath, "/")
+	if newPath == "" {
+		newPath = "admin"
+	}
+	target := "/" + newPath + "/site?ok=1"
 	if port != "" {
 		if host, _, err := net.SplitHostPort(r.Host); err == nil && publicHost(host) {
-			target = "//" + net.JoinHostPort(host, port) + "/admin/site?ok=1"
+			target = "//" + net.JoinHostPort(host, port) + target
 		}
 	}
 	http.Redirect(w, r, target, http.StatusSeeOther)
