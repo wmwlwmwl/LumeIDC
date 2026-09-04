@@ -51,6 +51,8 @@ type AdminData struct {
 	// UpdateInfo 系统更新页数据（nil 时不渲染）；UpdateDisabled 非 Linux 平台禁用。
 	UpdateInfo     *update.Info
 	UpdateDisabled bool
+	// UpdatePending 已有新版本二进制待重启生效（页面恢复「立即重启」入口，避免重复下载）。
+	UpdatePending bool
 }
 
 type adminRow struct {

@@ -33,6 +33,7 @@ func (m *AdminManage) ProductsList(w http.ResponseWriter, r *http.Request) {
 	psID, _ := m.Products.DefaultPricesetID(r.Context())
 	list, err := m.Products.ListAdmin(r.Context(), psID)
 	if err != nil {
+		log.Printf("[admin] 产品列表查询失败: %v", err)
 		http.Error(w, "查询失败", 500)
 		return
 	}

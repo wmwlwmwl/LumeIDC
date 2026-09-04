@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -43,6 +44,7 @@ func (m *AdminManage) ServicesList(w http.ResponseWriter, r *http.Request) {
 	}
 	list, err := m.Svc.AdminList(r.Context(), f)
 	if err != nil {
+		log.Printf("[admin] 服务列表查询失败: %v", err)
 		http.Error(w, "查询失败", 500)
 		return
 	}

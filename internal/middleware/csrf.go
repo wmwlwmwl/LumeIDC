@@ -4,6 +4,7 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"encoding/base64"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -47,7 +48,14 @@ func CSRF(next http.Handler) http.Handler {
 
 // RedirectToLogin 会话/CSRF 失效时友好跳转登录页（供中间件与各 handler 复用）。
 // admin 请求跳后台登录（Location 会被自定义后台路径中间件改写到真实路径）；其余跳前台登录。
+// AJAX（fetch 发起的请求）无法呈现提交场景，返回 JSON 错误，避免前端拿到登录页 HTML 误判为"请求失败"。
 func RedirectToLogin(w http.ResponseWriter, r *http.Request, msg string) {
+	if r.Header.Get("Sec-Fetch-Mode") != "navigate" && r.Header.Get("Sec-Fetch-Mode") != "" {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusUnauthorized)
+		fmt.Fprintf(w, `{"ok":0,"msg":"%s"}`, strings.ReplaceAll(msg, `"`, `\"`))
+		return
+	}
 	target := "/login"
 	if strings.HasPrefix(r.URL.Path, "/admin") {
 		target = "/admin/login"

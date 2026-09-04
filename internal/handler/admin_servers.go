@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"html/template"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -38,6 +39,7 @@ func (s *AdminServers) List(w http.ResponseWriter, r *http.Request) {
 	}
 	list, err := s.Servers.List(r.Context())
 	if err != nil {
+		log.Printf("[admin] 服务器列表查询失败: %v", err)
 		http.Error(w, "查询失败", 500)
 		return
 	}

@@ -7,6 +7,10 @@
   </div>
 </div>
 
+{{if .UpdatePending}}
+<div class="ui-alert" style="border-left:4px solid var(--ui-accent,#4f46e5);padding:10px 14px;border-radius:8px;margin-bottom:14px">已下载新版本并替换成功，点击下方「立即重启」让新版本生效（重启后需重新登录后台）。</div>
+{{end}}
+
 {{if .UpdateDisabled}}
 <div class="ui-alert ui-alert-error" role="alert">当前运行平台不支持在线更新（仅支持 Linux 服务器）。可从 GitHub Releases 手动下载对应架构的二进制替换。</div>
 {{end}}
@@ -57,7 +61,11 @@
       headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
       body: body
     }).then(function (r) {
-      return r.json().catch(function () { return { ok: 0, msg: '请求失败（HTTP ' + r.status + '）' }; });
+      return r.json().catch(function () {
+        // 非 JSON 响应：会话/CSRF 失效被重定向到登录页（HTTP 200 的 HTML），或网关拦截。
+        if (r.redirected) return { ok: 0, msg: '会话已过期，请刷新页面重新登录后再操作' };
+        return { ok: 0, msg: '服务响应异常（HTTP ' + r.status + '），请查看服务端日志' };
+      });
     }).then(function (j) { done(j); }).catch(function () { done({ ok: 0, msg: '网络错误，请重试' }); });
   }
   function render(j) {
@@ -84,8 +92,42 @@
       else setStatus((j && j.msg) || '检查更新失败', false);
     });
   });
+  var replaced = {{if .UpdatePending}}true{{else}}false{{end}}; // 二进制已替换，待重启（切页回来由后端状态恢复入口）
+  if (replaced) {
+    applyBtn.textContent = '立即重启';
+    applyBtn.disabled = false; // 模板默认禁用按钮，待重启状态必须显式启用
+    setStatus('已有新版本待生效，点击「立即重启」完成升级', true);
+  }
+  function doRestart() {
+    applyBtn.disabled = true;
+    setStatus('正在重启，请稍候…', true);
+    post('/admin/update/restart', function (rj) {
+      if (rj && rj.ok) {
+        // 服务就地重启：进程替换 + 新进程接端口需要时间，先等 3 秒完成切换，
+        // 再每秒探测直到服务恢复后自动刷新，避免启动慢时刷新到空白页。
+        setStatus((rj.msg || '正在重启') + '，等待服务恢复后自动进入…', true);
+        var startAt = Date.now();
+        setTimeout(function ping() {
+          fetch(location.pathname, { cache: 'no-store' })
+            .then(function () { location.reload(); })
+            .catch(function () {
+              if (Date.now() - startAt < 60000) {
+                setTimeout(ping, 1000);
+              } else {
+                setStatus('服务恢复较慢，请稍后手动刷新后台', false);
+              }
+            });
+        }, 3000);
+      } else {
+        applyBtn.disabled = false;
+        if (replaced) applyBtn.textContent = '立即重启';
+        setStatus((rj && rj.msg) || '重启失败，请稍后手动重启', false);
+      }
+    });
+  }
   applyBtn.addEventListener('click', function () {
     var cur = currentEl ? currentEl.textContent.trim() : '';
+    if (replaced) { doRestart(); return; }
     if (!confirm('确认将当前版本 ' + cur + ' 更新为最新版本？替换完成后可选择立即重启生效。')) return;
     applyBtn.disabled = true;
     setStatus('正在下载并校验安装包，请稍候…', true);
@@ -96,21 +138,16 @@
         return;
       }
       // 二进制已替换，询问是否立即就地重启生效。
-      if (!confirm('二进制已替换成功。是否立即重启生效？\n\n点「确定」立即重启（重启后需重新登录后台）；点「取消」稍后手动重启。')) {
-        applyBtn.disabled = true;
-        setStatus('已替换二进制，请稍后手动重启应用生效（1Panel: docker restart 容器名；宝塔: supervisorctl restart lumeidc）', true);
+      if (!confirm('二进制已替换成功。是否立即重启生效？\n\n点「确定」立即重启（重启后需重新登录后台）；点「取消」稍后在后台点「立即重启」。')) {
+        // 稍后重启：保留按钮入口（点击直接触发重启），避免只能到外部重启。
+        replaced = true;
+        applyBtn.textContent = '立即重启';
+        applyBtn.disabled = false;
+        setStatus('已替换二进制，点击「立即重启」让新版本生效；或在外围重启（1Panel: docker restart 容器名；宝塔: supervisorctl restart lumeidc）', true);
         return;
       }
-      applyBtn.disabled = true;
-      setStatus('正在重启，请稍后重新打开后台…', true);
-      post('/admin/update/restart', function (rj) {
-        if (rj && rj.ok) {
-          setStatus((rj.msg || '正在重启') + '，页面即将断开，请稍后刷新后台。', true);
-        } else {
-          applyBtn.disabled = false;
-          setStatus((rj && rj.msg) || '重启失败，请稍后手动重启', false);
-        }
-      });
+      replaced = true;
+      doRestart();
     });
   });
 })();

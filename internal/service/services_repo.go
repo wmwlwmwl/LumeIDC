@@ -286,7 +286,7 @@ func (s *ServicesRepo) AdminList(ctx context.Context, f AdminServiceFilter) ([]A
 	query := `SELECT sv.id, coalesce(u.email,''), coalesce(sv.name,''),
 	        CASE sv.status WHEN 0 THEN '待开通' WHEN 1 THEN '激活' WHEN 2 THEN '已停机' ELSE '已删除' END,
 	        to_char(coalesce(sv.expires_at, sv.created_at),'YYYY-MM-DD'),
-	        sv.upstream_host_id, coalesce(sv.provision_error,''),
+	        coalesce(sv.upstream_host_id::text,''), coalesce(sv.provision_error,''),
 	        coalesce((SELECT profit FROM orders WHERE id=sv.order_id),'0'),
 	        sv.product_id, coalesce(sv.hostname,''), coalesce(sv.expires_at, sv.created_at),
 	        coalesce(sv.config_snapshot, o.config_snapshot),

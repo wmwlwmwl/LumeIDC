@@ -17,8 +17,8 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
@@ -38,7 +38,7 @@ jobs:
           cd dist
           # 每个二进制一个独立 .sha256 侧车（程序侧按资产名精确匹配）
           for f in lumeidc_*; do sha256sum "$f" > "$f.sha256"; done
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: dist
           path: dist
@@ -47,12 +47,12 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0   # 需要完整历史与旧 tag 定位区间
           fetch-tags: true
       - name: 下载构建产物
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v6
         with:
           name: dist
           path: dist
@@ -60,16 +60,23 @@ jobs:
         id: notes
         run: |
           TAG="${GITHUB_REF_NAME:-${{ inputs.tag }}}"
-          # 上一个 tag 作为区间起点；首个 release 无上一 tag 时生成初始发布说明
-          PREV=$(git describe --abbrev=0 --tags "${TAG}"^ 2>/dev/null || true)
+          # 取创建时间在 TAG 之前最近的一个 vX.Y.Z tag 作为上一版本。
+          # 注意：不能依赖 git describe 沿祖先链找 tag——历史重写/分叉时（如 v0.0.1 打在废弃分支上）
+          # 祖先链上可能没有其他 tag，会误走"初始发布"分支。
+          PREV=$(git for-each-ref --sort=-creatordate --format='%(refname:short)' refs/tags \
+            | grep -v "^$TAG$" | head -n 1)
           if [ -n "$PREV" ]; then
-            git log --oneline --no-merges "$PREV..$TAG" | sed 's/^/- /' > notes.md
+            # 以两 tag 的共同祖先为基线，避免全量 log 把上一版本的提交也算进来
+            BASE=$(git merge-base "$PREV" "$TAG" 2>/dev/null || true)
+            [ -z "$BASE" ] && BASE=$(git rev-list --max-parents=0 "$TAG")
+            git log --oneline --no-merges "$BASE..$TAG" | sed 's/^/- /' > notes.md
+            [ -s notes.md ] || echo "- ${TAG} 初始发布" > notes.md
           else
             echo "- ${TAG} 初始发布" > notes.md
           fi
       - name: 发布 Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: dist/*
-          name: ${{ github.ref_name || inputs.tag }}
-          body_path: notes.md
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name || inputs.tag }}
+        # gh CLI 随 runner 预装且自带鉴权，替代 softprops/action-gh-release（Node20）消除弃用警告
+        run: gh release create "$TAG" dist/* --title "$TAG" --notes-file notes.md

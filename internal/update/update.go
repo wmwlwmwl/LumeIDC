@@ -52,6 +52,21 @@ type Client struct {
 	Version string       // 当前版本（main 注入）
 	HTTP    *http.Client // 默认 60s 超时
 	mu      sync.Mutex   // 串行化检查/应用，防并发替换
+
+	// execPath Apply 替换时记录的原始程序路径。rename 成 .bak 后 os.Executable()
+	// 会跟随 /proc/self/exe 解析到 .bak，ExecNew 优先用它定位新版本文件。
+	execPath string
+
+	// pendingRestart Apply 成功替换二进制后置位：页面据此保持「立即重启」入口，
+	// 避免切页/刷新后状态丢失被迫重新下载。进程重启(exec)后新实例内存为空，自动清除。
+	pendingRestart bool
+}
+
+// HasPendingRestart 是否已替换新版本二进制、等待重启生效。
+func (c *Client) HasPendingRestart() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.pendingRestart
 }
 
 func (c *Client) http() *http.Client {
@@ -104,6 +119,13 @@ func (c *Client) Apply(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("定位程序路径失败: %w", err)
 	}
+	// 防 .bak 叠加：若当前运行的程序文件本身是备份名（如某人手动从 .bak 恢复并改回），
+	// 每次更新都会再套一层 .bak.bak… ，直接拒绝让用户恢复正式文件名。
+	if strings.HasSuffix(exe, ".bak") {
+		return fmt.Errorf("当前程序文件名为备份文件（%s），请先恢复为正式文件名后再在线更新", filepath.Base(exe))
+	}
+	// 必须在 rename 原文件之前记录原始路径（/proc/self/exe 会跟随 .bak）。
+	c.execPath = exe
 	return c.install(ctx, exe, rel.TagName, binURL, shaURL)
 }
 
@@ -170,6 +192,7 @@ func (c *Client) install(ctx context.Context, exe, tag, binURL, shaURL string) e
 		return fmt.Errorf("替换程序失败，已恢复原版本: %w", err)
 	}
 	_ = os.Chmod(exe, 0o755)
+	c.pendingRestart = true // 替换完成即标记待重启；调用方持锁，无需另行加锁
 	log.Printf("[update] 已更新 %s → %s，等待手动重启生效", exe, tag)
 	return nil
 }
