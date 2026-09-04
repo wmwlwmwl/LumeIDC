@@ -172,13 +172,28 @@ func (a *Admin) adminSiteSave(w http.ResponseWriter, r *http.Request) {
 	if a.AdminPathCfg != nil {
 		a.AdminPathCfg.Set(adminPath) // 立即生效，无需重启
 	}
-	// 端口热切换后，旧端口正在优雅关闭：若当前请求 URL 显式带端口（如 localhost:9090），
+	// 端口热切换后，旧端口正在优雅关闭：若用户显式带端口访问（如 yun.662662.xyz:9090），
 	// 跳转地址必须带上新端口，否则 303 落回已关闭的旧端口；域名直连（无端口、走反代）保持相对跳转。
+	// 反代透传的内网/回环主机（如 127.0.0.1:8080）不能作为跳转主机，否则浏览器会跳向内网地址。
 	target := "/admin/site?ok=1"
 	if port != "" {
-		if host, _, err := net.SplitHostPort(r.Host); err == nil {
+		if host, _, err := net.SplitHostPort(r.Host); err == nil && publicHost(host) {
 			target = "//" + net.JoinHostPort(host, port) + "/admin/site?ok=1"
 		}
 	}
 	http.Redirect(w, r, target, http.StatusSeeOther)
+}
+
+// publicHost 报告主机名是否可作为对外跳转目标：
+// localhost、回环/私网 IP（127.x、10.x、192.168.x、172.16-31.x、169.254.x 等）均视为不可见，返回 false。
+// 纯公网 IP 或域名返回 true（域名不做解析验证）。
+func publicHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return false
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return true // 域名
+	}
+	return !(ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast())
 }
