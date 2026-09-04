@@ -8,6 +8,7 @@ import (
 	"crypto/sha1"
 	"encoding/base32"
 	"encoding/binary"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -65,5 +66,6 @@ func hotp(key []byte, counter uint64) string {
 	sum := mac.Sum(nil)
 	offset := sum[len(sum)-1] & 0x0f
 	code := (binary.BigEndian.Uint32(sum[offset:offset+4]) & 0x7fffffff) % 1000000
-	return strconv.FormatInt(int64(code), 10)
+	// TOTP 恒为 6 位，前导零必须保留（如 087021），否则 Verify 的长度校验会通过不了。
+	return fmt.Sprintf("%06d", code)
 }
