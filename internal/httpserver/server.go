@@ -35,12 +35,13 @@ import (
 
 // App 持有所有需要在优雅关闭时释放的资源。
 type App struct {
-	mu       sync.Mutex
-	Server   *http.Server
-	DB       *sql.DB
-	Cron     *robfigcron.Cron
-	stopped  chan struct{} // 第一次关闭后关闭，供 SwitchListen 热替换后等待新服务
-	stopOnce sync.Once
+	mu         sync.Mutex
+	Server     *http.Server
+	DB         *sql.DB
+	Cron       *robfigcron.Cron
+	listenAddr string // 当前实际监听地址（启动或热切换后），供同址幂等比较
+	stopped    chan struct{} // 第一次关闭后关闭，供 SwitchListen 热替换后等待新服务
+	stopOnce   sync.Once
 }
 
 // Shutdown 优雅关闭：停止 cron、关闭 HTTP、关闭 DB。
@@ -65,13 +66,20 @@ func (a *App) Stopped() <-chan struct{} { return a.stopped }
 
 // SwitchListen 热切换监听地址（后台修改端口用）：先绑定新端口，成功后
 // 替换当前 HTTP 服务并优雅关闭旧服务；绑定失败时旧服务不受影响。
+// 目标与当前监听一致时幂等直接成功（后台留空回退 config 端口时避免"自己绑自己"EADDRINUSE）。
 func (a *App) SwitchListen(addr string) error {
+	a.mu.Lock()
+	cur := a.listenAddr
+	old := a.Server
+	a.mu.Unlock()
+	if sameListen(cur, addr) {
+		return nil
+	}
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("绑定新端口 %s 失败: %w", addr, err)
 	}
 	a.mu.Lock()
-	old := a.Server
 	newSrv := &http.Server{
 		Handler:           old.Handler,
 		ReadHeaderTimeout: old.ReadHeaderTimeout,
@@ -80,6 +88,7 @@ func (a *App) SwitchListen(addr string) error {
 		IdleTimeout:       old.IdleTimeout,
 	}
 	a.Server = newSrv
+	a.listenAddr = addr
 	a.mu.Unlock()
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -345,6 +354,39 @@ func Build(cfg *config.Config, version string) (*App, error) {
 		Cron:    cronRef,
 		stopped: make(chan struct{}),
 	}
+	app.listenAddr = addr
 	adminHandler.ListenSwitcher = app.SwitchListen // 后台修改监听端口后立即生效
 	return app, nil
+}
+
+// sameListen 判断两个监听地址是否同一地址（端口相同且主机语义等价）。
+// 主机为空、"0.0.0.0"、"::" 均视为全接口，互相等效；明确主机（如 127.0.0.1）需完全一致。
+func sameListen(a, b string) bool {
+	ha, pa, oka := splitListen(a)
+	hb, pb, okb := splitListen(b)
+	if !oka || !okb || pa != pb {
+		return false
+	}
+	w := func(h string) bool { return h == "" || h == "0.0.0.0" || h == "::" }
+	return (w(ha) && w(hb)) || ha == hb
+}
+
+func splitListen(addr string) (host string, port int, ok bool) {
+	addr = strings.TrimSpace(addr)
+	if !strings.Contains(addr, ":") {
+		return "", 0, false
+	}
+	h, p, err := net.SplitHostPort(addr)
+	if err != nil {
+		// ":8080" 等无主机形式补全后重试
+		h, p, err = net.SplitHostPort("0.0.0.0" + addr)
+		if err != nil {
+			return "", 0, false
+		}
+	}
+	n, err := strconv.Atoi(p)
+	if err != nil || n < 1 || n > 65535 {
+		return "", 0, false
+	}
+	return h, n, true
 }
