@@ -2,6 +2,7 @@ package zjmf
 
 import (
 	"context"
+	"encoding/json"
 	"strconv"
 	"strings"
 
@@ -57,22 +58,32 @@ type upstreamConfigOption struct {
 
 // FetchProductConfigOptions 拉取上游商品配置项并转换为本地 ConfigOption 结构。
 func (p Provider) FetchProductConfigOptions(ctx context.Context, cfg server.Config, upstreamPID int64) ([]repo.ConfigOption, error) {
-	var raw zjmfConfigResp
-	if err := getJSON(ctx, cfg,
-		"/cart/get_product_config?pid="+strconv.FormatInt(upstreamPID, 10), &raw); err != nil {
+	raw, err := getJSONRaw(ctx, cfg,
+		"/cart/get_product_config?pid="+strconv.FormatInt(upstreamPID, 10))
+	if err != nil {
 		return nil, err
 	}
+	return parseConfigOptions(raw), nil
+}
+
+// parseConfigOptions 从 get_product_config 原始响应提取配置项（不额外请求上游）。
+// 目录回填与导入共用同一份响应，避免对同一商品重复拉取。
+func parseConfigOptions(raw []byte) []repo.ConfigOption {
+	var pc zjmfConfigResp
+	if err := json.Unmarshal(raw, &pc); err != nil {
+		return nil
+	}
 	var opts []repo.ConfigOption
-	if len(raw.Data.ConfigOptions) > 0 {
-		for _, item := range raw.Data.ConfigOptions {
+	if len(pc.Data.ConfigOptions) > 0 {
+		for _, item := range pc.Data.ConfigOptions {
 			opts = append(opts, convertUpstreamConfigOption(item))
 		}
 	} else {
-		for _, g := range raw.Data.ConfigGroups {
+		for _, g := range pc.Data.ConfigGroups {
 			opts = append(opts, convertConfigOptions(g.Options)...)
 		}
 	}
-	return opts, nil
+	return opts
 }
 
 // convertUpstreamConfigOption 解析魔方财务 config_options 格式（field/option_mode/sub[].pricing）。

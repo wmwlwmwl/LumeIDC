@@ -9,11 +9,62 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"lumeidc/internal/repo"
 	"lumeidc/internal/server"
 )
+
+// providerCatalogTTL 上游目录缓存有效期：目录数据低频变化，短 TTL 即可防止
+// 多人反复打开页面/重复导入时对魔方财务的全量轰炸（浏览一次 1+N 次请求）。
+const providerCatalogTTL = 60 * time.Second
+
+// providerCatalogCache 管理端上游目录 TTL 缓存（仅目录页/导入复用）。
+// 定时同步 syncPrices 直接调用 provider.Catalog 且不经过本缓存，价格必为实时。
+// ponytail: 目录页/导入的价格可能滞后 ≤TTL；页面提供 ?fresh=1 强制刷新。
+type providerCatalogCache struct {
+	mu    sync.Mutex
+	at    map[int64]time.Time
+	lists map[int64][]server.UpstreamProduct
+}
+
+var catalogCache = &providerCatalogCache{
+	at:    map[int64]time.Time{},
+	lists: map[int64][]server.UpstreamProduct{},
+}
+
+func (c *providerCatalogCache) get(serverID int64) ([]server.UpstreamProduct, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	at, ok := c.at[serverID]
+	if !ok || time.Since(at) > providerCatalogTTL {
+		return nil, false
+	}
+	return c.lists[serverID], true
+}
+
+func (c *providerCatalogCache) put(serverID int64, list []server.UpstreamProduct) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.at[serverID] = time.Now()
+	c.lists[serverID] = list
+}
+
+// providerCatalog 带 TTL 缓存的目录拉取；fresh=true 时强制重新请求上游。
+func (m *AdminManage) providerCatalog(ctx context.Context, serverID int64, sv *repo.Server, prov server.Provider, fresh bool) ([]server.UpstreamProduct, error) {
+	if !fresh {
+		if list, ok := catalogCache.get(serverID); ok {
+			return list, nil
+		}
+	}
+	list, err := prov.Catalog(ctx, serverConfig(sv))
+	if err != nil {
+		return nil, err
+	}
+	catalogCache.put(serverID, list)
+	return list, nil
+}
 
 func (m *AdminManage) CatalogPage(w http.ResponseWriter, r *http.Request) {
 	if !m.require(w, r) {
@@ -32,7 +83,7 @@ func (m *AdminManage) CatalogPage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "供应商错误", http.StatusInternalServerError)
 		return
 	}
-	list, err := prov.Catalog(ctx, serverConfig(sv))
+	list, err := m.providerCatalog(ctx, id, sv, prov, r.URL.Query().Get("fresh") == "1")
 	linked, lerr := m.Products.LinkedUpstreamPIDs(ctx, id)
 	if lerr != nil {
 		log.Printf("[catalog] 查询已对接商品失败: %v", lerr)
@@ -121,7 +172,7 @@ func (m *AdminManage) UpstreamOptions(w http.ResponseWriter, r *http.Request) {
 	if cl, ok := prov.(server.CatalogLister); ok {
 		list, err = cl.CatalogLight(ctx, serverConfig(sv))
 	} else {
-		list, err = prov.Catalog(ctx, serverConfig(sv))
+		list, err = m.providerCatalog(ctx, serverID, sv, prov, false)
 	}
 	if err != nil {
 		jsonFail(w, "拉取目录失败: "+err.Error())
@@ -261,7 +312,7 @@ func (m *AdminManage) ImportProducts(w http.ResponseWriter, r *http.Request) {
 			url.QueryEscape("供应商错误")), http.StatusSeeOther)
 		return
 	}
-	list, err := prov.Catalog(ctx, serverConfig(sv))
+	list, err := m.providerCatalog(ctx, serverID, sv, prov, false)
 	if err != nil {
 		http.Redirect(w, r, fmt.Sprintf("/admin/servers/%d/catalog?err=%s", serverID,
 			url.QueryEscape("拉取目录失败: "+err.Error())), http.StatusSeeOther)
@@ -338,12 +389,18 @@ func (m *AdminManage) importUpstreamProduct(ctx context.Context, sv *repo.Server
 		return false
 	}
 	m.Products.SetBinding(ctx, productID, sqlNull(serverID), int64(pid))
-	if fetcher, ok := prov.(server.ConfigOptionsFetcher); ok {
-		if opts, err := fetcher.FetchProductConfigOptions(ctx, cfg, int64(pid)); err == nil {
-			if len(opts) > 0 {
-				m.Products.SaveConfigOptions(ctx, productID, opts)
+	// 配置项优先复用目录回填已拉取的（同一次 get_product_config，避免重复请求）；
+	// 目录未带配置（如非 zjmf 供应商）时回退单独拉取。
+	opts := up.ConfigOptions
+	if len(opts) == 0 {
+		if fetcher, ok := prov.(server.ConfigOptionsFetcher); ok {
+			if fetched, err := fetcher.FetchProductConfigOptions(ctx, cfg, int64(pid)); err == nil {
+				opts = fetched
 			}
 		}
+	}
+	if len(opts) > 0 {
+		m.Products.SaveConfigOptions(ctx, productID, opts)
 	}
 	return true
 }

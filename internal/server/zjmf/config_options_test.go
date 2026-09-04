@@ -70,6 +70,24 @@ const tslConfigOpts = `{"data":{"config_groups":[{"name":"g","options":[
    {"id":817207,"option_name":"10|增加到10个"}]}
 ]}]}}`
 
+// TestParseConfigOptions 目录回填顺带解析配置项（复用 get_product_config 响应，不重复请求）的入口。
+func TestParseConfigOptions(t *testing.T) {
+	got := parseConfigOptions([]byte(tslReal))
+	if len(got) != 4 {
+		t.Fatalf("期望 4 个配置项，得到 %d", len(got))
+	}
+	if got[0].Field != "area" || got[0].Name != "区域" {
+		t.Fatalf("area 解析错误: %+v", got[0])
+	}
+	if got[2].Mode != "range" || got[2].Min != 2 || got[2].Max != 16 {
+		t.Fatalf("CPU 数量档解析错误: %+v", got[2])
+	}
+	// 非 JSON 输入返回空（不 panic）
+	if n := len(parseConfigOptions([]byte("not-json"))); n != 0 {
+		t.Fatalf("非法输入应返回空，得到 %d", n)
+	}
+}
+
 // TestConfigOptionMap 验证订单选择 field→子项值 被解析为上游 configoption[选项id]=子项id。
 func TestConfigOptionMap(t *testing.T) {
 	var pc map[string]any

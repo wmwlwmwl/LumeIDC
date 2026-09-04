@@ -6,6 +6,7 @@
     <p>{{with .ServersList}}{{.Name}}{{end}} · 选择商品导入本地目录</p>
   </div>
   <div class="admin-page-actions">
+    <a href="{{with .ServersList}}/admin/servers/{{.ID}}/catalog?fresh=1{{end}}" class="admin-back-btn" title="强制执行上游全量拉取">刷新目录</a>
     <a href="/admin/servers" class="admin-back-btn">返回服务器</a>
   </div>
 </div>

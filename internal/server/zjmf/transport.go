@@ -33,6 +33,11 @@ func getJSON(ctx context.Context, cfg server.Config, path string, out any) error
 	return doJSON(ctx, cfg, http.MethodGet, path, nil, out, true)
 }
 
+// getJSONRaw 带 Bearer 的 GET，返回原始响应体（供同一响应多视角解析复用，如目录回填）。
+func getJSONRaw(ctx context.Context, cfg server.Config, path string) ([]byte, error) {
+	return doJSONRaw(ctx, cfg, http.MethodGet, path, nil, true)
+}
+
 // postForm 带 Bearer 的 POST form。
 func postForm(ctx context.Context, cfg server.Config, path string, form url.Values, out any) error {
 	return doJSON(ctx, cfg, http.MethodPost, path, form, out, true)

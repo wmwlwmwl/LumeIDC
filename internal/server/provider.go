@@ -140,6 +140,9 @@ type UpstreamProduct struct {
 	Stock          int // -1 不限
 	ConfigCount    int // 可配置项数量
 	Description    string
+	// ConfigOptions 目录回填时顺带解析的配置项（同一次 get_product_config 响应）。
+	// 导入/同步可直接复用，避免对同一商品重复请求上游。
+	ConfigOptions []repo.ConfigOption
 }
 
 // DisplayPrice 目录展示月价：真实基础价>0 用真实价，否则用最低配置价兜底（仅展示）。

@@ -303,6 +303,9 @@ func fillPricingParallel(ctx context.Context, cfg server.Config, out []server.Up
 			if err != nil {
 				return
 			}
+			// 顺带解析配置项（同一次响应），供导入/表单直接复用，避免重复请求。
+			out[idx].ConfigOptions = parseConfigOptions([]byte(rawBody))
+			out[idx].ConfigCount = len(out[idx].ConfigOptions)
 			m, q, y := baseMonthly(pc)
 			if m == 0 && q == 0 && y == 0 {
 				// 按配置计价产品上游基础价就是 0：真实计价以此为准（勿再叠加配置价）。
