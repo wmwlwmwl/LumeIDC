@@ -1,12 +1,16 @@
 package handler
 
 import (
+	"context"
+	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
 	"lumeidc/internal/middleware"
+	"lumeidc/internal/repo"
 	"lumeidc/internal/service"
 )
 
@@ -18,6 +22,37 @@ func siteFirstMark(name string) string {
 	}
 	r, _ := utf8.DecodeRuneInString(s)
 	return string(r)
+}
+
+// siteBaseURL 返回站点地址前缀（不含末尾 /）：后台 site_url 优先，
+// 未配置时按当前请求动态推断（反代须透传 X-Forwarded-Proto）。
+func siteBaseURL(ctx context.Context, s *repo.Settings, r *http.Request) string {
+	if s != nil {
+		if v, err := s.Get(ctx, service.KeySiteURL); err == nil {
+			if v = strings.TrimSpace(v); v != "" {
+				return strings.TrimRight(v, "/")
+			}
+		}
+	}
+	return inferBaseFromRequest(r)
+}
+
+// inferBaseFromRequest 从当前请求推断协议与主机（HTTPS 直连或反代标记）。
+func inferBaseFromRequest(r *http.Request) string {
+	scheme := "http"
+	if r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
+		scheme = "https"
+	}
+	return scheme + "://" + r.Host
+}
+
+// validSiteURL 校验站点地址：必须 http(s):// 开头且不含路径与查询。
+func validSiteURL(s string) bool {
+	u, err := url.Parse(s)
+	if err != nil {
+		return false
+	}
+	return (u.Scheme == "http" || u.Scheme == "https") && u.Host != "" && u.Path == "" && u.RawQuery == "" && u.Fragment == ""
 }
 
 // adminSite GET /admin/site — 站点设置页。
@@ -37,6 +72,8 @@ func (a *Admin) adminSite(w http.ResponseWriter, r *http.Request) {
 		service.KeyServiceEmail:    get(service.KeyServiceEmail),
 		service.KeyServicePhone:    get(service.KeyServicePhone),
 		service.KeyServiceHours:    get(service.KeyServiceHours),
+		service.KeySiteURL:         get(service.KeySiteURL),
+		service.KeyListenPort:      get(service.KeyListenPort),
 		service.KeyAdminPath:       get(service.KeyAdminPath),
 	}
 	a.renderAdmin(w, "admin_site.html", AdminData{
@@ -66,6 +103,29 @@ func (a *Admin) adminSiteSave(w http.ResponseWriter, r *http.Request) {
 	email := strings.TrimSpace(r.PostFormValue(service.KeyServiceEmail))
 	phone := strings.TrimSpace(r.PostFormValue(service.KeyServicePhone))
 	hours := strings.TrimSpace(r.PostFormValue(service.KeyServiceHours))
+	siteURL := strings.TrimRight(strings.TrimSpace(r.PostFormValue(service.KeySiteURL)), "/")
+	if siteURL != "" && !validSiteURL(siteURL) {
+		http.Redirect(w, r, "/admin/site?err="+url.QueryEscape("站点地址无效：需以 http:// 或 https:// 开头且不含路径（可留空自动推断）"), http.StatusSeeOther)
+		return
+	}
+	port := strings.TrimSpace(r.PostFormValue(service.KeyListenPort))
+	if port != "" {
+		if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 {
+			http.Redirect(w, r, "/admin/site?err="+url.QueryEscape("监听端口无效：需为 1-65535 的整数（留空使用 config.yaml 的 listen）"), http.StatusSeeOther)
+			return
+		}
+	} else if a.ListenSwitcher != nil {
+		// 留空回退 config.yaml 的 listen；缺省用 :8080。
+		def := a.DefaultListen
+		if def == "" {
+			def = ":8080"
+		}
+		if strings.HasPrefix(def, ":") && def != ":" {
+			if n, err := strconv.Atoi(def[1:]); err == nil && n >= 1 && n <= 65535 {
+				port = def[1:]
+			}
+		}
+	}
 	adminPath := strings.TrimSpace(r.PostFormValue(service.KeyAdminPath))
 	if adminPath != "" && !middleware.ValidAdminPath(adminPath) {
 		http.Redirect(w, r, "/admin/site?err="+url.QueryEscape("后台路径无效：仅允许 /字母数字_-，且不能与公共路径（如 /login、/services）冲突"), http.StatusSeeOther)
@@ -92,9 +152,33 @@ func (a *Admin) adminSiteSave(w http.ResponseWriter, r *http.Request) {
 	set(service.KeyServiceEmail, email)
 	set(service.KeyServicePhone, phone)
 	set(service.KeyServiceHours, hours)
+	set(service.KeySiteURL, siteURL)
+	// 监听端口热切换：先绑定成功（旧服务不中断）再落库。
+	addr := a.DefaultListen
+	if addr == "" {
+		addr = ":8080"
+	}
+	if port != "" {
+		addr = ":" + port
+	}
+	if a.ListenSwitcher != nil {
+		if err := a.ListenSwitcher(addr); err != nil {
+			http.Redirect(w, r, "/admin/site?err="+url.QueryEscape("切换监听端口失败（"+err.Error()+"），设置未保存"), http.StatusSeeOther)
+			return
+		}
+	}
+	set(service.KeyListenPort, port)
 	set(service.KeyAdminPath, adminPath)
 	if a.AdminPathCfg != nil {
 		a.AdminPathCfg.Set(adminPath) // 立即生效，无需重启
 	}
-	http.Redirect(w, r, "/admin/site?ok=1", http.StatusSeeOther)
+	// 端口热切换后，旧端口正在优雅关闭：若当前请求 URL 显式带端口（如 localhost:9090），
+	// 跳转地址必须带上新端口，否则 303 落回已关闭的旧端口；域名直连（无端口、走反代）保持相对跳转。
+	target := "/admin/site?ok=1"
+	if port != "" {
+		if host, _, err := net.SplitHostPort(r.Host); err == nil {
+			target = "//" + net.JoinHostPort(host, port) + "/admin/site?ok=1"
+		}
+	}
+	http.Redirect(w, r, target, http.StatusSeeOther)
 }

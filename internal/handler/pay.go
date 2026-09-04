@@ -32,7 +32,6 @@ type Pay struct {
 	Payment  *service.Payment
 	Products *repo.Products
 	Gateways map[string]gateway.Gateway
-	BaseURL  string
 	GwRepo   *repo.Gateways
 	Invoices *repo.Invoices
 	Balance  *repo.Balance
@@ -291,9 +290,10 @@ func (h *Pay) start(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "创建支付记录失败", 500)
 		return
 	}
-	notifyURL := h.BaseURL + "/pay/notify?" + url.Values{"code": {code}}.Encode()
+	base := siteBaseURL(r.Context(), h.Settings, r) // 站点地址：后台 site_url 优先，否则按请求推断
+	notifyURL := base + "/pay/notify?" + url.Values{"code": {code}}.Encode()
 	u, err := impl.PayURL(r.Context(), gateway.PayRequest{InvoiceNo: no, Amount: payable, Title: "LumeIDC 账单 " + no,
-		NotifyURL: notifyURL, ReturnURL: h.BaseURL + "/pay/" + strconv.FormatInt(id, 10), Config: inst.Config})
+		NotifyURL: notifyURL, ReturnURL: base + "/pay/" + strconv.FormatInt(id, 10), Config: inst.Config})
 	if err != nil {
 		_ = h.GwRepo.MarkAttemptFailedByID(r.Context(), attemptID)
 		log.Printf("[payment] 网关 %s 生成支付链接失败，账单 %s: %v", code, no, err)

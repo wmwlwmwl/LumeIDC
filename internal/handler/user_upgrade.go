@@ -105,7 +105,7 @@ func (h *Pages) serviceUpgradeForm(w http.ResponseWriter, r *http.Request) {
 		"Svc": d, "CSRF": h.pageCSRF(w, r), "Error": r.URL.Query().Get("err"),
 		"Targets": targets, "TargetID": targetID,
 		"CurrentMonthly": fmt.Sprintf("%.2f", currentMonthly),
-		"TargetName": targetName, "TargetMonthly": targetMonthlyStr,
+		"TargetName":     targetName, "TargetMonthly": targetMonthlyStr,
 		"TargetConfig": targetJSON, "TargetOptions": targetOpts,
 		"ShowQ": showQ, "ShowY": showY,
 	})

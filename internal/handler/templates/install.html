@@ -45,8 +45,7 @@
         <label for="admin-pass">管理员密码</label>
         <input id="admin-pass" name="admin_pass" type="password" minlength="8" required autocomplete="new-password">
         <p class="text-muted small">至少 8 位，将使用 bcrypt 哈希存储。</p>
-        <label for="base-url">站点地址</label>
-        <input id="base-url" name="base_url" value="http://localhost:8080" required>
+        <p class="text-muted small">站点地址可在安装完成后的「后台 → 站点设置 → 站点地址」配置；留空则按访问域名自动推断。</p>
         <button class="ui-btn" type="submit">开始安装 <span>→</span></button>
       </form>
     </div>

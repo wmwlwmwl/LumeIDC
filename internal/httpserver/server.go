@@ -3,11 +3,15 @@ package httpserver
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"lumeidc/internal/captcha"
@@ -24,15 +28,19 @@ import (
 	"lumeidc/internal/server/zjmf"
 	"lumeidc/internal/service"
 	"lumeidc/internal/storage"
+	"lumeidc/internal/update"
 
 	robfigcron "github.com/robfig/cron/v3"
 )
 
 // App 持有所有需要在优雅关闭时释放的资源。
 type App struct {
-	Server *http.Server
-	DB     *sql.DB
-	Cron   *robfigcron.Cron
+	mu       sync.Mutex
+	Server   *http.Server
+	DB       *sql.DB
+	Cron     *robfigcron.Cron
+	stopped  chan struct{} // 第一次关闭后关闭，供 SwitchListen 热替换后等待新服务
+	stopOnce sync.Once
 }
 
 // Shutdown 优雅关闭：停止 cron、关闭 HTTP、关闭 DB。
@@ -40,15 +48,55 @@ func (a *App) Shutdown(ctx context.Context) {
 	if a.Cron != nil {
 		a.Cron.Stop()
 	}
-	if a.Server != nil {
-		a.Server.Shutdown(ctx)
+	a.mu.Lock()
+	srv := a.Server
+	a.mu.Unlock()
+	if srv != nil {
+		srv.Shutdown(ctx)
 	}
 	if a.DB != nil {
 		a.DB.Close()
 	}
+	a.stopOnce.Do(func() { close(a.stopped) }) // 让等待方退出（作为退出信号）
 }
 
-func Build(cfg *config.Config) (*App, error) {
+// Stopped 返回一个 chan，当实际响应的服务（SwitchListen 替换后的最终服务）退出时关闭。
+func (a *App) Stopped() <-chan struct{} { return a.stopped }
+
+// SwitchListen 热切换监听地址（后台修改端口用）：先绑定新端口，成功后
+// 替换当前 HTTP 服务并优雅关闭旧服务；绑定失败时旧服务不受影响。
+func (a *App) SwitchListen(addr string) error {
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("绑定新端口 %s 失败: %w", addr, err)
+	}
+	a.mu.Lock()
+	old := a.Server
+	newSrv := &http.Server{
+		Handler:           old.Handler,
+		ReadHeaderTimeout: old.ReadHeaderTimeout,
+		ReadTimeout:       old.ReadTimeout,
+		WriteTimeout:      old.WriteTimeout,
+		IdleTimeout:       old.IdleTimeout,
+	}
+	a.Server = newSrv
+	a.mu.Unlock()
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = old.Shutdown(ctx) // 等待旧端口上的存量请求完成
+	}()
+	go func() {
+		if err := newSrv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Printf("监听 %s 异常退出: %v", addr, err)
+		}
+		a.stopOnce.Do(func() { close(a.stopped) })
+	}()
+	return nil
+}
+
+// version 为构建期注入的版本号（main.version），未注入时为 dev。
+func Build(cfg *config.Config, version string) (*App, error) {
 	database, err := db.Open(cfg.DBDSN)
 	if err != nil {
 		return nil, err
@@ -78,7 +126,6 @@ func Build(cfg *config.Config) (*App, error) {
 	users := repo.NewUsers(database)
 	products := repo.NewProducts(database)
 	serversRepo := repo.NewServers(database)
-	settingsRepo := repo.NewSettings(database)
 	balanceRepo := repo.NewBalance(database)
 	coupons := repo.NewCoupons(database)
 	announcements := repo.NewAnnouncements(database)
@@ -94,6 +141,7 @@ func Build(cfg *config.Config) (*App, error) {
 	admins := repo.NewAdmins(database)
 	identityStore := repo.NewIdentityStore(database)
 	authChallenges := repo.NewAuthChallenges(database)
+	settingsRepo := repo.NewSettings(database)
 
 	deps.Balance = balanceRepo
 	deps.Settings = settingsRepo
@@ -102,6 +150,15 @@ func Build(cfg *config.Config) (*App, error) {
 	adminPathCfg := middleware.NewAdminPathConfig("")
 	if raw, err := settingsRepo.Get(context.Background(), service.KeyAdminPath); err == nil {
 		adminPathCfg.Set(strings.TrimSpace(raw))
+	}
+	// 监听端口（站点设置 listen_port；运行期可改，保存即生效）
+	defaultListen := cfg.Listen
+	if rawPort, err := settingsRepo.Get(context.Background(), service.KeyListenPort); err == nil {
+		if p := strings.TrimSpace(rawPort); p != "" {
+			if n, err := strconv.Atoi(p); err == nil && n >= 1 && n <= 65535 {
+				defaultListen = ":" + strconv.Itoa(n)
+			}
+		}
 	}
 	deps.AdminPathCfg = adminPathCfg
 
@@ -125,7 +182,7 @@ func Build(cfg *config.Config) (*App, error) {
 	notifier := service.NewNotifier(database, settingsRepo)
 	identity := service.NewIdentity(identityStore, users, piiCryptor, identityFiles,
 		service.NewConfiguredSMSProvider(settingsRepo), identityKey, notifier, settingsRepo, cfg.BaseURL,
-		service.NewConfiguredVerificationProvider(settingsRepo, cfg.BaseURL))
+		service.NewConfiguredVerificationProvider(settingsRepo, ""))
 	localCaptcha := captcha.New(database, settingsRepo, []byte(cfg.SecretKey))
 
 	// ---- 服务层（单例，组合根统一注入） ----
@@ -148,7 +205,6 @@ func Build(cfg *config.Config) (*App, error) {
 		Challenges:   &service.AuthChallengeService{Store: authChallenges, SMS: identity.OTP, EmailSend: notifier.SendMail, SiteName: notifier.SiteName, Key: []byte(cfg.SecretKey)},
 		Captcha:      service.NewConfiguredCaptchaProvider(settingsRepo),
 		LocalCaptcha: localCaptcha,
-		BaseURL:      cfg.BaseURL,
 		Deps:         deps,
 	}
 	pay := &handler.Pay{
@@ -156,7 +212,6 @@ func Build(cfg *config.Config) (*App, error) {
 		Payment:  paymentSvc,
 		Products: products,
 		Gateways: gateways,
-		BaseURL:  cfg.BaseURL,
 		GwRepo:   gatewaysRepo,
 		Invoices: invoices,
 		Balance:  balanceRepo,
@@ -172,6 +227,8 @@ func Build(cfg *config.Config) (*App, error) {
 		AdminLog:      adminLog,
 		Stats:         statsRepo,
 		Notifier:      notifier,
+		Updater:       &update.Client{Repo: "wmwlwmwl/LumeIDC", Version: version},
+		DefaultListen: defaultListen,
 		Deps:          deps,
 	}
 	pages := &handler.Pages{
@@ -211,16 +268,16 @@ func Build(cfg *config.Config) (*App, error) {
 	srvHandler.Register(mux)
 	mng := &handler.AdminManage{
 		Products: products, Users: users, Servers: serversRepo,
-		Balance:   balanceRepo,
-		Svc:       servicesRepo,
-		Lifecycle: lifecycle,
-		Payment:   paymentSvc,
-		Providers: providers,
-		Settings:  settingsRepo,
-		Identity:  identityStore,
+		Balance:     balanceRepo,
+		Svc:         servicesRepo,
+		Lifecycle:   lifecycle,
+		Payment:     paymentSvc,
+		Providers:   providers,
+		Settings:    settingsRepo,
+		Identity:    identityStore,
 		IdentitySvc: identity,
-		AdminLog:  adminLog,
-		Deps:      deps,
+		AdminLog:    adminLog,
+		Deps:        deps,
 	}
 	mux.HandleFunc("GET /admin/users/{id}/edit", mng.UserEdit)
 	mux.HandleFunc("POST /admin/users/{id}/save", mng.UserSave)
@@ -263,9 +320,9 @@ func Build(cfg *config.Config) (*App, error) {
 	// 全局 404 兜底（未匹配路由统一渲染站点 404 页）
 	mux.HandleFunc("/", pages.NotFound)
 
-	h := store.Middleware(middleware.CSRF(mux))
-	h = middleware.AdminPath(h, adminPathCfg)
-	addr := cfg.Listen
+	handler := store.Middleware(middleware.CSRF(mux))
+	handler = middleware.AdminPath(handler, adminPathCfg)
+	addr := defaultListen
 	if a := os.Getenv("LISTEN"); a != "" {
 		addr = a // 环境变量覆盖配置，便于本地多实例测试
 	}
@@ -275,16 +332,19 @@ func Build(cfg *config.Config) (*App, error) {
 	cronJobs := &cron.Jobs{DB: database, Fulfillment: fulfillment, Notifier: notifier,
 		Providers: providers, Servers: serversRepo, Products: products, Lifecycle: lifecycle}
 	cronRef := cronJobs.Start()
-	return &App{
+	app := &App{
 		Server: &http.Server{
 			Addr:              addr,
-			Handler:           h,
+			Handler:           handler,
 			ReadHeaderTimeout: 10 * time.Second,
 			ReadTimeout:       30 * time.Second,
 			WriteTimeout:      60 * time.Second,
 			IdleTimeout:       120 * time.Second,
 		},
-		DB:   database,
-		Cron: cronRef,
-	}, nil
+		DB:      database,
+		Cron:    cronRef,
+		stopped: make(chan struct{}),
+	}
+	adminHandler.ListenSwitcher = app.SwitchListen // 后台修改监听端口后立即生效
+	return app, nil
 }

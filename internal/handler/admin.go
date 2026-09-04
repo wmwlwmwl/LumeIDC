@@ -10,6 +10,7 @@ import (
 	"lumeidc/internal/repo"
 	"lumeidc/internal/service"
 	"lumeidc/internal/totp"
+	"lumeidc/internal/update"
 )
 
 type Admin struct {
@@ -22,6 +23,11 @@ type Admin struct {
 	AdminLog      *repo.AdminLog
 	Stats         *repo.Stats
 	Notifier      *service.Notifier
+	Updater       *update.Client // 系统在线更新（nil 时页面提示未启用）
+	// ListenSwitcher 热切换监听端口（后台站点设置调用；nil 时仅保存不切换）。
+	ListenSwitcher func(addr string) error
+	// DefaultListen config.yaml 的 listen；后台端口留空时回退到该值。
+	DefaultListen string
 	*Deps
 }
 
@@ -47,21 +53,44 @@ func (a *Admin) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /admin/totp", a.totpSetupPost)
 	mux.HandleFunc("GET /admin/password", a.passwordForm)
 	mux.HandleFunc("POST /admin/password", a.passwordSubmit)
+	mux.HandleFunc("GET /admin/update", a.adminUpdatePage)
+	mux.HandleFunc("POST /admin/update/check", a.adminUpdateCheck)
+	mux.HandleFunc("POST /admin/update/apply", a.adminUpdateApply)
+	mux.HandleFunc("POST /admin/update/restart", a.adminUpdateRestart)
 }
 
 func (a *Admin) loginForm(w http.ResponseWriter, r *http.Request) {
-	data := map[string]any{"IsAdmin": true, "CaptchaScene": "admin_login", "CSRF": a.adminCSRF(w, r)}
-	if a.LocalCaptcha != nil {
-		data["CaptchaAdminLoginEnabled"] = a.LocalCaptcha.Enabled(r.Context(), "admin_login")
-	}
+	data := map[string]any{"IsAdmin": true, "CaptchaScene": "admin_login", "CSRF": a.adminCSRF(w, r),
+		"CaptchaAdminLoginEnabled": a.adminCaptchaRequired(r)}
 	a.renderAuth(w, data)
 }
 
+// adminLoginFailKey 管理员登录失败计数的 IP key（独立于账号锁定 key）。
+func adminLoginFailKey(ip string) string { return "aip:" + ip }
+
+// adminCaptchaRequired 管理员登录是否需要图形验证码：
+// 后台已启用图形验证码，或该 IP 近期登录失败过（失败后强制出验证码防爆破）。
+func (a *Admin) adminCaptchaRequired(r *http.Request) bool {
+	if a.LocalCaptcha == nil {
+		return false
+	}
+	if a.LocalCaptcha.Enabled(r.Context(), "admin_login") {
+		return true
+	}
+	if a.Lockout != nil {
+		if n, err := a.Lockout.Fails(r.Context(), adminLoginFailKey(requestIP(r))); err == nil && n > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 func (a *Admin) captchaCheck(r *http.Request) error {
-	if a.LocalCaptcha == nil || !a.LocalCaptcha.Enabled(r.Context(), "admin_login") {
+	if a.LocalCaptcha == nil || !a.adminCaptchaRequired(r) {
 		return nil
 	}
-	return a.LocalCaptcha.Verify(r.Context(), "admin_login", r.PostFormValue("captcha_id"), r.PostFormValue("captcha_answer"), requestIP(r))
+	// VerifyForced：失败后强制校验，不因后台开关关闭而跳过。
+	return a.LocalCaptcha.VerifyForced(r.Context(), "admin_login", r.PostFormValue("captcha_id"), r.PostFormValue("captcha_answer"), requestIP(r))
 }
 
 func (a *Admin) loginSubmit(w http.ResponseWriter, r *http.Request) {
@@ -70,15 +99,20 @@ func (a *Admin) loginSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := a.captchaCheck(r); err != nil {
-		http.Error(w, "请完成图形验证码后再登录", http.StatusUnauthorized)
+		if a.Lockout != nil {
+			_ = a.Lockout.Fail(r.Context(), adminLoginFailKey(requestIP(r))) // 答错也计数，防看图爆破
+		}
+		w.WriteHeader(http.StatusUnauthorized)
+		a.renderAuth(w, map[string]any{"IsAdmin": true, "CaptchaScene": "admin_login", "CaptchaAdminLoginEnabled": a.adminCaptchaRequired(r), "CSRF": a.adminCSRF(w, r), "Error": "图形验证码错误，请重试"})
 		return
 	}
 	email := r.PostFormValue("email")
+	ip := requestIP(r)
 	// 登录锁定：达阈值后临时拒绝，阻断爆破。
 	if a.Lockout != nil {
 		if locked, lerr := a.Lockout.Locked(r.Context(), email); lerr == nil && locked {
 			w.WriteHeader(http.StatusTooManyRequests)
-			a.renderAuth(w, map[string]any{"IsAdmin": true, "CaptchaScene": "admin_login", "CaptchaAdminLoginEnabled": true, "CSRF": a.adminCSRF(w, r), "Error": "尝试次数过多，账户已临时锁定，请 15 分钟后再试"})
+			a.renderAuth(w, map[string]any{"IsAdmin": true, "CaptchaScene": "admin_login", "CaptchaAdminLoginEnabled": a.adminCaptchaRequired(r), "CSRF": a.adminCSRF(w, r), "Error": "尝试次数过多，账户已临时锁定，请 15 分钟后再试"})
 			return
 		}
 	}
@@ -86,9 +120,10 @@ func (a *Admin) loginSubmit(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if a.Lockout != nil {
 			_ = a.Lockout.Fail(r.Context(), email)
+			_ = a.Lockout.Fail(r.Context(), adminLoginFailKey(ip)) // 失败后强制验证码
 		}
 		w.WriteHeader(http.StatusUnauthorized)
-		a.renderAuth(w, map[string]any{"IsAdmin": true, "CaptchaScene": "admin_login", "CaptchaAdminLoginEnabled": true, "CSRF": a.adminCSRF(w, r), "Error": "用户名或密码错误"})
+		a.renderAuth(w, map[string]any{"IsAdmin": true, "CaptchaScene": "admin_login", "CaptchaAdminLoginEnabled": a.adminCaptchaRequired(r), "CSRF": a.adminCSRF(w, r), "Error": "用户名或密码错误"})
 		return
 	}
 	// 两步验证（若已启用）
@@ -97,17 +132,19 @@ func (a *Admin) loginSubmit(w http.ResponseWriter, r *http.Request) {
 			if !totp.Verify(secret, r.PostFormValue("totp"), time.Now()) {
 				if a.Lockout != nil {
 					_ = a.Lockout.Fail(r.Context(), email)
+					_ = a.Lockout.Fail(r.Context(), adminLoginFailKey(ip))
 				}
 				w.WriteHeader(http.StatusUnauthorized)
-				a.renderAuth(w, map[string]any{"IsAdmin": true, "CaptchaScene": "admin_login", "CaptchaAdminLoginEnabled": true, "CSRF": a.adminCSRF(w, r), "Error": "两步验证码错误"})
+				a.renderAuth(w, map[string]any{"IsAdmin": true, "CaptchaScene": "admin_login", "CaptchaAdminLoginEnabled": a.adminCaptchaRequired(r), "CSRF": a.adminCSRF(w, r), "Error": "两步验证码错误"})
 				return
 			}
 		}
 	}
 	if a.Lockout != nil {
 		_ = a.Lockout.Clear(r.Context(), email)
+		_ = a.Lockout.Clear(r.Context(), adminLoginFailKey(ip))
 	}
-	sess := a.AdminStore.Start(w)
+	sess := a.AdminStore.Start(r, w)
 	sess.IsAdmin = true
 	sess.UserID = id
 	http.Redirect(w, r, "/admin", http.StatusSeeOther)

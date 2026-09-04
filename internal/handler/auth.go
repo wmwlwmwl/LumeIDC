@@ -30,7 +30,6 @@ type Auth struct {
 	Challenges   *service.AuthChallengeService
 	Captcha      service.CaptchaProvider
 	LocalCaptcha *captcha.Service
-	BaseURL      string
 	*Deps
 }
 
@@ -106,6 +105,12 @@ func (h *Auth) captchaImage(w http.ResponseWriter, r *http.Request) {
 	}
 	scene := strings.TrimSpace(r.URL.Query().Get("scene"))
 	force := (scene == "register" && h.settingOn(r.Context(), "captcha_register_enabled", false)) || (scene == "email_code" && h.settingOn(r.Context(), "registration_email_verification_required", false)) || (scene == "phone_code" && h.settingOn(r.Context(), "registration_phone_verification_required", true))
+	// 管理员登录：该 IP 近期登录失败过则强制出验证码（与登录页/校验逻辑一致）。
+	if scene == "admin_login" && h.Lockout != nil {
+		if n, err := h.Lockout.Fails(r.Context(), adminLoginFailKey(requestIP(r))); err == nil && n > 0 {
+			force = true
+		}
+	}
 	var id string
 	var image []byte
 	var err error
@@ -303,7 +308,7 @@ func (h *Auth) registerSubmit(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "注册完成失败", 500)
 		return
 	}
-	sess := h.Sessions.Start(w)
+	sess := h.Sessions.Start(r, w)
 	sess.UserID = id
 	http.Redirect(w, r, "/", 303)
 }
@@ -363,7 +368,7 @@ func (h *Auth) loginByPhoneCode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = h.Users.TouchLogin(r.Context(), user.ID)
-	sess := h.Sessions.Start(w)
+	sess := h.Sessions.Start(r, w)
 	sess.UserID = user.ID
 	http.Redirect(w, r, safeNext(r.PostFormValue("next")), 303)
 }
@@ -430,7 +435,7 @@ func (h *Auth) loginSubmit(w http.ResponseWriter, r *http.Request) {
 		_ = h.Lockout.Clear(r.Context(), lock)
 	}
 	_ = h.Users.TouchLogin(r.Context(), u.ID)
-	sess := h.Sessions.Start(w)
+	sess := h.Sessions.Start(r, w)
 	sess.UserID = u.ID
 	http.Redirect(w, r, safeNext(r.PostFormValue("next")), 303)
 }
@@ -448,7 +453,7 @@ func csrfOf(s *middleware.Store, w http.ResponseWriter, r *http.Request) string 
 	if sess := middleware.FromSession(r.Context()); sess != nil {
 		return sess.CSRFToken()
 	}
-	ns := s.Start(w)
+	ns := s.Start(r, w)
 	*r = *r.WithContext(middleware.WithSession(r.Context(), ns))
 	return ns.CSRFToken()
 }

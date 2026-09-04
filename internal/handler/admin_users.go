@@ -162,8 +162,8 @@ func (m *AdminManage) UserEdit(w http.ResponseWriter, r *http.Request) {
 		serversList["VerifBackURL"] = "/admin/verifications/" + strconv.FormatInt(verifSubID, 10) + "/photo/back"
 	}
 	m.renderAdmin(w, "admin_user_form.html", AdminData{
-		CSRF:  m.adminCSRF(w, r),
-		Error: r.URL.Query().Get("err"),
+		CSRF:        m.adminCSRF(w, r),
+		Error:       r.URL.Query().Get("err"),
 		ServersList: serversList,
 	})
 }

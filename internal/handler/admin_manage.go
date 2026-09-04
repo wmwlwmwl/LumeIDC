@@ -13,18 +13,18 @@ import (
 )
 
 type AdminManage struct {
-	Products  *repo.Products
-	Users     *repo.Users
-	Servers   *repo.Servers
-	Balance   *repo.Balance
-	Svc       *service.ServicesRepo
-	Lifecycle *service.Lifecycle
-	Payment   *service.Payment
-	Providers *server.Registry
-	Settings  *repo.Settings
-	Identity  *repo.IdentityStore
+	Products    *repo.Products
+	Users       *repo.Users
+	Servers     *repo.Servers
+	Balance     *repo.Balance
+	Svc         *service.ServicesRepo
+	Lifecycle   *service.Lifecycle
+	Payment     *service.Payment
+	Providers   *server.Registry
+	Settings    *repo.Settings
+	Identity    *repo.IdentityStore
 	IdentitySvc *service.Identity // 实名解密（AdminSubmission）
-	AdminLog  *repo.AdminLog
+	AdminLog    *repo.AdminLog
 	*Deps
 }
 

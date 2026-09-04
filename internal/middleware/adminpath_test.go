@@ -17,7 +17,7 @@ func TestValidAdminPath(t *testing.T) {
 		{in: "", want: false},
 		{in: "/", want: false},
 		{in: "/admin", want: false},
-		{in: "/admins", want: false},   // 以 /admin 开头
+		{in: "/admins", want: false}, // 以 /admin 开头
 		{in: "/administrator", want: false},
 		{in: "/a", want: false},        // 过短
 		{in: "/a b", want: false},      // 含空格

@@ -7,7 +7,7 @@ import (
 
 // TestAdminTemplatesParse 兜底校验后台模板可解析（避免 go:embed 模板语法错误漏检）。
 func TestAdminTemplatesParse(t *testing.T) {
-	for _, page := range []string{"admin_users.html", "admin_user_form.html"} {
+	for _, page := range []string{"admin_users.html", "admin_user_form.html", "admin_update.html", "admin_site.html"} {
 		if _, err := template.ParseFS(adminFS, "templates/admin.html", "templates/"+page); err != nil {
 			t.Fatalf("%s parse failed: %v", page, err)
 		}

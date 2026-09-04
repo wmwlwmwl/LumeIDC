@@ -5,6 +5,7 @@ import (
 	"html/template"
 
 	"lumeidc/internal/server"
+	"lumeidc/internal/update"
 )
 
 const (
@@ -47,6 +48,9 @@ type AdminData struct {
 	// ServerProfit 服务器默认利润（导入表单预填）
 	ServerProfitType  int16
 	ServerProfitValue float64
+	// UpdateInfo 系统更新页数据（nil 时不渲染）；UpdateDisabled 非 Linux 平台禁用。
+	UpdateInfo     *update.Info
+	UpdateDisabled bool
 }
 
 type adminRow struct {

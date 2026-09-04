@@ -1,0 +1,58 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '版本号 vX.Y.Z'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: 校验与测试
+        run: go vet ./... && go test ./...
+      - name: 交叉编译
+        env:
+          VERSION: ${{ github.ref_name || inputs.tag }}
+        run: |
+          set -e
+          for t in "linux amd64" "linux arm64"; do
+            GOOS=${t%% *}; GOARCH=${t##* }
+            CGO_ENABLED=0 GOOS=$GOOS GOARCH=$GOARCH \
+            go build -trimpath -ldflags "-X main.version=$VERSION -s -w" \
+              -o dist/lumeidc_${GOOS}_${GOARCH} ./cmd/lumeidc
+          done
+          cd dist && sha256sum lumeidc_* > lumeidc_SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: 下载构建产物
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - name: 发布 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          name: ${{ github.ref_name || inputs.tag }}
+          generate_release_notes: true

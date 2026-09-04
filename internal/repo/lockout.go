@@ -48,3 +48,13 @@ func (l *LoginAttempts) Clear(ctx context.Context, key string) error {
 	_, err := l.db.ExecContext(ctx, `DELETE FROM login_attempts WHERE key=$1`, key)
 	return err
 }
+
+// Fails 返回该 key 当前的连续失败次数（无记录返回 0）。
+func (l *LoginAttempts) Fails(ctx context.Context, key string) (int, error) {
+	var n int
+	err := l.db.QueryRowContext(ctx, `SELECT attempts FROM login_attempts WHERE key=$1`, key).Scan(&n)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	return n, err
+}

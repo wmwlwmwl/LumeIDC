@@ -15,7 +15,9 @@ const (
 	KeyServiceEmail    = "service_email"
 	KeyServicePhone    = "service_phone"
 	KeyServiceHours    = "service_hours"
-	KeyAdminPath       = "admin_path" // 自定义后台访问路径（启动时读取，改后重启生效）
+	KeySiteURL         = "site_url"    // 站点对外地址（含协议），留空则按用户访问的请求自动推断
+	KeyListenPort      = "listen_port" // 监听端口，留空使用 config.yaml 的 listen
+	KeyAdminPath       = "admin_path"  // 自定义后台访问路径（启动时读取，改后重启生效）
 
 	DefaultSiteName = "LumeIDC"
 )

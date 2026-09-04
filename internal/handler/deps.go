@@ -17,10 +17,10 @@ import (
 // sessionsStore/adminSessions/balanceRepo/siteSettingsRepo 与 Set* 注入。
 // 各 handler 结构体匿名内嵌 *Deps，生产环境由 httpserver 组合根一次性注入。
 type Deps struct {
-	PageStore  *middleware.Store // 用户侧/匿名会话 CSRF
-	AdminStore *middleware.Store // 后台会话 CSRF
-	Balance    *repo.Balance     // 导航栏余额（nil 时跳过余额注入）
-	Settings   *repo.Settings    // 站点品牌信息（nil 时回退默认）
+	PageStore    *middleware.Store           // 用户侧/匿名会话 CSRF
+	AdminStore   *middleware.Store           // 后台会话 CSRF
+	Balance      *repo.Balance               // 导航栏余额（nil 时跳过余额注入）
+	Settings     *repo.Settings              // 站点品牌信息（nil 时回退默认）
 	AdminPathCfg *middleware.AdminPathConfig // 自定义后台路径（运行期可改，nil 时用默认 /admin）
 
 	// 模板懒缓存：首次按页解析，之后复用（html/template 解析后并发执行安全）。

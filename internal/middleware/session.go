@@ -16,11 +16,10 @@ import (
 // In-memory session store with HMAC-signed cookie. ponytail: 单进程内存 session，
 // 重启即失效；多实例部署需换成 DB/Redis 存储（接口已抽象为 Store）。
 type Store struct {
-	mu     sync.RWMutex
-	sess   map[string]*Session
-	key    []byte
-	ttl    time.Duration
-	secure bool // 是否在 Set-Cookie 时附加 Secure（HTTPS 部署应为 true）
+	mu   sync.RWMutex
+	sess map[string]*Session
+	key  []byte
+	ttl  time.Duration
 }
 
 type Session struct {
@@ -62,9 +61,7 @@ func NewStore(cfg *config.Config) (*Store, error) {
 	if err != nil || len(key) < 32 {
 		return nil, errSecretKey
 	}
-	// ponytail: 仅当 BaseURL 为 https 时才置 Secure；纯 http 本地开发置 false，否则浏览器拒收 cookie。
-	return &Store{sess: map[string]*Session{}, key: key, ttl: 24 * 7 * time.Hour,
-		secure: strings.HasPrefix(strings.ToLower(cfg.BaseURL), "https://")}, nil
+	return &Store{sess: map[string]*Session{}, key: key, ttl: 24 * 7 * time.Hour}, nil
 }
 
 var errSecretKey = errInvalid("secret_key 无效：必须是 base64 编码的至少 32 字节")
@@ -111,7 +108,12 @@ func (s *Store) Get(r *http.Request) *Session {
 	return sess
 }
 
-func (s *Store) Start(w http.ResponseWriter) *Session {
+// isSecureRequest 按当前请求判断是否 HTTPS 通道（TLS 直连或反向代理透传标记）。
+func (s *Store) isSecureRequest(r *http.Request) bool {
+	return r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+}
+
+func (s *Store) Start(r *http.Request, w http.ResponseWriter) *Session {
 	token, sess := s.newToken()
 	id := strings.SplitN(token, ".", 2)[0]
 	s.mu.Lock()
@@ -119,7 +121,7 @@ func (s *Store) Start(w http.ResponseWriter) *Session {
 	s.mu.Unlock()
 	http.SetCookie(w, &http.Cookie{
 		Name: cookieName, Value: token, Path: "/", HttpOnly: true,
-		SameSite: http.SameSiteLaxMode, Secure: s.secure,
+		SameSite: http.SameSiteLaxMode, Secure: s.isSecureRequest(r),
 	})
 	return sess
 }

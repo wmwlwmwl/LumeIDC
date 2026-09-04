@@ -6,11 +6,13 @@ import (
 	"encoding/base64"
 	"fmt"
 	"html/template"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
 	"strings"
 
+	"lumeidc/internal/config"
 	"lumeidc/internal/db"
 	"lumeidc/internal/repo"
 )
@@ -20,6 +22,9 @@ var tplFS embed.FS
 
 type Installer struct {
 	ConfigPath string
+	// OnInstalled 在 config.yaml 写入成功后回调新配置；main 借此在同一进程内
+	// 切换到完整应用，实现免手动重启的安装体验。nil 时保持"重启后生效"行为。
+	OnInstalled func(cfg *config.Config)
 }
 
 func (h *Installer) isInstalled() bool {
@@ -54,7 +59,7 @@ func (h *Installer) form(w http.ResponseWriter, r *http.Request) {
 
 type installForm struct {
 	Host, Port, DBName, DBUser, DBPass string
-	AdminUser, AdminPass, BaseURL      string
+	AdminUser, AdminPass               string
 }
 
 func (h *Installer) submit(w http.ResponseWriter, r *http.Request) {
@@ -64,7 +69,6 @@ func (h *Installer) submit(w http.ResponseWriter, r *http.Request) {
 	f := installForm{
 		AdminUser: r.PostFormValue("admin_user"),
 		AdminPass: r.PostFormValue("admin_pass"),
-		BaseURL:   r.PostFormValue("base_url"),
 		Host:      strings.TrimSpace(r.PostFormValue("db_host")),
 		Port:      strings.TrimSpace(r.PostFormValue("db_port")),
 		DBName:    strings.TrimSpace(r.PostFormValue("db_name")),
@@ -108,15 +112,24 @@ db_dsn: %q
 secret_key: %q
 pii_key: %q
 private_data_dir: %q
-base_url: %q
 allow_insecure_db: true
-`, listenEnv(), dsn, base64.StdEncoding.EncodeToString(key), base64.StdEncoding.EncodeToString(piiKey), "data/private", f.BaseURL)
+`, listenEnv(), dsn, base64.StdEncoding.EncodeToString(key), base64.StdEncoding.EncodeToString(piiKey), "data/private")
 	if err := atomicWriteFile(h.ConfigPath, []byte(cfgYAML), 0o600); err != nil {
 		fail("写入 config.yaml 失败（需要当前目录可写权限）: " + err.Error())
 		return
 	}
 	tpl, _ := template.ParseFS(tplFS, "templates/done.html")
 	tpl.Execute(w, nil)
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush() // 先让浏览器收到成功页，再切换服务
+	}
+	if h.OnInstalled != nil {
+		if cfg, err := config.Load(h.ConfigPath); err == nil {
+			h.OnInstalled(cfg)
+		} else {
+			log.Printf("[install] 安装完成但配置加载失败（重启后仍可生效）: %v", err)
+		}
+	}
 }
 
 func listenEnv() string {

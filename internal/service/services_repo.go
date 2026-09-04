@@ -22,11 +22,11 @@ type ServiceRow struct {
 	ShowY        bool      `json:"-"`
 	ExpiringSoon bool      `json:"-"` // 14 天内到期（列表提醒用）
 	Hostname     string    `json:"hostname"`
-	IP           string    `json:"ip"`   // 上游实时（best-effort，列表展示）
-	OS           string    `json:"os"`   // 系统名称/版本（best-effort）
-	Monthly      string    `json:"-"`    // 月售价（含配置+利润）
-	ConfigDesc   string    `json:"-"`    // 配置摘要（如 "CPU 2核 · 内存 4G"）
-	DaysLeft     int       `json:"-"`    // 距到期天数
+	IP           string    `json:"ip"` // 上游实时（best-effort，列表展示）
+	OS           string    `json:"os"` // 系统名称/版本（best-effort）
+	Monthly      string    `json:"-"`  // 月售价（含配置+利润）
+	ConfigDesc   string    `json:"-"`  // 配置摘要（如 "CPU 2核 · 内存 4G"）
+	DaysLeft     int       `json:"-"`  // 距到期天数
 	// 内存计价数据（一次查询带回，避免逐行 N 次远程查询）
 	ConfigSnap        []byte // coalesce(sv.config_snapshot, o.config_snapshot)
 	ConfigOpts        []byte // products.configoption
@@ -265,10 +265,10 @@ type AdminServiceRow struct {
 	Hostname  string
 	ExpiresAt time.Time
 	// 内存计价数据（一次查询带回，避免逐行 N 次远程查询）
-	ConfigSnap        []byte  // coalesce(sv.config_snapshot, o.config_snapshot)
-	ConfigOpts        []byte  // products.configoption
-	MonthlyBase       string  // 默认价格组月价
-	ProfitType        int16   // 产品利润
+	ConfigSnap        []byte // coalesce(sv.config_snapshot, o.config_snapshot)
+	ConfigOpts        []byte // products.configoption
+	MonthlyBase       string // 默认价格组月价
+	ProfitType        int16  // 产品利润
 	ProfitValue       float64
 	ServerProfitType  int16 // 服务器利润（回退用）
 	ServerProfitValue float64

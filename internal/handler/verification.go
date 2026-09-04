@@ -232,7 +232,8 @@ func (h *VerificationHandler) startPlugin(w http.ResponseWriter, r *http.Request
 		return
 	}
 	provider := strings.TrimSpace(r.PostFormValue("provider"))
-	id, urlValue, err := h.Identity.StartProvider(r.Context(), userID, provider, service.RealNameForm{LegalName: r.PostFormValue("legal_name"), IdentityNumber: r.PostFormValue("identity_number")}, strings.TrimRight(h.Identity.BaseURL, "/")+"/user/verification")
+	callback := siteBaseURL(r.Context(), h.Settings, r) + "/user/verification" // 站点地址优先，否则按请求推断
+	id, urlValue, err := h.Identity.StartProvider(r.Context(), userID, provider, service.RealNameForm{LegalName: r.PostFormValue("legal_name"), IdentityNumber: r.PostFormValue("identity_number")}, callback)
 	if err != nil {
 		http.Error(w, "启动实名认证失败", http.StatusBadGateway)
 		return

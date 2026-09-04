@@ -1,0 +1,118 @@
+{{define "page"}}
+<div class="admin-page-header">
+  <div class="admin-page-title">
+    
+    <h1>系统更新</h1>
+    <p>从 GitHub Releases 检查并更新 LumeIDC 二进制</p>
+  </div>
+</div>
+
+{{if .UpdateDisabled}}
+<div class="ui-alert ui-alert-error" role="alert">当前运行平台不支持在线更新（仅支持 Linux 服务器）。可从 GitHub Releases 手动下载对应架构的二进制替换。</div>
+{{end}}
+
+<div class="admin-panel">
+  <div class="admin-panel-header">
+    <h2>版本信息</h2>
+  </div>
+  <div class="admin-panel-body">
+    <p>
+      当前版本：<strong id="upd-current">{{if .UpdateInfo}}{{.UpdateInfo.CurrentVersion}}{{else}}—{{end}}</strong>
+      <span class="text-muted">（由构建期 -ldflags 注入；dev 表示本地或未打 tag 构建）</span>
+    </p>
+    <p>最新版本：<strong id="upd-latest">未检查</strong> <span class="text-muted" id="upd-published"></span></p>
+    <div id="upd-notes-wrap" hidden>
+      <div class="admin-panel-header" style="margin-top:16px"><h3>更新日志</h3></div>
+      <pre id="upd-notes" style="white-space:pre-wrap;max-height:320px;overflow:auto;background:var(--ui-surface-2,#f5f7fb);padding:12px;border-radius:8px;font-size:13px"></pre>
+    </div>
+    <div class="admin-form-actions">
+      <input type="hidden" id="upd-csrf" name="_csrf" value="{{.CSRF}}">
+      <button class="ui-btn" type="button" id="upd-check" {{if .UpdateDisabled}}disabled{{end}}>检查更新</button>
+      <button class="ui-btn" type="button" id="upd-apply" disabled {{if .UpdateDisabled}}disabled{{end}}>立即更新</button>
+      <span class="text-muted" id="upd-status"></span>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  var csrf = document.getElementById('upd-csrf').value;
+  var currentEl = document.getElementById('upd-current');
+  var latestEl = document.getElementById('upd-latest');
+  var publishedEl = document.getElementById('upd-published');
+  var notesWrap = document.getElementById('upd-notes-wrap');
+  var notesEl = document.getElementById('upd-notes');
+  var statusEl = document.getElementById('upd-status');
+  var checkBtn = document.getElementById('upd-check');
+  var applyBtn = document.getElementById('upd-apply');
+  function setStatus(msg, ok) {
+    statusEl.textContent = msg || '';
+    statusEl.className = 'text-muted' + (ok ? ' is-ok' : '');
+  }
+  function post(url, done) {
+    var body = new URLSearchParams();
+    body.set('_csrf', csrf);
+    fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
+      body: body
+    }).then(function (r) {
+      return r.json().catch(function () { return { ok: 0, msg: '请求失败（HTTP ' + r.status + '）' }; });
+    }).then(function (j) { done(j); }).catch(function () { done({ ok: 0, msg: '网络错误，请重试' }); });
+  }
+  function render(j) {
+    var info = j && j.info;
+    if (!info) { setStatus((j && j.msg) || '查询失败', false); return; }
+    latestEl.textContent = info.version || '—';
+    publishedEl.textContent = info.published_at ? '发布于 ' + info.published_at : '';
+    notesEl.textContent = info.notes || '（无发布说明）';
+    notesWrap.hidden = false;
+    if (info.available) {
+      applyBtn.disabled = false;
+      setStatus('发现新版本，可点击「立即更新」', true);
+    } else {
+      applyBtn.disabled = true;
+      setStatus(info.hint || '已是最新版本', true);
+    }
+  }
+  checkBtn.addEventListener('click', function () {
+    checkBtn.disabled = true;
+    setStatus('正在检查…', true);
+    post('/admin/update/check', function (j) {
+      checkBtn.disabled = false;
+      if (j && j.ok) render(j);
+      else setStatus((j && j.msg) || '检查更新失败', false);
+    });
+  });
+  applyBtn.addEventListener('click', function () {
+    var cur = currentEl ? currentEl.textContent.trim() : '';
+    if (!confirm('确认将当前版本 ' + cur + ' 更新为最新版本？替换完成后可选择立即重启生效。')) return;
+    applyBtn.disabled = true;
+    setStatus('正在下载并校验安装包，请稍候…', true);
+    post('/admin/update/apply', function (j) {
+      if (!j || !j.ok) {
+        applyBtn.disabled = false;
+        setStatus((j && j.msg) || '更新失败', false);
+        return;
+      }
+      // 二进制已替换，询问是否立即就地重启生效。
+      if (!confirm('二进制已替换成功。是否立即重启生效？\n\n点「确定」立即重启（重启后需重新登录后台）；点「取消」稍后手动重启。')) {
+        applyBtn.disabled = true;
+        setStatus('已替换二进制，请稍后手动重启应用生效（1Panel: docker restart 容器名；宝塔: supervisorctl restart lumeidc）', true);
+        return;
+      }
+      applyBtn.disabled = true;
+      setStatus('正在重启，请稍后重新打开后台…', true);
+      post('/admin/update/restart', function (rj) {
+        if (rj && rj.ok) {
+          setStatus((rj.msg || '正在重启') + '，页面即将断开，请稍后刷新后台。', true);
+        } else {
+          applyBtn.disabled = false;
+          setStatus((rj && rj.msg) || '重启失败，请稍后手动重启', false);
+        }
+      });
+    });
+  });
+})();
+</script>
+{{end}}

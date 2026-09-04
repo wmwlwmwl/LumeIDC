@@ -45,6 +45,14 @@
 
   <div class="admin-panel-header"><h2>后台入口</h2></div>
   <div class="admin-panel-body">
+    <label for="site-url">站点地址</label>
+    <input id="site-url" name="site_url" value="{{index .ServersList "site_url"}}" placeholder="https://yun.662662.xyz" maxlength="128">
+    <p class="text-muted small">用于支付回调、实名认证回调与邮件链接前缀。留空则根据用户访问的域名<strong>自动推断</strong>（如从 https://yun.662662.xyz 访问即生成为该地址）；建议填入正式域名以保持回调地址稳定。修改立即生效，无需重启。</p>
+
+    <label for="site-listen-port">监听端口</label>
+    <input id="site-listen-port" name="listen_port" value="{{index .ServersList "listen_port"}}" placeholder="如 18090，留空使用 config.yaml 的 listen" maxlength="5" inputmode="numeric">
+    <p class="text-muted small">程序监听端口，保存后<strong>立即生效</strong>无需重启。修改后请同步更新反向代理目标（Nginx 的 proxy_pass）与容器/防火墙的端口映射；留空则回退到 config.yaml 中的 listen。</p>
+
     <label for="site-admin-path">后台访问路径</label>
     <input id="site-admin-path" name="admin_path" value="{{index .ServersList "admin_path"}}" placeholder="/manage" maxlength="32">
     <p class="text-muted small">仅允许 <code>/字母数字_-</code>（如 /manage），不能与 /login、/services 等公共路径冲突。保存后<strong>立即生效</strong>；留空使用默认 <code>/admin</code>。配置后默认 /admin 将被隐藏。</p>

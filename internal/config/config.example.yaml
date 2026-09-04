@@ -6,6 +6,7 @@ secret_key: ""
 pii_key: ""
 # 身份证照片私有存储目录，必须位于 web root 之外
 private_data_dir: "data/private"
-base_url: "http://localhost:8080"
+# 站点地址（含协议）可省略：留空时支付/实名回调等按访问域名自动推断，
+# 正式域名建议在「后台 → 站点设置 → 站点地址」配置
 # 显式放行 sslmode=disable 的远程数据库（默认拒绝；仅本地/127.0.0.1 例外）
 allow_insecure_db: false
