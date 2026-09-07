@@ -86,6 +86,12 @@ func doJSONRaw(ctx context.Context, cfg server.Config, method, path string, form
 	if err != nil {
 		return nil, fmt.Errorf("%s 响应读取失败: %w", path, err)
 	}
+	// 魔方财务恒以 HTTP 200 + body.status=405 表示 token 失效（见 Check 中间件），
+	// 与 HTTP 401 同样处理：清缓存重登一次并重放。
+	if allowRetry && isBizSessionExpired(raw) {
+		cache.invalidate(authCacheKey(cfg))
+		return doJSONRaw(ctx, cfg, method, path, form, false)
+	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return nil, fmt.Errorf("%s 请求失败: http %d: %.100s", path, resp.StatusCode, raw)
 	}
@@ -99,6 +105,18 @@ func doJSONRaw(ctx context.Context, cfg server.Config, method, path string, form
 	return raw, nil
 }
 
+// isBizSessionExpired 判断业务会话失效：魔方财务 HTTP 恒 200，
+// token 无效/过期时以 body 的 status=405 表达（Check 中间件）。
+func isBizSessionExpired(body []byte) bool {
+	var m map[string]any
+	if json.Unmarshal(body, &m) != nil {
+		return false
+	}
+	s, ok := m["status"].(float64)
+	return ok && s == 405
+}
+
+// readLimited 读取响应并以 max 字节封顶防溢出。
 func readLimited(r io.Reader, max int64) ([]byte, error) {
 	b, err := io.ReadAll(io.LimitReader(r, max+1))
 	if err != nil {

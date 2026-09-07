@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
+	"strconv"
 	"strings"
 	"time"
 
@@ -338,13 +340,15 @@ func (lc *Lifecycle) SyncUpstreamStatus(ctx context.Context) {
 }
 
 // mapUpstreamStatus 上游 domainstatus -> 本地 status；未知状态返回 false 不改动。
+// 映射对齐魔方财务同平台对接文档：Cancelled（被取消）/Fraud（欺诈）/Deleted（已删除）
+// 均视为本地"已删除"；terminated（上游自定义终止态）同义。
 func mapUpstreamStatus(u string) (int16, bool) {
 	switch strings.ToLower(u) {
 	case "active":
 		return 1, true
 	case "suspended":
 		return 2, true
-	case "terminated":
+	case "terminated", "cancelled", "fraud", "deleted":
 		return 3, true
 	case "pending":
 		return 0, true
@@ -352,10 +356,141 @@ func mapUpstreamStatus(u string) (int16, bool) {
 	return 0, false
 }
 
-// Upgrade 上游升降级钩子（预留）。
-// ponytail: 一期本地为主，不改上游实例资源，本方法为 no-op 占位；
-// 二期按 upstream_host_id 调魔方财务 /api/v1/hosts/:id/actions/upgrade 或
-// /api/v1/hosts/:id/actions/upgradeconfig + /checkout 时在此实现。
-func (lc *Lifecycle) Upgrade(ctx context.Context, serviceID, targetProductID int64, cycle string, orderID int64) error {
+// Upgrade 上游升降级执行（支付成功后调用）。
+// - 实现了 HostUpgradeProvider 的上游（zjmf）：真正调上游升级（换 host 商品），上游成功后才
+//   本地同步换产品/周期/快照；上游失败回滚本地（退回收取的差价或扣回已退差额），使用户不因
+//   失败受损。
+// - 未实现该接口的上游（easypanel 本地定价模式）：跳过上游，仅本地换产品。
+// checkpoint（upgrade_{orderID}）防重复处理：成功写 done，失败退款后写 refunded，重试不重复退款。
+func (lc *Lifecycle) Upgrade(ctx context.Context, serviceID int64, cycle string, orderID int64) error {
+	if orderID <= 0 {
+		return fmt.Errorf("升级任务缺少订单号")
+	}
+	ck := fmt.Sprintf("upgrade_%d", orderID)
+	if v, ok, _ := lc.getCheckpoint(ctx, serviceID, ck); ok && v != "" {
+		log.Printf("[lifecycle] service %d 升级订单 %d 已处理（checkpoint=%s），跳过", serviceID, orderID, v)
+		return nil
+	}
+	s, err := lc.loadService(ctx, serviceID)
+	if err != nil {
+		return err
+	}
+	// 目标本地产品 + 目标上游商品 id + 差价 + 订单配置快照 + 用户（退款用）
+	var targetProductID, targetUpstreamPID int64
+	var diffAmount float64
+	var snapshot []byte
+	var userID int64
+	if err := lc.db.QueryRowContext(ctx,
+		`SELECT o.user_id, o.product_id, coalesce(p.upstream_pid,0), coalesce(o.diff_amount,0)::float8, o.config_snapshot
+		 FROM orders o JOIN products p ON p.id=o.target_product_id WHERE o.id=$1`,
+		orderID).Scan(&userID, &targetProductID, &targetUpstreamPID, &diffAmount, &snapshot); err != nil {
+		return fmt.Errorf("读取升级订单失败: %w", err)
+	}
+	if targetProductID <= 0 {
+		return fmt.Errorf("升级订单缺少目标产品")
+	}
+	prov, cfg, err := lc.providerFor(ctx, s)
+	if err == errNoUpstream {
+		// 防御性兜底（升级订单必绑定服务器）：仅本地换产品
+		return lc.localUpgradeApply(ctx, serviceID, targetProductID, cycle, snapshot)
+	}
+	if err != nil {
+		return err
+	}
+	if hp, ok := prov.(server.HostUpgradeProvider); ok {
+		if targetUpstreamPID <= 0 {
+			lc.rollbackUpgrade(ctx, userID, diffAmount, orderID, "目标产品未绑定上游商品")
+			lc.clearUpgradeState(ctx, serviceID)
+			lc.setCheckpoint(ctx, serviceID, ck, "refunded")
+			return fmt.Errorf("目标产品未绑定上游商品，已退款回滚")
+		}
+		cctx, cancel := context.WithTimeout(ctx, opTimeout)
+		defer cancel()
+		perr := hp.Upgrade(cctx, cfg, s.UpstreamHost, server.UpgradeRequest{
+			TargetPID: targetUpstreamPID, Cycle: cycle, DiffAmount: diffAmount,
+		})
+		if perr != nil {
+			log.Printf("[lifecycle] service %d 上游升降级失败: %v", serviceID, perr)
+			lc.rollbackUpgrade(ctx, userID, diffAmount, orderID, perr.Error())
+			lc.clearUpgradeState(ctx, serviceID)
+			if serr := lc.setCheckpoint(ctx, serviceID, ck, "refunded"); serr != nil {
+				log.Printf("[lifecycle] service %d 写入升级回滚 checkpoint 失败: %v", serviceID, serr)
+			}
+			return fmt.Errorf("上游升降级失败，金额已退回: %w", perr)
+		}
+	}
+	// 上游成功（或无上游能力）：本地换产品/周期/快照并解除升级中状态
+	if err := lc.localUpgradeApply(ctx, serviceID, targetProductID, cycle, snapshot); err != nil {
+		return err
+	}
+	if err := lc.setCheckpoint(ctx, serviceID, ck, "done"); err != nil {
+		log.Printf("[lifecycle] service %d 写入升级 checkpoint 失败: %v", serviceID, err)
+	}
 	return nil
+}
+
+// clearUpgradeState 解除服务"升级中"过渡状态（失败回滚后调用，避免服务被永久锁定）。
+func (lc *Lifecycle) clearUpgradeState(ctx context.Context, serviceID int64) {
+	if _, err := lc.db.ExecContext(ctx,
+		`UPDATE services SET transition_state='' WHERE id=$1 AND coalesce(transition_state,'')='upgrading'`, serviceID); err != nil {
+		log.Printf("[lifecycle] service %d 清除升级中状态失败: %v", serviceID, err)
+	}
+}
+
+// localUpgradeApply 本地应用升级：换产品/周期/配置快照并解除"升级中"过渡状态。
+func (lc *Lifecycle) localUpgradeApply(ctx context.Context, serviceID, targetProductID int64, cycle string, snapshot []byte) error {
+	if _, err := lc.db.ExecContext(ctx,
+		`UPDATE services SET product_id=$2, cycle=$3, config_snapshot=$4, transition_state=''
+		 WHERE id=$1 AND coalesce(transition_state,'')='upgrading'`,
+		serviceID, targetProductID, cycle, snapshot); err != nil {
+		return fmt.Errorf("本地应用升级失败: %w", err)
+	}
+	return nil
+}
+
+// rollbackUpgrade 升级失败回滚资金：使用户保持"未升级且无资金损失"。
+// diff>0 升级场景：支付时已收差价 → 退回余额；diff<0 降级场景：支付时已退差 → 扣回。
+func (lc *Lifecycle) rollbackUpgrade(ctx context.Context, userID int64, diffAmount float64, orderID int64, reason string) {
+	tx, err := lc.db.BeginTx(ctx, nil)
+	if err != nil {
+		log.Printf("[lifecycle] 升级回滚事务启动失败（订单 %d）: %v", orderID, err)
+		return
+	}
+	defer tx.Rollback()
+	amountStr := strconv.FormatFloat(math.Abs(diffAmount), 'f', 2, 64)
+	var signed, typ, note string
+	if diffAmount > 0 {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE users SET balance=balance+$2::numeric WHERE id=$1`, userID, amountStr); err != nil {
+			log.Printf("[lifecycle] 升级回滚退款失败（订单 %d）: %v", orderID, err)
+			return
+		}
+		signed, typ = "+"+amountStr, "refund"
+		note = "升级失败退款 订单#" + strconv.FormatInt(orderID, 10) + "（" + reason + "）"
+	} else if diffAmount < 0 {
+		// 已退差额需扣回；余额不足时（用户已花掉）跳过扣款并告警，由人工核销
+		res, err := tx.ExecContext(ctx,
+			`UPDATE users SET balance=balance-$2::numeric WHERE id=$1 AND balance>=$2::numeric`, userID, amountStr)
+		if err != nil {
+			log.Printf("[lifecycle] 升级回滚扣回失败（订单 %d）: %v", orderID, err)
+			return
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			log.Printf("[lifecycle] 升级回滚：订单 %d 用户余额不足，未扣回 %s 元，需人工核销", orderID, amountStr)
+		}
+		signed, typ = "-"+amountStr, "consume"
+		note = "升级失败扣回降级退款 订单#" + strconv.FormatInt(orderID, 10) + "（" + reason + "）"
+	} else {
+		return
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO balance_logs(user_id,amount,balance_after,type,note)
+		 SELECT $1,$2::numeric,balance,$3,$4 FROM users WHERE id=$1`,
+		userID, signed, typ, note); err != nil {
+		log.Printf("[lifecycle] 升级回滚余额流水写入失败（订单 %d）: %v", orderID, err)
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		log.Printf("[lifecycle] 升级回滚提交失败（订单 %d）: %v", orderID, err)
+	}
 }

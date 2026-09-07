@@ -35,6 +35,13 @@ func (f *Fulfillment) ProcessOne(ctx context.Context) (bool, error) {
 			break
 		}
 		err = lc.Renew(opCtx, job.ServiceID, job.Cycle, job.OrderID.Int64)
+	case "upgrade":
+		lc := f.Lifecycle
+		if lc == nil {
+			err = fmt.Errorf("upgrade 任务缺少 Lifecycle 服务")
+			break
+		}
+		err = lc.Upgrade(opCtx, job.ServiceID, job.Cycle, job.OrderID.Int64)
 	default:
 		err = fmt.Errorf("未知履约任务类型: %s", job.Kind)
 	}

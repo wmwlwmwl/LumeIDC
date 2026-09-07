@@ -36,6 +36,11 @@ func (h *Pages) serviceDetail(w http.ResponseWriter, r *http.Request) {
 	}
 	csrf := h.pageCSRF(w, r)
 	overview := h.fetchOverview(r.Context(), userID, d.ID)
+	// 升降级入口：仅上游支持升降级（或有本地可升级目标）时显示；60s 缓存探测结果。
+	var canUpgrade bool
+	if h.Console != nil {
+		canUpgrade = h.Console.CanUpgrade(r.Context(), userID, d.ID)
+	}
 	// 供应商专属详情区块（插槽注入）；无该能力的供应商为空，回落全局面板。
 	wctx, wcancel := context.WithTimeout(r.Context(), 8*time.Second)
 	var providerWidget template.HTML
@@ -52,6 +57,7 @@ func (h *Pages) serviceDetail(w http.ResponseWriter, r *http.Request) {
 		"Flash":          flash,
 		"Overview":       overview,
 		"ProviderWidget": providerWidget,
+		"CanUpgrade":     canUpgrade,
 	})
 }
 

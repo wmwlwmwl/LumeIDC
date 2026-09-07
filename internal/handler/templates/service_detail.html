@@ -49,7 +49,7 @@
           </select>
           <button class="ui-btn ui-btn-small" type="submit">续费</button>
         </form>
-        <a class="ui-btn ui-btn-small" href="/services/{{.Svc.ID}}/upgrade">升降级</a>
+        {{if .CanUpgrade}}<a class="ui-btn ui-btn-small" href="/services/{{.Svc.ID}}/upgrade">升降级</a>{{end}}
       </div>
       <div class="fx-panel-body">
         <div class="fx-kv-grid">

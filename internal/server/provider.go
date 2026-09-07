@@ -113,10 +113,24 @@ type UpgradeTarget struct {
 	Name        string `json:"name"`
 }
 
-// UpgradeTargetProvider 可选：返回某上游产品可升级的目标产品。
-// best-effort：失败返回空列表，调用方降级为"同服务器本地产品"候选。
+// UpgradeTargetProvider 可选：返回某上游 host 可升级目标（商品维度）。
+// 上游无升降级能力或无可升级目标时返回空（nil error），调用方据此隐藏升降级入口。
+// best-effort：网络/鉴权/解析失败也返回空并记录日志，不阻断详情页。
 type UpgradeTargetProvider interface {
-	UpgradeTargets(ctx context.Context, cfg Config, upstreamPID int64) ([]UpgradeTarget, error)
+	UpgradeTargets(ctx context.Context, cfg Config, upstreamHostID int64) ([]UpgradeTarget, error)
+}
+
+// UpgradeRequest 上游升降级请求（host 维度换商品）。
+type UpgradeRequest struct {
+	TargetPID  int64   // 上游目标商品 id
+	Cycle      string  // monthly/quarterly/yearly
+	DiffAmount float64 // 本地差价（目标月售价 − 当前月售价），供上游账单核对
+}
+
+// HostUpgradeProvider 可选：上游 host 升降级执行能力（换商品）。
+// 未实现的供应商（本地定价模式，如 EasyPanel）由调用方仅做本地换产品。
+type HostUpgradeProvider interface {
+	Upgrade(ctx context.Context, cfg Config, upstreamHostID int64, req UpgradeRequest) error
 }
 
 // Config 连接配置（来自 servers 表行）。

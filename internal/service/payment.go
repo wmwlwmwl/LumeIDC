@@ -121,8 +121,13 @@ func (p *Payment) MarkPaidByBalance(ctx context.Context, invoiceNo string, userI
 		if !renewServiceID.Valid || renewServiceID.Int64 <= 0 {
 			return fmt.Errorf("升级订单缺少服务")
 		}
+		if targetProductID <= 0 {
+			return fmt.Errorf("升级订单缺少目标产品")
+		}
 		svcID = renewServiceID.Int64
-		if err := p.applyUpgrade(ctx, tx, userID, svcID, targetProductID, cycle, orderID, diffAmount); err != nil {
+		// 支付事务内本地只做：降级退差 + 标记"升级中"防并发。
+		// 换产品/周期/快照由 Lifecycle.Upgrade 在上游成功后统一落地，失败自动回滚退款。
+		if err := p.prepareUpgrade(ctx, tx, userID, svcID, diffAmount, orderID); err != nil {
 			return err
 		}
 	case renewServiceID.Valid && renewServiceID.Int64 > 0:
@@ -155,9 +160,12 @@ func (p *Payment) MarkPaidByBalance(ctx context.Context, invoiceNo string, userI
 		svcID = svcIDNew
 		newService = true
 	}
-	if p.Jobs != nil && !isUpgrade {
+	if p.Jobs != nil {
 		kind := "renew"
-		if newService {
+		switch {
+		case isUpgrade:
+			kind = "upgrade"
+		case newService:
 			kind = "provision"
 		}
 		if err := p.enqueueFulfillment(ctx, tx, svcID, orderID, kind, cycle); err != nil {
@@ -182,7 +190,7 @@ func (p *Payment) MarkPaidByBalance(ctx context.Context, invoiceNo string, userI
 	if p.Jobs == nil {
 		switch {
 		case isUpgrade:
-			p.upgradeAsync(svcID, targetProductID, cycle, orderID)
+			p.upgradeAsync(svcID, cycle, orderID)
 		case renewServiceID.Valid && renewServiceID.Int64 > 0:
 			p.renewAsync(svcID, cycle, orderID)
 		case newService:
@@ -374,12 +382,15 @@ func (p *Payment) MarkPaid(ctx context.Context, invoiceNo, tradeNo, gatewayCode 
 	var svcID int64
 	switch {
 	case isUpgrade:
-		// 升降级单：本地应用（换产品/周期/配置快照，降级退余额），不动 expires_at
+		// 升降级单：支付事务内仅退差 + 标记"升级中"；换产品由 Lifecycle.Upgrade 在上游成功后落地
 		if !renewServiceID.Valid || renewServiceID.Int64 <= 0 {
 			return fmt.Errorf("升级订单缺少服务")
 		}
+		if targetProductID <= 0 {
+			return fmt.Errorf("升级订单缺少目标产品")
+		}
 		svcID = renewServiceID.Int64
-		if err := p.applyUpgrade(ctx, tx, userID, svcID, targetProductID, cycle, orderID, diffAmount); err != nil {
+		if err := p.prepareUpgrade(ctx, tx, userID, svcID, diffAmount, orderID); err != nil {
 			return err
 		}
 	case renewServiceID.Valid && renewServiceID.Int64 > 0:
@@ -421,9 +432,12 @@ func (p *Payment) MarkPaid(ctx context.Context, invoiceNo, tradeNo, gatewayCode 
 		svcID = svcIDNew
 	}
 
-	if p.Jobs != nil && !isUpgrade {
+	if p.Jobs != nil {
 		kind := "provision"
-		if isRenew {
+		switch {
+		case isUpgrade:
+			kind = "upgrade"
+		case isRenew:
 			kind = "renew"
 		}
 		if err := p.enqueueFulfillment(ctx, tx, svcID, orderID, kind, cycle); err != nil {
@@ -448,7 +462,7 @@ func (p *Payment) MarkPaid(ctx context.Context, invoiceNo, tradeNo, gatewayCode 
 	if p.Jobs == nil {
 		switch {
 		case isUpgrade:
-			p.upgradeAsync(svcID, targetProductID, cycle, orderID)
+			p.upgradeAsync(svcID, cycle, orderID)
 		case isRenew:
 			p.renewAsync(svcID, cycle, orderID)
 		default:
@@ -488,9 +502,10 @@ func (p *Payment) renewAsync(serviceID int64, cycle string, orderID int64) {
 	}()
 }
 
-// applyUpgrade 支付事务内本地应用升降级：换产品/周期/配置快照；降级退差额到余额。
-// 不动 expires_at（保留已购时长）。退款与核销同事务（invoice status 0→1），只退一次。
-func (p *Payment) applyUpgrade(ctx context.Context, tx *sql.Tx, userID, svcID, targetProductID int64, cycle string, orderID int64, diffAmount float64) error {
+// prepareUpgrade 支付事务内的升级预处理：标记服务"升级中"防并发 + 降级先退差额到余额。
+// 不动 expires_at（保留已购时长）。不在此换产品——真实升降级由 Lifecycle.Upgrade
+// 在上游成功后统一落地（本地换产品/周期/快照），失败时自动回滚退款。
+func (p *Payment) prepareUpgrade(ctx context.Context, tx *sql.Tx, userID, svcID int64, diffAmount float64, orderID int64) error {
 	var st int16
 	var tr string
 	if err := tx.QueryRowContext(ctx, `SELECT status,coalesce(transition_state,'') FROM services WHERE id=$1 FOR UPDATE`, svcID).Scan(&st, &tr); err != nil {
@@ -499,14 +514,9 @@ func (p *Payment) applyUpgrade(ctx context.Context, tx *sql.Tx, userID, svcID, t
 	if (st != 1 && st != 2) || tr != "" {
 		return fmt.Errorf("服务当前状态不可升降级")
 	}
-	if targetProductID <= 0 {
-		return fmt.Errorf("升级订单缺少目标产品")
-	}
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE services SET product_id=$2, cycle=$3,
-		        config_snapshot=(SELECT config_snapshot FROM orders WHERE id=$4)
-		 WHERE id=$1 AND status IN (1,2) AND coalesce(transition_state,'')=''`,
-		svcID, targetProductID, cycle, orderID); err != nil {
+		`UPDATE services SET transition_state='upgrading' WHERE id=$1 AND status IN (1,2) AND coalesce(transition_state,'')=''`,
+		svcID); err != nil {
 		return err
 	}
 	if diffAmount < 0 {
@@ -524,8 +534,8 @@ func (p *Payment) applyUpgrade(ctx context.Context, tx *sql.Tx, userID, svcID, t
 	return nil
 }
 
-// upgradeAsync 异步触发上游升降级钩子（一期本地为主，Lifecycle.Upgrade 为占位 no-op）。
-func (p *Payment) upgradeAsync(serviceID, targetProductID int64, cycle string, orderID int64) {
+// upgradeAsync 异步触发上游升降级（Lifecycle.Upgrade 驱动，含失败自动回滚）。
+func (p *Payment) upgradeAsync(serviceID int64, cycle string, orderID int64) {
 	go func() {
 		rctx, cancel := context.WithTimeout(context.Background(), opRenewTimeout)
 		defer cancel()
@@ -534,7 +544,7 @@ func (p *Payment) upgradeAsync(serviceID, targetProductID int64, cycle string, o
 			log.Printf("[upgrade] service %d 缺少 Lifecycle 服务", serviceID)
 			return
 		}
-		if uerr := lc.Upgrade(rctx, serviceID, targetProductID, cycle, orderID); uerr != nil {
+		if uerr := lc.Upgrade(rctx, serviceID, cycle, orderID); uerr != nil {
 			log.Printf("[upgrade] service %d 上游升降级失败: %v", serviceID, uerr)
 		}
 	}()

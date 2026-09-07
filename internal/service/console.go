@@ -7,6 +7,8 @@ import (
 	"html/template"
 	"log"
 	"net/url"
+	"sync"
+	"time"
 
 	"lumeidc/internal/crypto"
 	"lumeidc/internal/repo"
@@ -464,9 +466,12 @@ type UpgradeTargetView struct {
 	Name        string `json:"name"`
 }
 
-// UpgradeTargets 服务的可升降级目标：优先上游拉取（best-effort），失败回退同服务器本地产品。
+// UpgradeTargets 服务的可升降级目标。
+// 实现了 UpgradeTargetProvider 的上游（zjmf）：仅以上游探测结果为准——上游未配置升降级
+// 或无可升级目标时返回空，据此隐藏入口，不再回退本地候选（否则"不管什么都显示升降级"）。
+// 未实现该接口的上游（easypanel 等本地定价模式）：回退同服务器其它本地产品（本地升降级）。
 func (c *Console) UpgradeTargets(ctx context.Context, userID, serviceID int64) []UpgradeTargetView {
-	prov, cfg, _, err := c.resolveBase(ctx, userID, serviceID)
+	prov, cfg, hostID, err := c.resolveBase(ctx, userID, serviceID)
 	if err != nil {
 		return nil
 	}
@@ -477,27 +482,29 @@ func (c *Console) UpgradeTargets(ctx context.Context, userID, serviceID int64) [
 		return nil
 	}
 	if up, ok := prov.(server.UpgradeTargetProvider); ok {
-		if upstream, uerr := up.UpgradeTargets(ctx, cfg, curPID); uerr == nil {
-			var out []UpgradeTargetView
-			for _, t := range upstream {
-				if t.UpstreamPID == curPID {
-					continue
-				}
-				pid, ferr := c.Products.FindByUpstreamPID(ctx, curServerID, t.UpstreamPID)
-				if ferr != nil || pid <= 0 {
-					continue
-				}
-				out = append(out, UpgradeTargetView{ProductID: pid, UpstreamPID: t.UpstreamPID, Name: t.Name})
-			}
-			if len(out) > 0 {
-				return out
-			}
-		}
+		return c.upstreamTargets(ctx, cfg, hostID, curPID, curServerID, up)
 	}
 	return c.sameServerTargets(ctx, curPID, curServerID)
 }
 
-// sameServerTargets 上游拉取失败/未实现时回退：同服务器的其它本地产品。
+// upstreamTargets 上游探测目标 → 本地产品映射。上游返回空即为空，不回退。
+func (c *Console) upstreamTargets(ctx context.Context, cfg server.Config, hostID, curPID, curServerID int64, up server.UpgradeTargetProvider) []UpgradeTargetView {
+	upstream, _ := up.UpgradeTargets(ctx, cfg, hostID) // best-effort：失败/无能力均视为无目标
+	var out []UpgradeTargetView
+	for _, t := range upstream {
+		if t.UpstreamPID == curPID {
+			continue
+		}
+		pid, ferr := c.Products.FindByUpstreamPID(ctx, curServerID, t.UpstreamPID)
+		if ferr != nil || pid <= 0 {
+			continue // 本地未上架对应上游商品，跳过
+		}
+		out = append(out, UpgradeTargetView{ProductID: pid, UpstreamPID: t.UpstreamPID, Name: t.Name})
+	}
+	return out
+}
+
+// sameServerTargets 上游未实现升级能力时回退：同服务器的其它本地产品（本地升降级）。
 func (c *Console) sameServerTargets(ctx context.Context, curPID, curServerID int64) []UpgradeTargetView {
 	rows, err := c.db.QueryContext(ctx,
 		`SELECT p.id, coalesce(p.upstream_pid,0), p.name FROM products p
@@ -515,3 +522,34 @@ func (c *Console) sameServerTargets(ctx context.Context, curPID, curServerID int
 	}
 	return out
 }
+
+// upgradeProbeCache 详情页升降级入口探测缓存（按服务，60s TTL）。
+// 详情页每次渲染都实时调上游会加重加载，弱一致可接受。
+// ponytail: 进程内存缓存，多实例各自独立；升级目标在 60s 内的变化允许短暂滞后。
+var upgradeProbe = struct {
+	sync.Mutex
+	m map[int64]upgradeProbeEntry
+}{m: map[int64]upgradeProbeEntry{}}
+
+type upgradeProbeEntry struct {
+	ok     bool
+	expiry time.Time
+}
+
+// CanUpgrade 服务是否显示升降级入口（详情页）。基于 UpgradeTargets 结果缓存 60s；
+// 纯本地服务（无上游绑定，resolveBase 失败）恒 false。
+func (c *Console) CanUpgrade(ctx context.Context, userID, serviceID int64) bool {
+	upgradeProbe.Lock()
+	if e, hit := upgradeProbe.m[serviceID]; hit && time.Now().Before(e.expiry) {
+		upgradeProbe.Unlock()
+		return e.ok
+	}
+	upgradeProbe.Unlock()
+	ok := len(c.UpgradeTargets(ctx, userID, serviceID)) > 0
+	upgradeProbe.Lock()
+	upgradeProbe.m[serviceID] = upgradeProbeEntry{ok: ok, expiry: time.Now().Add(canUpgradeTTL)}
+	upgradeProbe.Unlock()
+	return ok
+}
+
+const canUpgradeTTL = time.Minute

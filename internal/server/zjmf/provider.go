@@ -22,33 +22,80 @@ type Provider struct{}
 func (Provider) Code() string { return "zjmf" }
 func (Provider) Name() string { return "智简魔方财务（ZJMF）" }
 
-// UpgradeTargets 实现 server.UpgradeTargetProvider：best-effort 拉取上游可升级目标。
-// 该端点为 CBAP v10 开发者 API（/api/v1/product/:id/upgrade_product）；魔方财务无此接口，
-// 失败/解析不出均返回空，由上层回退"同服务器本地产品"候选，保证本地升降级可用。
-// ponytail: 魔方财务的升降级是 host 维度（openapi /v1/hosts/:id/actions/upgrade），非商品维度，
-// 需 hostid 才能查询，此处不做；如需对接二期再按 host 链路补。
-func (p Provider) UpgradeTargets(ctx context.Context, cfg server.Config, upstreamPID int64) ([]server.UpgradeTarget, error) {
-	path := "/api/v1/product/" + strconv.FormatInt(upstreamPID, 10) + "/upgrade_product"
-	var out struct {
-		Data json.RawMessage `json:"data"`
-	}
-	if err := getJSON(ctx, cfg, path, &out); err != nil {
-		return nil, err
-	}
-	var targets []server.UpgradeTarget
-	if len(out.Data) == 0 {
+// UpgradeTargets 实现 server.UpgradeTargetProvider：host 维度探测上游是否支持升降级并返回可升级目标。
+// 判定顺序（对齐魔方财务官方口径）：
+//  1. /host/header 的 host_data.allow_upgrade_product 开关（1=允许"升级产品"）——关闭即不可升级，
+//     不再调用目标接口（省一次请求，也不依赖 400 报错判定）；
+//  2. 开关开启后调 GET /upgrade/upgrade_product/{hid} 取可升级产品列表（data.host[]，配置在
+//     product_upgrade_products 表）；成功但列表为空 = 无目标。
+// 两者均视为"不支持/无目标"，返回空让调用方隐藏升降级入口（见 Console.UpgradeTargets 语义）。
+// best-effort：网络/解析失败同样返回空并记日志，不阻断详情页。
+// 注：此前调 CBAP v10 /api/v1/product/:id/upgrade_product（商品维度、需 pid），
+// 真实魔方财务无此端点恒 404，是"不管什么都显示升降级"的根因之一；现按 host 维度重写。
+func (p Provider) UpgradeTargets(ctx context.Context, cfg server.Config, upstreamHostID int64) ([]server.UpgradeTarget, error) {
+	data, err := fetchHostHeaderRaw(ctx, cfg, upstreamHostID)
+	if err != nil {
+		log.Printf("[zjmf] host %d 升降级开关查询失败（按不可升级处理）: %v", upstreamHostID, err)
 		return nil, nil
 	}
-	if err := json.Unmarshal(out.Data, &targets); err != nil {
-		var wrapped struct {
-			List []server.UpgradeTarget `json:"list"`
+	// 老版本缺失该开关时不拦截（返回 true），交由目标接口判定。
+	if !allowUpgradeProduct(data) {
+		return nil, nil
+	}
+	path := "/upgrade/upgrade_product/" + strconv.FormatInt(upstreamHostID, 10)
+	var out struct {
+		Data struct {
+			Host []struct {
+				PID  int64  `json:"pid"`
+				Name string `json:"name"`
+			} `json:"host"`
+		} `json:"data"`
+	}
+	if err := getJSON(ctx, cfg, path, &out); err != nil {
+		// 上游不可升级（400）/接口异常：统一按不可升级处理；不向上抛错，避免上层误走回退。
+		log.Printf("[zjmf] host %d 升降级目标查询失败（按不可升级处理）: %v", upstreamHostID, err)
+		return nil, nil
+	}
+	var targets []server.UpgradeTarget
+	for _, hp := range out.Data.Host {
+		if hp.PID <= 0 {
+			continue
 		}
-		if err2 := json.Unmarshal(out.Data, &wrapped); err2 != nil {
-			return nil, err
-		}
-		targets = wrapped.List
+		targets = append(targets, server.UpgradeTarget{UpstreamPID: hp.PID, Name: strings.TrimSpace(hp.Name)})
 	}
 	return targets, nil
+}
+
+// allowUpgradeProduct 解析 /host/header 的 host_data.allow_upgrade_product 开关（数字或字符串）。
+// 缺失/不可解析视为 true（老版本无此开关，不拦截，交由目标接口判定）。
+func allowUpgradeProduct(data map[string]json.RawMessage) bool {
+	hd, ok := data["host_data"]
+	if !ok {
+		return true
+	}
+	var m map[string]json.RawMessage
+	if json.Unmarshal(hd, &m) != nil {
+		return true
+	}
+	raw, ok := m["allow_upgrade_product"]
+	if !ok || strings.TrimSpace(string(raw)) == "null" {
+		return true // 缺失/未定义：不拦截，交由目标接口判定
+	}
+	var b bool
+	if json.Unmarshal(raw, &b) == nil {
+		return b
+	}
+	switch v := rawNum(raw).(type) {
+	case float64:
+		return v == 1
+	case string:
+		switch strings.TrimSpace(v) {
+		case "1", "true", "yes":
+			return true
+		}
+		return false
+	}
+	return true
 }
 
 // TestConnection 登录并拉用户资料验证凭据。旧版上游无 /v1/user（404），

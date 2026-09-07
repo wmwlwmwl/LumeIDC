@@ -190,6 +190,15 @@ func doRawRetry(ctx context.Context, cfg server.Config, method, u, contentType, 
 	if err != nil {
 		return "", fmt.Errorf("模块响应读取失败: %w", err)
 	}
+	// 魔方财务恒以 HTTP 200 + body.status=405 表示 token 失效，与 401 同样重登一次重放
+	if allowRetry && isBizSessionExpired(body) {
+		cache.invalidate(authCacheKey(cfg))
+		newToken, terr := ensureToken(ctx, cfg)
+		if terr != nil {
+			return "", terr
+		}
+		return doRawRetry(ctx, cfg, method, u, contentType, reqBody, authPrefixOf(auth)+newToken, false)
+	}
 	// 标准包装 JSON 时校验业务码；方块页为纯 HTML 时跳过。
 	if err := checkBizAbnormal(body); err != nil {
 		return "", err
