@@ -52,10 +52,11 @@ jobs:
           fetch-depth: 0   # 需要完整历史与旧 tag 定位区间
           fetch-tags: true
       - name: 下载构建产物
-        uses: actions/download-artifact@v6
-        with:
-          name: dist
-          path: dist
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # gh CLI 预装且自带鉴权：直接下载本次 workflow run 的 dist artifact，
+        # 替代 actions/download-artifact（Node20 弃用警告）。
+        run: gh run download "$GITHUB_RUN_ID" -n dist -D dist
       - name: 生成发布说明（自动拉取提交）
         id: notes
         run: |
