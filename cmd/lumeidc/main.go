@@ -16,7 +16,7 @@ import (
 	"lumeidc/internal/httpserver"
 )
 
-// version 由构建期 -ldflags 注入，与 git tag 对应；dev 为本地未打 tag 构建。
+// version 由构建期 -ldflags 注入（含 v 前缀的 git tag，如 v0.0.10），dev 为本地未打 tag 构建。
 var version = "dev"
 
 func main() {
@@ -83,7 +83,7 @@ func startApp(cfg *config.Config, version string) {
 		defer cancel()
 		app.Shutdown(ctx)
 	}()
-	log.Printf("LumeIDC 运行中 (v%s)", version)
+	log.Printf("LumeIDC 运行中 (%s)", version)
 	if err := app.Server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}

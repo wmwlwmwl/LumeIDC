@@ -311,6 +311,16 @@ func (h *Pay) ownsInvoice(r *http.Request, userID int64, no string) bool {
 // notify 由网关实例 code 分发到对应插件，账单核销保持统一。
 func (h *Pay) notify(w http.ResponseWriter, r *http.Request) {
 	code := strings.TrimSpace(r.URL.Query().Get("code"))
+	if code == "" {
+		// 兜底：部分网关（如支付宝后台配置固定异步通知地址）回调不带 code。
+		// 账单支付时已绑定网关实例（invoices.gateway），按 out_trade_no 反查。
+		no := strings.TrimSpace(r.PostFormValue("out_trade_no"))
+		if no != "" {
+			if c, err := h.GwRepo.InvoiceGateway(r.Context(), no); err == nil && c != "" {
+				code = c
+			}
+		}
+	}
 	if code == "" || strings.ContainsAny(code, "/?#&") {
 		http.NotFound(w, r)
 		return
