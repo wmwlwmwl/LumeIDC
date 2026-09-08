@@ -335,10 +335,7 @@ func (h *Pay) notify(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("fail"))
 		return
 	}
-	params := map[string]string{}
-	for k := range r.Form {
-		params[k] = r.Form.Get(k)
-	}
+	params := notifyParams(r)
 	result, err := impl.VerifyNotify(params, inst.Config)
 	if err != nil {
 		log.Printf("[notify] 网关 %s 校验失败: %v (out_trade_no=%s trade_no=%s trade_status=%s)", code, err, params["out_trade_no"], params["trade_no"], params["trade_status"])
@@ -384,6 +381,20 @@ func (h *Pay) notify(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("[notify] 网关 %s 核销成功 账单 %s trade_no=%s 金额=%s", code, result.InvoiceNo, result.TradeNo, result.Amount)
 	w.Write([]byte("success"))
+}
+
+// notifyParams 提取网关回调参数。r.ParseForm() 会把本站 URL 查询参数
+// （如区分网关实例的 code）混入 r.Form，而网关签名内容不含这些参数，
+// 若一并参与验签必然失败导致账单永不核销，故剔除；只保留网关回传的参数。
+func notifyParams(r *http.Request) map[string]string {
+	params := map[string]string{}
+	for k, vals := range r.Form {
+		if k == "code" || len(vals) == 0 {
+			continue
+		}
+		params[k] = vals[0]
+	}
+	return params
 }
 
 func equalAmount(a, b string) bool {
