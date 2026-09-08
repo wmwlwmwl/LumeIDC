@@ -1,7 +1,6 @@
 {{define "page"}}
 <div class="admin-page-header">
   <div class="admin-page-title">
-    
     <h1>站点设置</h1>
     <p>站点名称、SEO 描述与关键词、客服联系方式，保存后全站生效</p>
   </div>
@@ -12,50 +11,53 @@
 
 <form method="post" action="/admin/site" class="admin-panel admin-form-narrow">
   <input type="hidden" name="_csrf" value="{{.CSRF}}">
-  <div class="admin-panel-header"><h2>品牌与 SEO</h2></div>
   <div class="admin-panel-body">
-    <label for="site-name">站点名称</label>
-    <input id="site-name" name="site_name" value="{{index .ServersList "site_name"}}" placeholder="LumeIDC" required maxlength="128">
-    <p class="text-muted small">用于前台导航、登录/注册页、浏览器标题、支付页与邮件品牌。</p>
 
-    <label for="site-description">站点描述</label>
-    <textarea id="site-description" name="site_description" rows="3" placeholder="一段话介绍你的平台（用于 SEO/分享），可留空">{{index .ServersList "site_description"}}</textarea>
+    <div class="admin-form-section">
+      <h3>品牌与 SEO</h3>
+      <label for="site-name">站点名称</label>
+      <input id="site-name" name="site_name" value="{{index .ServersList "site_name"}}" placeholder="LumeIDC" required maxlength="128">
+      <p class="text-muted small">用于前台导航、登录/注册页、浏览器标题、支付页与邮件品牌。</p>
 
-    <label for="site-keywords">站点关键词</label>
-    <input id="site-keywords" name="site_keywords" value="{{index .ServersList "site_keywords"}}" placeholder="云服务器, IDC, 虚拟主机" maxlength="512">
-    <p class="text-muted small">多个关键词用英文逗号分隔；留空则不输出 meta。</p>
-  </div>
+      <label for="site-description">站点描述</label>
+      <textarea id="site-description" name="site_description" rows="3" placeholder="一段话介绍你的平台（用于 SEO/分享），可留空">{{index .ServersList "site_description"}}</textarea>
 
-  <div class="admin-panel-header"><h2>客服联系方式</h2></div>
-  <div class="admin-panel-body">
-    <div class="admin-form-row">
-      <div class="admin-form-col">
-        <label for="service-email">服务邮箱</label>
-        <input id="service-email" name="service_email" type="email" value="{{index .ServersList "service_email"}}" placeholder="support@example.com" maxlength="128">
-      </div>
-      <div class="admin-form-col">
-        <label for="service-phone">服务电话</label>
-        <input id="service-phone" name="service_phone" type="tel" value="{{index .ServersList "service_phone"}}" placeholder="400-000-0000" maxlength="64">
-      </div>
+      <label for="site-keywords">站点关键词</label>
+      <input id="site-keywords" name="site_keywords" value="{{index .ServersList "site_keywords"}}" placeholder="云服务器, IDC, 虚拟主机" maxlength="512">
+      <p class="text-muted small">多个关键词用英文逗号分隔；留空则不输出 meta。</p>
     </div>
-    <label for="service-hours">工作时间</label>
-    <input id="service-hours" name="service_hours" value="{{index .ServersList "service_hours"}}" placeholder="周一至周五 9:00-18:00" maxlength="128">
-    <p class="text-muted small">联系方式会显示在登录/注册页底部；未填写则隐藏。</p>
-  </div>
 
-  <div class="admin-panel-header"><h2>后台入口</h2></div>
-  <div class="admin-panel-body">
-    <label for="site-url">站点地址</label>
-    <input id="site-url" name="site_url" value="{{index .ServersList "site_url"}}" placeholder="https://yun.662662.xyz" maxlength="128">
-    <p class="text-muted small">用于支付回调、实名认证回调与邮件链接前缀。留空则根据用户访问的域名<strong>自动推断</strong>（如从 https://yun.662662.xyz 访问即生成为该地址）；建议填入正式域名以保持回调地址稳定。修改立即生效，无需重启。</p>
+    <div class="admin-form-section">
+      <h3>客服联系方式</h3>
+      <div class="admin-form-row">
+        <div class="admin-form-col">
+          <label for="service-email">服务邮箱</label>
+          <input id="service-email" name="service_email" type="email" value="{{index .ServersList "service_email"}}" placeholder="support@example.com" maxlength="128">
+        </div>
+        <div class="admin-form-col">
+          <label for="service-phone">服务电话</label>
+          <input id="service-phone" name="service_phone" type="tel" value="{{index .ServersList "service_phone"}}" placeholder="400-000-0000" maxlength="64">
+        </div>
+      </div>
+      <label for="service-hours">工作时间</label>
+      <input id="service-hours" name="service_hours" value="{{index .ServersList "service_hours"}}" placeholder="周一至周五 9:00-18:00" maxlength="128">
+      <p class="text-muted small">联系方式会显示在登录/注册页底部；未填写则隐藏。</p>
+    </div>
 
-    <label for="site-listen-port">监听端口</label>
-    <input id="site-listen-port" name="listen_port" value="{{index .ServersList "listen_port"}}" placeholder="如 18090，留空使用 config.yaml 的 listen" maxlength="5" inputmode="numeric">
-    <p class="text-muted small">程序监听端口，保存后<strong>立即生效</strong>无需重启。修改后请同步更新反向代理目标（Nginx 的 proxy_pass）与容器/防火墙的端口映射；留空则回退到 config.yaml 中的 listen。</p>
+    <div class="admin-form-section">
+      <h3>后台入口</h3>
+      <label for="site-url">站点地址</label>
+      <input id="site-url" name="site_url" value="{{index .ServersList "site_url"}}" placeholder="https://yun.662662.xyz" maxlength="128">
+      <p class="text-muted small">用于支付回调、实名认证回调与邮件链接前缀。留空则根据用户访问的域名<strong>自动推断</strong>（如从 https://yun.662662.xyz 访问即生成为该地址）；建议填入正式域名以保持回调地址稳定。修改立即生效，无需重启。</p>
 
-    <label for="site-admin-path">后台访问路径</label>
-    <input id="site-admin-path" name="admin_path" value="{{index .ServersList "admin_path"}}" placeholder="/manage" maxlength="32">
-    <p class="text-muted small">仅允许 <code>/字母数字_-</code>（如 /manage），不能与 /login、/services 等公共路径冲突。保存后<strong>立即生效</strong>；留空使用默认 <code>/admin</code>。配置后默认 /admin 将被隐藏。</p>
+      <label for="site-listen-port">监听端口</label>
+      <input id="site-listen-port" name="listen_port" value="{{index .ServersList "listen_port"}}" placeholder="如 18090，留空使用 config.yaml 的 listen" maxlength="5" inputmode="numeric">
+      <p class="text-muted small">程序监听端口，保存后<strong>立即生效</strong>无需重启。修改后请同步更新反向代理目标（Nginx 的 proxy_pass）与容器/防火墙的端口映射；留空则回退到 config.yaml 中的 listen。</p>
+
+      <label for="site-admin-path">后台访问路径</label>
+      <input id="site-admin-path" name="admin_path" value="{{index .ServersList "admin_path"}}" placeholder="/manage" maxlength="32">
+      <p class="text-muted small">仅允许 <code>/字母数字_-</code>（如 /manage），不能与 /login、/services 等公共路径冲突。保存后<strong>立即生效</strong>；留空使用默认 <code>/admin</code>。配置后默认 /admin 将被隐藏。</p>
+    </div>
 
     <div class="admin-form-actions">
       <button class="ui-btn" type="submit">保存站点设置 <span>→</span></button>

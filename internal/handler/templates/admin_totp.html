@@ -1,7 +1,6 @@
 {{define "page"}}
 <div class="admin-page-header">
   <div class="admin-page-title">
-    
     <h1>两步验证</h1>
     <p>为管理员账户增加一层安全保护</p>
   </div>
@@ -20,7 +19,7 @@
         <p class="text-muted small">当前管理员账户已受 TOTP 保护。</p>
       </div>
     </div>
-    <form method="post" action="/admin/totp">
+    <form method="post" action="/admin/totp" class="admin-form-actions">
       <input type="hidden" name="_csrf" value="{{.CSRF}}">
       <input type="hidden" name="action" value="disable">
       <button class="ui-btn ui-btn-danger" type="submit">关闭两步验证</button>

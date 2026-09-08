@@ -26,27 +26,33 @@ func (a *Admin) adminOrders(w http.ResponseWriter, r *http.Request) {
 	if !a.require(w, r) {
 		return
 	}
-	list, err := a.Stats.AdminOrders(r.Context())
+	const per = 25
+	page := pageParam(r)
+	q := r.URL.Query().Get("q")
+	list, total, err := a.Stats.AdminOrdersPage(r.Context(), q, per, (page-1)*per)
 	if err != nil {
 		http.Error(w, "查询失败", 500)
 		return
 	}
 	var out []adminRow
-	var total float64
+	var profit float64
 	for _, o := range list {
 		rw := adminRow{ID: o.ID, A: o.Email, B: o.Amount, C: o.Cycle, D: o.Status, E: o.Profit}
 		if o.Paid != "0" && o.Paid != "0.00" {
 			rw.F = o.Paid + "（手续费 " + o.Fee + "）"
 		}
 		if pf, perr := strconv.ParseFloat(o.Profit, 64); perr == nil {
-			total += pf
+			profit += pf
 		}
 		out = append(out, rw)
 	}
+	pager := pagerFor(r, "/admin/orders", per, total)
+	pager.Q = q
 	a.renderAdmin(w, "admin_orders.html", AdminData{
 		Rows:        out,
 		CSRF:        a.adminCSRF(w, r),
 		Error:       r.URL.Query().Get("err"),
-		TotalProfit: strconv.FormatFloat(total, 'f', 2, 64),
+		TotalProfit: strconv.FormatFloat(profit, 'f', 2, 64),
+		Pager:       &pager,
 	})
 }

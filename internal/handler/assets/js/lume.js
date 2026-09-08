@@ -370,6 +370,8 @@
     document.addEventListener('keydown', function (e) {
       if (e.key !== 'Escape') return;
       closeConfirm(false);
+      document.querySelectorAll('.ui-menu.is-open').forEach(function (m) { m.classList.remove('is-open'); });
+      if (window.LumeUI) window.LumeUI.closeModal();
       var modal = document.getElementById('cfgModal');
       if (modal && modal.style.display !== 'none' && typeof closeCfgModal === 'function') closeCfgModal();
     });
@@ -433,6 +435,23 @@
     }, { passive: true });
   }
 
+  /* ---------- 快捷填充：data-fill + data-fill-value ---------- */
+  function bindFillShortcuts() {
+    document.addEventListener('click', function (e) {
+      var btn = e.target.closest('[data-fill]');
+      if (!btn) return;
+      var targetId = btn.getAttribute('data-fill');
+      var input = targetId ? document.getElementById(targetId) : null;
+      if (!input) return;
+      var value = btn.getAttribute('data-fill-value');
+      if (value == null) return;
+      input.value = value;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      input.focus();
+    });
+  }
+
   /* ---------- 后台抽屉（移动端）：遮罩点击关闭 + 菜单项点击收起 + 滚动锁定 ---------- */
   function bindAdminDrawer() {
     var shell = document.querySelector('[data-admin-shell]');
@@ -462,6 +481,195 @@
     mq.addEventListener('change', function () { if (!mq.matches) setOpen(false); });
   }
 
+  /* ============================================================
+     LumeUI 公共交互 API（统一 Toast / Confirm / Modal / AJAX）
+     ============================================================ */
+  var modalRoot = null;
+  var modalStack = [];
+  var bodyLock = 0;
+
+  function ensureModalRoot() {
+    if (modalRoot) return modalRoot;
+    modalRoot = document.createElement('div');
+    document.body.appendChild(modalRoot);
+    return modalRoot;
+  }
+  function lockBody(on) {
+    bodyLock += on ? 1 : -1;
+    if (bodyLock < 0) bodyLock = 0;
+    document.body.classList.toggle('ui-modal-lock', bodyLock > 0);
+  }
+  function csrfToken() {
+    var m = document.querySelector('meta[name="csrf"]');
+    if (m && m.getAttribute('content')) return m.getAttribute('content');
+    var h = document.querySelector('input[name="_csrf"]');
+    return h ? h.value : '';
+  }
+  function toastShow(msg, kind, timeout) {
+    var region = ensureToastRegion();
+    var el = document.createElement('div');
+    el.className = 'ui-toast' + (kind ? ' ui-toast-' + kind : '');
+    el.setAttribute('role', 'status');
+    el.textContent = msg;
+    region.appendChild(el);
+    requestAnimationFrame(function () { el.classList.add('is-in'); });
+    setTimeout(function () {
+      el.classList.remove('is-in');
+      setTimeout(function () { el.remove(); }, 300);
+    }, timeout || 2400);
+  }
+
+  window.LumeUI = {};
+  window.LumeUI.toast = function (msg, kind, opts) {
+    toastShow(msg, kind || 'success', (opts && opts.timeout) || 2400);
+  };
+
+  // confirm → Promise<boolean>（danger 控制按钮样式）
+  window.LumeUI.confirm = function (opts) {
+    opts = opts || {};
+    var message = opts.message || opts.msg || '确定执行该操作吗？';
+    var okLabel = opts.okLabel || (opts.danger ? '确认执行' : '确认');
+    return openConfirm(message, okLabel, !!opts.danger);
+  };
+
+  // modal → { close }；body 可为 HTML 字符串或节点
+  window.LumeUI.modal = function (opts) {
+    opts = opts || {};
+    var root = ensureModalRoot();
+    var wrap = document.createElement('div');
+    wrap.className = 'ui-modal';
+    wrap.setAttribute('role', 'dialog');
+    wrap.setAttribute('aria-modal', 'true');
+    wrap.setAttribute('aria-label', opts.title || '弹窗');
+    if (opts.size) wrap.setAttribute('data-ui-modal-size', opts.size);
+    var card = document.createElement('div');
+    card.className = 'ui-modal-card';
+    if (opts.title) {
+      var head = document.createElement('div');
+      head.className = 'ui-modal-head';
+      var hText = document.createElement('div');
+      hText.style.minWidth = '0';
+      var h3 = document.createElement('h3');
+      h3.textContent = opts.title;
+      hText.appendChild(h3);
+      if (opts.subtitle) {
+        var sub = document.createElement('p');
+        sub.textContent = opts.subtitle;
+        hText.appendChild(sub);
+      }
+      head.appendChild(hText);
+      var closeBtn = document.createElement('button');
+      closeBtn.type = 'button';
+      closeBtn.className = 'ui-modal-close';
+      closeBtn.setAttribute('aria-label', '关闭');
+      closeBtn.innerHTML = '&times;';
+      closeBtn.addEventListener('click', closeModal);
+      head.appendChild(closeBtn);
+      card.appendChild(head);
+    }
+    var body = document.createElement('div');
+    body.className = 'ui-modal-body';
+    if (typeof opts.body === 'string') body.innerHTML = opts.body;
+    else if (opts.body && opts.body.nodeType === 1) body.appendChild(opts.body);
+    card.appendChild(body);
+    if (opts.footer) {
+      var foot = document.createElement('div');
+      foot.className = 'ui-modal-foot';
+      if (typeof opts.footer === 'string') foot.innerHTML = opts.footer;
+      else if (opts.footer.nodeType === 1) foot.appendChild(opts.footer);
+      card.appendChild(foot);
+    }
+    wrap.appendChild(card);
+    root.appendChild(wrap);
+    modalStack.push(wrap);
+    lockBody(true);
+    requestAnimationFrame(function () {
+      wrap.classList.add('is-open');
+      if (opts.autofocus) { var f = opts.autofocus; if (typeof f === 'string') f = body.querySelector(f); if (f && f.focus) f.focus(); }
+      else if (typeof opts.focus === 'function') opts.focus();
+    });
+    if (typeof opts.onOpen === 'function') opts.onOpen(wrap, body);
+    return { close: closeModal, el: wrap, body: body };
+  };
+
+  function closeModal() {
+    var wrap = modalStack[modalStack.length - 1];
+    if (!wrap) return;
+    modalStack.pop();
+    wrap.classList.remove('is-open');
+    lockBody(false);
+    setTimeout(function () { if (wrap.isConnected) wrap.remove(); }, 180);
+  }
+  window.LumeUI.closeModal = closeModal;
+  window.LumeUI.openModal = window.LumeUI.modal;
+
+  // 通用 AJAX POST：自动带 CSRF，统一解析 {ok,msg,...}
+  window.LumeUI.post = function (url, data, opts) {
+    opts = opts || {};
+    var csrf = opts.csrf || csrfToken();
+    var init = { method: opts.method || 'POST', headers: {}, credentials: 'same-origin' };
+    var body;
+    if (typeof FormData !== 'undefined' && data instanceof FormData) {
+      body = data;
+      if (csrf) {
+        if (data.get('_csrf')) data.set('_csrf', csrf);
+        else data.append('_csrf', csrf);
+      }
+    } else {
+      init.headers['Content-Type'] = opts.json ? 'application/json' : 'application/x-www-form-urlencoded; charset=UTF-8';
+      if (opts.json) {
+        body = JSON.stringify(data || {});
+        if (csrf) init.headers['X-CSRF-Token'] = csrf;
+      } else {
+        var sp = new URLSearchParams(data || {});
+        if (csrf) sp.set('_csrf', csrf);
+        body = sp.toString();
+      }
+    }
+    init.headers['Accept'] = 'application/json';
+    return fetch(url, init).then(function (res) {
+      if (res.status === 401) {
+        return res.json().catch(function () { return null; }).then(function (j) {
+          toastShow((j && j.msg) || '会话已过期，请重新登录', 'error');
+          setTimeout(function () {
+            location.href = document.body.classList.contains('admin-body') ? '/admin/login' : '/login';
+          }, 900);
+          throw new Error('unauthorized');
+        });
+      }
+      return res.json().catch(function () { throw new Error('响应格式错误'); });
+    });
+  };
+
+  // data-ajax 表单：提交后按 {ok:0|1,msg,redirect} 处理；失败/非 JSON 时按整页兜底
+  function bindAjaxForms() {
+    document.addEventListener('submit', function (e) {
+      var form = e.target;
+      if (!(form instanceof HTMLFormElement)) return;
+      if (!form.hasAttribute('data-ajax')) return;
+      if (form.dataset.confirmed === '1') { /* 已确认，继续走 AJAX */ }
+      e.preventDefault();
+      var btn = e.submitter || form.querySelector('button[type="submit"]');
+      var locked = false;
+      if (btn && !btn.disabled) { btn.disabled = true; btn.classList.add('is-loading'); locked = true; }
+      var fd = new FormData(form);
+      window.LumeUI.post(form.action, fd, {}).then(function (j) {
+        if (locked && btn) { btn.disabled = false; btn.classList.remove('is-loading'); }
+        if (!j || j.ok === 0) { toastShow((j && j.msg) || '操作失败', 'error'); return; }
+        toastShow(j.msg || '操作成功', 'success');
+        if (j.redirect) { location.href = j.redirect; return; }
+        if (form.hasAttribute('data-reload')) { location.reload(); return; }
+        if (form.hasAttribute('data-remove')) {
+          var tr = form.closest('tr') || form.closest('[data-row]');
+          if (tr) { tr.remove(); } else { location.reload(); }
+          return;
+        }
+      }).catch(function () {
+        if (locked && btn) { btn.disabled = false; btn.classList.remove('is-loading'); }
+      });
+    }, false);
+  }
+
   document.addEventListener('DOMContentLoaded', function () {
     toggle(document.querySelector('[data-site-menu]'), document.querySelector('[data-site-header]'), 'is-open');
     bindAdminDrawer();
@@ -477,5 +685,7 @@
     bindAutoDismiss();
     bindSelectAll();
     bindNumberWheelGuard();
+    bindFillShortcuts();
+    bindAjaxForms();
   });
 }());

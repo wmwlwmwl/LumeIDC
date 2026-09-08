@@ -1,7 +1,6 @@
 {{define "page"}}
 <div class="admin-page-header">
   <div class="admin-page-title">
-    
     <h1>退款记录</h1>
     <p>查看所有退款处理记录</p>
   </div>
@@ -10,7 +9,7 @@
   </div>
 </div>
 
-{{if .Msg}}<div class="ui-alert ui-alert-success">操作成功</div>{{end}}
+{{if .Msg}}<div class="ui-alert ui-alert-success" role="status">操作成功</div>{{end}}
 
 <div class="admin-panel">
   <div class="admin-panel-header">
@@ -48,7 +47,7 @@
         </tr>
         {{end}}
         {{if not .Rows}}
-        <tr><td colspan="8" class="admin-table-empty">暂无退款记录</td></tr>
+        <tr><td colspan="99" class="admin-table-empty">暂无退款记录</td></tr>
         {{end}}
       </tbody>
     </table>

@@ -4,8 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{{if .Recharge}}余额充值{{else}}账单支付{{end}} - {{.SiteName}}</title>
+<meta name="csrf" content="{{.CSRF}}">
 <link rel="stylesheet" href="/assets/vendor/bootstrap-5.3.3/css/bootstrap.min.css">
 <link rel="stylesheet" href="/assets/css/lume.css">
+<script src="/assets/js/lume.js" defer></script>
 </head>
 <body class="site-body">
 <main class="fx-pay-wrap">
@@ -14,34 +16,45 @@
       <span class="fx-brand-mark">{{.SiteMark}}</span>
       <span>{{.SiteName}}</span>
     </div>
-    
-    <h1>{{if .Recharge}}余额充值{{else}}账单支付{{end}}</h1>
-    <p class="fx-pay-invoice">{{.InvoiceNo}}</p>
-
-    <div class="fx-pay-amount">账单金额 ￥{{.Amount}}</div>
 
     {{if .Status}}
-    <div class="ui-alert ui-alert-info" role="status">{{.Status}}</div>
-    {{if .Recharge}}
-    <p class="fx-pay-redirect" role="status">支付成功，3 秒后自动返回余额充值页</p>
-    <script>setTimeout(function(){location.href='/user/recharge'},3000);</script>
+    <div class="fx-pay-result">
+      <span class="fx-pay-result-mark" aria-hidden="true">
+        <svg viewBox="0 0 16 16" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3.5 8.5 3 3 6-6.5"/></svg>
+      </span>
+      <h1>{{if .Recharge}}充值成功{{else}}支付成功{{end}}</h1>
+      <p class="fx-pay-invoice">{{.InvoiceNo}}</p>
+      <div class="ui-alert ui-alert-info fx-pay-status-msg" role="status">{{.Status}}</div>
+      <p class="fx-pay-redirect" role="status">{{if .Recharge}}3 秒后自动返回余额充值页…{{else}}3 秒后自动前往我的服务…{{end}}</p>
+      <script>
+        setTimeout(function(){ location.href = {{if .Recharge}}'/user/recharge'{{else}}'/services'{{end}}; }, 3000);
+      </script>
+    </div>
     {{else}}
-    <p class="fx-pay-redirect" role="status">支付成功，3 秒后自动前往我的服务</p>
-    <script>setTimeout(function(){location.href='/services'},3000);</script>
-    {{end}}
-    {{else}}
+    <h1>{{if .Recharge}}余额充值{{else}}账单支付{{end}}</h1>
+    <p class="fx-pay-invoice">账单号 {{.InvoiceNo}}</p>
+    <span class="fx-pay-amount-label">应付金额</span>
+    <div class="fx-pay-amount">￥{{.Amount}}</div>
+
+    {{if .BalancePay}}
     <div class="fx-pay-balance">
-      <span>账户余额</span>
+      <span>账户可用余额</span>
       <strong>￥{{.UserBalance}}</strong>
     </div>
+    {{end}}
+
     <div class="fx-pay-methods">
       {{range .Gateways}}
       <form method="post" action="/pay/{{$.InvoiceID}}/start">
         <input type="hidden" name="_csrf" value="{{$.CSRF}}">
         <input type="hidden" name="gateway" value="{{.Code}}">
         <button class="fx-pay-method-btn" type="submit">
-          <span>在线支付 · {{.Name}}<small>手续费 {{.FeePercent}}%（￥{{.FeeAmount}}），应付 ￥{{.Amount}}</small></span>
-          <span class="fx-pay-arrow">→</span>
+          <span class="fx-pay-method-name">
+            <span>在线支付 · {{.Name}}</span>
+            {{if .FeePercent}}<small>手续费 {{.FeePercent}}%，含手续费应付 ￥{{.FeeAmount}}</small>{{end}}
+          </span>
+          <span class="fx-pay-method-amount">￥{{.Amount}}</span>
+          <span class="fx-pay-arrow" aria-hidden="true">→</span>
         </button>
       </form>
       {{end}}
@@ -49,16 +62,21 @@
       <form method="post" action="/pay/{{.InvoiceID}}/balance">
         <input type="hidden" name="_csrf" value="{{.CSRF}}">
         <button class="fx-pay-method-btn is-balance" type="submit">
-          <span>使用账户余额支付<small>扣款 ￥{{$.Amount}}（不收手续费）</small></span>
-          <span class="fx-pay-arrow">→</span>
+          <span class="fx-pay-method-name">
+            <span>使用账户余额支付</span>
+            <small>即时到账 · 不收手续费</small>
+          </span>
+          <span class="fx-pay-method-amount">￥{{.Amount}}</span>
+          <span class="fx-pay-arrow" aria-hidden="true">→</span>
         </button>
       </form>
       {{end}}
     </div>
+    {{if not .Gateways}}<p class="fx-pay-none">暂无可用支付方式，请联系管理员。</p>{{end}}
     {{end}}
 
     <div class="fx-pay-foot">
-      <a href="/user/invoices" class="fx-back-link">返回财务记录</a>
+      <a href="/user/invoices" class="ui-btn ui-btn-ghost ui-btn-small">返回财务记录</a>
     </div>
   </div>
 </main>

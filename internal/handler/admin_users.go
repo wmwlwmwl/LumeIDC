@@ -19,7 +19,10 @@ func (m *AdminManage) UsersList(w http.ResponseWriter, r *http.Request) {
 	if !m.require(w, r) {
 		return
 	}
-	list, err := m.Users.ListUsers(r.Context())
+	const per = 25
+	page := pageParam(r)
+	q := r.URL.Query().Get("q")
+	list, total, err := m.Users.ListUsersPage(r.Context(), q, per, (page-1)*per)
 	if err != nil {
 		http.Error(w, "查询失败", 500)
 		return
@@ -39,7 +42,9 @@ func (m *AdminManage) UsersList(w http.ResponseWriter, r *http.Request) {
 			D: statusText, E: fmt.Sprintf("%.2f", u.Balance), F: u.CreatedAt,
 		})
 	}
-	m.renderAdmin(w, "admin_users.html", AdminData{Rows: rows})
+	pager := pagerFor(r, "/admin/users", per, total)
+	pager.Q = q
+	m.renderAdmin(w, "admin_users.html", AdminData{Rows: rows, Pager: &pager})
 }
 
 func validAdminBalanceAdjustment(raw string) bool {

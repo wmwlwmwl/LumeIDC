@@ -455,7 +455,7 @@ func (n *Notifier) MarkRead(ctx context.Context, userID int64) error {
 func (n *Notifier) List(ctx context.Context, userID int64) ([]map[string]any, error) {
 	rows, err := n.db.QueryContext(ctx,
 		`SELECT id,title,body,read,to_char(created_at,'YYYY-MM-DD HH24:MI') FROM notifications
-		 WHERE user_id=$1 ORDER BY id DESC LIMIT 50`, userID)
+		 WHERE user_id=$1 ORDER BY id DESC LIMIT 200`, userID)
 	if err != nil {
 		return nil, err
 	}

@@ -62,3 +62,31 @@ func (st *Stats) AdminOrders(ctx context.Context) ([]AdminOrderRow, error) {
 	}
 	return out, rows.Err()
 }
+
+// AdminOrdersPage 后台订单列表分页+关键词查询，并返回匹配总数。
+// q 匹配用户邮箱或订单号；空串表示不过滤。
+func (st *Stats) AdminOrdersPage(ctx context.Context, q string, limit, offset int) ([]AdminOrderRow, int64, error) {
+	where := `WHERE ($3='' OR u.email ILIKE '%'||$3||'%' OR o.id::text = $3)`
+	var total int64
+	if err := st.db.QueryRowContext(ctx,
+		`SELECT count(*) FROM orders o JOIN users u ON u.id=o.user_id `+where, q).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	rows, err := st.db.QueryContext(ctx,
+		`SELECT o.id,coalesce(u.email,''),o.amount,coalesce(i.paid_amount,0)::text,coalesce(i.fee_amount,0)::text,o.cycle,CASE o.status WHEN 0 THEN '未支付' WHEN 1 THEN '已支付' ELSE '取消' END,coalesce(o.profit,'0')
+		 FROM orders o JOIN users u ON u.id=o.user_id LEFT JOIN invoices i ON i.order_id=o.id `+where+`
+		 ORDER BY o.id DESC LIMIT $1 OFFSET $2`, limit, offset, q)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	var out []AdminOrderRow
+	for rows.Next() {
+		var r AdminOrderRow
+		if err := rows.Scan(&r.ID, &r.Email, &r.Amount, &r.Paid, &r.Fee, &r.Cycle, &r.Status, &r.Profit); err != nil {
+			return nil, 0, err
+		}
+		out = append(out, r)
+	}
+	return out, total, rows.Err()
+}

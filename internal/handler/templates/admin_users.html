@@ -1,25 +1,24 @@
 {{define "page"}}
 <div class="admin-page-header">
   <div class="admin-page-title">
-    
     <h1>用户管理</h1>
-    <p>最近 200 位注册用户</p>
+    <p>分页浏览平台注册用户</p>
   </div>
   <div class="admin-page-actions">
-    <span class="text-muted small">共 {{len .Rows}} 位用户</span>
+    {{if .Pager}}<span class="fx-count-badge">共 {{.Pager.Total}} 位用户</span>{{end}}
   </div>
 </div>
 
 <div class="admin-panel">
   <div class="admin-panel-header">
     <h2>用户列表</h2>
-    <label class="list-filter" for="filter-users">
+    <form method="get" action="/admin/users" class="list-filter" role="search">
       <span class="fx-search-icon" aria-hidden="true"></span>
-      <input id="filter-users" type="search" data-table-filter="#tblUsers" placeholder="搜索邮箱 / 姓名 / 手机号">
-    </label>
+      <input type="search" name="q" value="{{if .Pager}}{{.Pager.Q}}{{end}}" placeholder="搜索邮箱 / 姓名 / 手机号">
+    </form>
   </div>
   <div class="admin-table-wrap">
-    <table class="admin-table" id="tblUsers" data-pageable>
+    <table class="admin-table" id="tblUsers">
       <thead>
         <tr>
           <th scope="col">ID</th>
@@ -51,10 +50,20 @@
         </tr>
         {{end}}
         {{if not .Rows}}
-        <tr><td colspan="8" class="admin-table-empty">暂无用户</td></tr>
+        <tr><td colspan="99" class="admin-table-empty">暂无用户</td></tr>
         {{end}}
       </tbody>
     </table>
   </div>
+  {{if and .Pager (gt .Pager.Pages 1)}}
+  <div class="admin-pager">
+    <span class="admin-pager-info">共 {{.Pager.Total}} 条 · 第 {{.Pager.Page}} / {{.Pager.Pages}} 页</span>
+    <div class="admin-pager-nav">
+      <a class="ui-pg-btn {{if eq .Pager.Page 1}}is-disabled{{end}}" href="{{.Pager.PrevURL}}">‹ 上一页</a>
+      <span class="ui-pg-pos">{{.Pager.Page}} / {{.Pager.Pages}}</span>
+      <a class="ui-pg-btn {{if ge .Pager.Page .Pager.Pages}}is-disabled{{end}}" href="{{.Pager.NextURL}}">下一页 ›</a>
+    </div>
+  </div>
+  {{end}}
 </div>
 {{end}}

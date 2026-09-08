@@ -1,7 +1,6 @@
 {{define "page"}}
 <div class="admin-page-header">
   <div class="admin-page-title">
-    
     <h1>优惠折扣</h1>
     <p>创建和管理订单优惠规则</p>
   </div>
@@ -53,7 +52,7 @@
             </tr>
             {{end}}
             {{if not .Rows}}
-            <tr><td colspan="9" class="admin-table-empty">暂无优惠码</td></tr>
+            <tr><td colspan="99" class="admin-table-empty">暂无优惠码</td></tr>
             {{end}}
           </tbody>
         </table>
@@ -67,6 +66,7 @@
         <h2>新建优惠码</h2>
       </div>
       <div class="admin-panel-body">
+        <p class="text-muted small">创建一次性或多次使用的折扣码，供用户在结算时使用。</p>
         <form method="post" action="/admin/coupons/save" class="stack-form">
           <input type="hidden" name="_csrf" value="{{.CSRF}}">
           <label for="coupon-code">优惠码（唯一）</label>

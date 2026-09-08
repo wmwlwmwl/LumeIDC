@@ -167,10 +167,11 @@ func moduleOverviewShell(serviceID int64, csrf string, blocks []moduleBlock) str
 	sid := strconv.FormatInt(serviceID, 10)
 	sb.WriteString("<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">")
 	sb.WriteString(`<link rel="stylesheet" href="/assets/vendor/legacy-module/bootstrap-4.6.2.min.css">`)
+	sb.WriteString(`<link rel="stylesheet" href="/assets/css/lume.css">`)
 	sb.WriteString(`<script src="/assets/vendor/legacy-module/jquery-3.6.4.min.js"></script>`)
 	sb.WriteString(`<script src="/assets/vendor/legacy-module/bootstrap-4.6.2.bundle.min.js"></script>`)
 	sb.WriteString(`<script src="/assets/vendor/legacy-module/sweetalert2-11.all.min.js"></script>`)
-	sb.WriteString("<style>body{margin:0;font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;color:#1a1a1a;background:#fff}#tabs{position:sticky;top:0;background:#fff;border-bottom:1px solid #e2e8f0;padding:8px 12px;display:flex;gap:6px;flex-wrap:wrap;z-index:1050}#tabs .tab{cursor:pointer;padding:6px 14px;border:1px solid #cbd5e1;border-radius:999px;background:#fff;color:#334155;font:inherit}#tabs .tab.on{background:#0e7490;color:#fff;border-color:#0e7490}.block{display:none;padding:16px}.block.on{display:block}button,input,select,textarea{font:inherit}.modal{z-index:2000}body.swal2-shown>. swal2-container{z-index:2100!important}</style></head><body>")
+	sb.WriteString(`<style>body{margin:0;background:#f5f7fb;color:#0f1420;font:400 14px/1.6 'Inter','HarmonyOS Sans SC','MiSans','PingFang SC','Microsoft YaHei',ui-sans-serif,system-ui,'Segoe UI',sans-serif}#tabs{position:sticky;top:0;z-index:1050;display:flex;gap:6px;flex-wrap:wrap;padding:10px 14px;background:rgba(255,255,255,.92);backdrop-filter:blur(8px);border-bottom:1px solid #e4e8f0;box-shadow:0 1px 0 rgba(255,255,255,.5) inset}#tabs .tab{cursor:pointer;padding:6px 14px;border:1px solid #e4e8f0;border-radius:999px;background:#fff;color:#5b6b84;font-weight:650;font-size:12.5px;line-height:1}#tabs .tab:hover{color:#1e54d6;border-color:#b8cdf0}#tabs .tab.on{background:linear-gradient(135deg,#2f6bed,#5a5cef,#8a5cf6);color:#fff;border-color:transparent;box-shadow:0 3px 10px rgba(47,111,237,.22)}.block{display:none;max-width:1100px;margin:0 auto;padding:22px 16px}.block.on{display:block}.modal{z-index:2000}body.swal2-shown>.swal2-container{z-index:2100!important}</style></head><body class="module-body">`)
 	if len(blocks) > 1 {
 		sb.WriteString("<div id=\"tabs\">")
 		for i, b := range blocks {

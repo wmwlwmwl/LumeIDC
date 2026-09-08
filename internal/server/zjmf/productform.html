@@ -1,14 +1,14 @@
 <div id="pidSelRow">
-<label class="form-label fw-semibold" for="pidSel">上游商品（按分组）</label>
-<select id="pidSel" class="form-select">
-<option value="">— 手动输入 PID —</option>
-</select>
+  <label class="ui-label" for="pidSel">上游商品（按分组）</label>
+  <select id="pidSel" class="ui-select">
+    <option value="">— 手动输入 PID —</option>
+  </select>
 </div>
-<div style="display:flex;gap:8px;margin-top:8px" id="pullRow">
-<button type="button" id="pullBtn" style="padding:8px 14px;background:#15803d;color:#fff;border:0;border-radius:6px;cursor:pointer;white-space:nowrap">拉取配置项</button>
-<span id="pullMsg" class="muted" style="font-size:.78rem;align-self:center"></span>
+<div id="pullRow" style="display:flex;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap">
+  <button type="button" id="pullBtn" class="ui-btn ui-btn-soft is-success ui-btn-small">拉取配置项</button>
+  <span id="pullMsg" class="ui-hint"></span>
 </div>
-<p class="muted" id="pullNote" style="font-size:.76rem;color:#888;margin:6px 0 0">选择上游商品后，名称/价格/库存/配置项会自动带出（仍可手动修改）。保存后支付成功将自动向上游开通。</p>
+<p class="ui-hint" id="pullNote">选择上游商品后，名称/价格/库存/配置项会自动带出（仍可手动修改）。保存后支付成功将自动向上游开通。</p>
 <script>
 (function(){
   let loadedSid = "";
@@ -52,9 +52,9 @@
     const msg = document.getElementById("pullMsg");
     const idEl = document.querySelector('input[name="id"]');
     const idVal = idEl ? idEl.value : "";
-    if(!sid || !pid){ msg.textContent = "请先选择上游服务器并填写/选择 PID"; msg.style.color = "#b91c1c"; return; }
+    if(!sid || !pid){ msg.textContent = "请先选择上游服务器并填写/选择 PID"; msg.classList.add("is-error"); return; }
     const btn = document.getElementById("pullBtn");
-    btn.disabled = true; msg.textContent = "拉取中…"; msg.style.color = "#888";
+    btn.disabled = true; msg.textContent = "拉取中…"; msg.classList.remove("is-error");
     try {
       if(idVal){
         // 已存在产品：直接 POST 拉取并落库（配置项 + 基础价一次性写入）
@@ -73,9 +73,9 @@
             setVal("quarterly", f(j.price.quarterly));
             setVal("yearly", f(j.price.yearly));
           }
-          msg.textContent = `已拉取并保存 ${j.count} 个配置项`; msg.style.color = "#15803d";
+          msg.textContent = `已拉取并保存 ${j.count} 个配置项`;
         } else {
-          msg.textContent = j.msg || "拉取失败"; msg.style.color = "#b91c1c";
+          msg.textContent = j.msg || "拉取失败"; msg.classList.add("is-error");
         }
       } else {
         const r = await fetch(`/admin/products/upstream-config?server_id=${sid}&pid=${pid}`);
@@ -91,12 +91,12 @@
           }
           if(j.description) setVal("description", j.description);
           if(j.stock != null) setVal("stock", j.stock < 0 ? "-1" : j.stock);
-          msg.textContent = `已拉取 ${j.count} 个配置项`; msg.style.color = "#15803d";
+          msg.textContent = `已拉取 ${j.count} 个配置项`;
         } else {
-          msg.textContent = j.msg || "拉取失败"; msg.style.color = "#b91c1c";
+          msg.textContent = j.msg || "拉取失败"; msg.classList.add("is-error");
         }
       }
-    } catch(e){ msg.textContent = "请求失败"; msg.style.color = "#b91c1c"; }
+    } catch(e){ msg.textContent = "请求失败"; msg.classList.add("is-error"); }
     btn.disabled = false;
   }
   function init(){

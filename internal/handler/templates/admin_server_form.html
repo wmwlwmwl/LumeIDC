@@ -1,7 +1,6 @@
 {{define "page"}}
 <div class="admin-page-header">
   <div class="admin-page-title">
-    
     <h1>{{if .Product}}编辑服务器{{else}}添加服务器{{end}}</h1>
     <p>配置供应商连接、状态与默认利润</p>
   </div>
@@ -15,24 +14,29 @@
 <form method="post" action="{{if .Product}}/admin/servers/{{.Product.ID}}/save{{else}}/admin/servers/save{{end}}" class="admin-panel admin-form-narrow">
   <input type="hidden" name="_csrf" value="{{.CSRF}}">
   <div class="admin-panel-body">
-    <label for="server-name">服务器名称</label>
-    <input id="server-name" name="name" value="{{with .Product}}{{.Name}}{{end}}" placeholder="如 ZJMF 主节点" required>
+    <div class="admin-form-section">
+      <h3>连接配置</h3>
+      <label for="server-name">服务器名称</label>
+      <input id="server-name" name="name" value="{{with .Product}}{{.Name}}{{end}}" placeholder="如 ZJMF 主节点" required>
 
-    <label for="providerSel">上游类型</label>
-    <select name="provider" id="providerSel" onchange="renderCredFields()">
-      {{$cur := "zjmf"}}{{with .Product}}{{$cur = .Provider}}{{end}}
-      {{range .Providers}}
-      <option value="{{.Code}}" {{if eq .Code $cur}}selected{{end}}>{{.Name}}</option>
-      {{end}}
-    </select>
+      <label for="providerSel">上游类型</label>
+      <select name="provider" id="providerSel" onchange="renderCredFields()">
+        {{$cur := "zjmf"}}{{with .Product}}{{$cur = .Provider}}{{end}}
+        {{range .Providers}}
+        <option value="{{.Code}}" {{if eq .Code $cur}}selected{{end}}>{{.Name}}</option>
+        {{end}}
+      </select>
 
-    <div id="credFields" class="admin-cred-fields"></div>
+      <div id="credFields" class="admin-cred-fields"></div>
+    </div>
 
-    <label for="server-disabled">运行状态</label>
-    <select name="disabled" id="server-disabled">
-      <option value="0">启用</option>
-      <option value="1" {{if and .Product .Product.Disabled}}selected{{end}}>停用</option>
-    </select>
+    <div class="admin-form-section">
+      <h3>运行状态</h3>
+      <select name="disabled" id="server-disabled" aria-label="运行状态">
+        <option value="0">启用</option>
+        <option value="1" {{if and .Product .Product.Disabled}}selected{{end}}>停用</option>
+      </select>
+    </div>
 
     <div class="admin-form-section">
       <h3>默认利润</h3>

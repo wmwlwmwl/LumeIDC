@@ -93,6 +93,10 @@
     });
   });
   var replaced = {{if .UpdatePending}}true{{else}}false{{end}}; // 二进制已替换，待重启（切页回来由后端状态恢复入口）
+  function ask(msg) {
+    if (window.LumeUI && window.LumeUI.confirm) return LumeUI.confirm({ message: msg });
+    return Promise.resolve(window.confirm(msg));
+  }
   if (replaced) {
     applyBtn.textContent = '立即重启';
     applyBtn.disabled = false; // 模板默认禁用按钮，待重启状态必须显式启用
@@ -125,20 +129,20 @@
       }
     });
   }
-  applyBtn.addEventListener('click', function () {
+  applyBtn.addEventListener('click', async function () {
     var cur = currentEl ? currentEl.textContent.trim() : '';
     if (replaced) { doRestart(); return; }
-    if (!confirm('确认将当前版本 ' + cur + ' 更新为最新版本？替换完成后可选择立即重启生效。')) return;
+    if (!(await ask('确认将当前版本 ' + cur + ' 更新为最新版本？替换完成后可选择立即重启生效。'))) return;
     applyBtn.disabled = true;
     setStatus('正在下载并校验安装包，请稍候…', true);
-    post('/admin/update/apply', function (j) {
+    post('/admin/update/apply', async function (j) {
       if (!j || !j.ok) {
         applyBtn.disabled = false;
         setStatus((j && j.msg) || '更新失败', false);
         return;
       }
       // 二进制已替换，询问是否立即就地重启生效。
-      if (!confirm('二进制已替换成功。是否立即重启生效？\n\n点「确定」立即重启（重启后需重新登录后台）；点「取消」稍后在后台点「立即重启」。')) {
+      if (!(await ask('二进制已替换成功。是否立即重启生效？\n\n点「确定」立即重启（重启后需重新登录后台）；点「取消」稍后在后台点「立即重启」。'))) {
         // 稍后重启：保留按钮入口（点击直接触发重启），避免只能到外部重启。
         replaced = true;
         applyBtn.textContent = '立即重启';

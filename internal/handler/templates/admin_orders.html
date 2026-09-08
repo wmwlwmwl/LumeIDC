@@ -1,11 +1,11 @@
 {{define "page"}}
 <div class="admin-page-header">
   <div class="admin-page-title">
-    
     <h1>订单管理</h1>
-    <p>查看最近 50 条订单与退款操作</p>
+    <p>分页浏览订单记录与退款操作</p>
   </div>
   <div class="admin-page-actions">
+    {{if .Pager}}<span class="fx-count-badge">共 {{.Pager.Total}} 单</span>{{end}}
     <a href="/admin/refunds" class="admin-fwd-btn">查看退款记录</a>
   </div>
 </div>
@@ -15,13 +15,13 @@
 <div class="admin-panel">
   <div class="admin-panel-header">
     <h2>订单列表</h2>
-    <label class="list-filter" for="filter-orders">
+    <form method="get" action="/admin/orders" class="list-filter" role="search">
       <span class="fx-search-icon" aria-hidden="true"></span>
-      <input id="filter-orders" type="search" data-table-filter="#tblOrders" placeholder="搜索用户 / 状态 / 周期">
-    </label>
+      <input type="search" name="q" value="{{if .Pager}}{{.Pager.Q}}{{end}}" placeholder="搜索邮箱 / 订单号">
+    </form>
   </div>
   <div class="admin-table-wrap">
-    <table class="admin-table" id="tblOrders" data-pageable>
+    <table class="admin-table" id="tblOrders">
       <thead>
         <tr>
           <th scope="col">ID</th>
@@ -74,8 +74,19 @@
         {{end}}
       </tbody>
     </table>
+  </div>
+  {{if and .Pager (gt .Pager.Pages 1)}}
+  <div class="admin-pager">
+    <span class="admin-pager-info">共 {{.Pager.Total}} 条 · 第 {{.Pager.Page}} / {{.Pager.Pages}} 页</span>
+    <div class="admin-pager-nav">
+      <a class="ui-pg-btn {{if eq .Pager.Page 1}}is-disabled{{end}}" href="{{.Pager.PrevURL}}">‹ 上一页</a>
+      <span class="ui-pg-pos">{{.Pager.Page}} / {{.Pager.Pages}}</span>
+      <a class="ui-pg-btn {{if ge .Pager.Page .Pager.Pages}}is-disabled{{end}}" href="{{.Pager.NextURL}}">下一页 ›</a>
+    </div>
+  </div>
+  {{end}}
   <div class="admin-panel-footer">
-    <span class="admin-total-badge">总毛利 <strong>￥{{.TotalProfit}}</strong></span>
+    <span class="admin-total-badge">本页毛利 <strong>￥{{.TotalProfit}}</strong></span>
     <a href="/admin/refunds" class="admin-fwd-btn">查看退款记录</a>
   </div>
 </div>

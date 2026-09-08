@@ -228,7 +228,7 @@
         }
       }
     }
-    const sendCodeButton = dynamicCode ? dynamicCode.querySelector('button[onclick*="requestRegisterCode"]') : null
+    const sendCodeButton = dynamicCode ? dynamicCode.querySelector('button[data-register-code-button]') : null
     if (sendCodeButton) enforceResendCooldown(sendCodeButton)
     const directLocal = form.querySelector('[data-register-direct-captcha]')
     if (directLocal) {
@@ -260,6 +260,11 @@
     })
   }
 
+  function notify(msg, kind) {
+    if (window.LumeUI && typeof window.LumeUI.toast === 'function') LumeUI.toast(msg, kind)
+    else window.alert(msg)
+  }
+
   async function requestRegisterCode(button) {
     if (button.disabled) return
     const form = button.closest('form')
@@ -271,7 +276,7 @@
     try {
       const response = await fetch('/auth/register-code', { method: 'POST', body: data, credentials: 'same-origin' })
       ok = response.status === 202
-      alert(await response.text())
+      notify(await response.text(), ok ? 'success' : 'error')
       clearExternal(form)
       form.dataset.externalCaptchaReady = '0'
       resetExternalCaptcha(form)
@@ -288,7 +293,7 @@
     form.addEventListener('submit', event => {
       if (!ready(form)) {
         event.preventDefault()
-        alert('请先完成外部人机验证')
+        notify('请先完成外部人机验证', 'error')
       }
     })
   }

@@ -1,14 +1,82 @@
 {{define "page"}}
-<div class="admin-page-header"><div class="admin-page-title"><h1>实名申请详情</h1><p>审核完成后不可重复处理。</p></div><div class="admin-page-actions"><a href="/admin/verifications" class="admin-back-btn">返回审核列表</a></div></div>
+<div class="admin-page-header">
+  <div class="admin-page-title">
+    <h1>实名申请详情</h1>
+    <p>审核完成后不可重复处理。</p>
+  </div>
+  <div class="admin-page-actions">
+    <a href="/admin/verifications" class="admin-back-btn">返回审核列表</a>
+  </div>
+</div>
+
 {{if .Error}}<div class="ui-alert ui-alert-error" role="alert">{{.Error}}</div>{{end}}
 {{if .Msg}}<div class="ui-alert ui-alert-success" role="status">{{.Msg}}</div>{{end}}
-<div class="admin-types-layout"><section class="admin-types-main"><div class="admin-panel"><div class="admin-panel-header"><h2>申请资料</h2></div><div class="admin-panel-body">
-<div class="admin-info-grid"><div class="admin-info-item"><span>用户邮箱</span><strong>{{index .ServersList "Email"}}</strong></div><div class="admin-info-item"><span>手机号</span><strong>{{index .ServersList "Phone"}}</strong></div><div class="admin-info-item"><span>状态</span><strong>{{index .ServersList "Status"}}</strong></div><div class="admin-info-item"><span>提交时间</span><strong>{{index .ServersList "SubmittedAt"}}</strong></div><div class="admin-info-item"><span>法定姓名</span><strong>{{index .ServersList "Name"}}</strong></div><div class="admin-info-item"><span>证件号</span><strong>{{index .ServersList "IdentityNumber"}}</strong></div></div>
-{{if index .ServersList "FrontURL"}}<div class="admin-form-section"><h3>身份证照片</h3><p><a href="{{index .ServersList "FrontURL"}}" target="_blank" rel="noopener">查看正面照片</a>　<a href="{{index .ServersList "BackURL"}}" target="_blank" rel="noopener">查看背面照片</a></p></div>{{end}}
-{{if index .ServersList "Reason"}}<div class="ui-alert ui-alert-error" role="alert">历史拒绝原因：{{index .ServersList "Reason"}}</div>{{end}}
-{{if eq (index .ServersList "RawStatus") "pending"}}
-<div class="admin-form-actions"><form method="post" action="/admin/verifications/{{index .ServersList "ID"}}/approve"><input type="hidden" name="_csrf" value="{{.CSRF}}"><button class="ui-btn" type="submit">审核通过</button></form></div>
-<form method="post" action="/admin/verifications/{{index .ServersList "ID"}}/reject" class="fx-stack-form"><input type="hidden" name="_csrf" value="{{.CSRF}}"><label for="reject-reason">拒绝原因</label><textarea id="reject-reason" name="reason" maxlength="255" required></textarea><button class="ui-btn" type="submit">拒绝申请</button></form>
-{{end}}
-</div></div></section></div>
+
+<div class="admin-panel">
+  <div class="admin-panel-header">
+    <h2>申请资料</h2>
+  </div>
+  <div class="admin-panel-body">
+    <div class="admin-info-grid">
+      <div class="admin-info-item">
+        <span>用户邮箱</span>
+        <strong>{{index .ServersList "Email"}}</strong>
+      </div>
+      <div class="admin-info-item">
+        <span>手机号</span>
+        <strong>{{index .ServersList "Phone"}}</strong>
+      </div>
+      <div class="admin-info-item">
+        <span>状态</span>
+        <strong>{{index .ServersList "Status"}}</strong>
+      </div>
+      <div class="admin-info-item">
+        <span>提交时间</span>
+        <strong>{{index .ServersList "SubmittedAt"}}</strong>
+      </div>
+      <div class="admin-info-item">
+        <span>法定姓名</span>
+        <strong>{{index .ServersList "Name"}}</strong>
+      </div>
+      <div class="admin-info-item">
+        <span>证件号</span>
+        <strong>{{index .ServersList "IdentityNumber"}}</strong>
+      </div>
+    </div>
+
+    {{if index .ServersList "FrontURL"}}
+    <div class="admin-form-section">
+      <h3>身份证照片</h3>
+      <p>
+        <a class="ui-btn ui-btn-small ui-btn-secondary" href="{{index .ServersList "FrontURL"}}" target="_blank" rel="noopener">查看正面照片</a>
+        <a class="ui-btn ui-btn-small ui-btn-secondary" href="{{index .ServersList "BackURL"}}" target="_blank" rel="noopener">查看背面照片</a>
+      </p>
+    </div>
+    {{end}}
+
+    {{if index .ServersList "Reason"}}
+    <div class="ui-alert ui-alert-error" role="alert">历史拒绝原因：{{index .ServersList "Reason"}}</div>
+    {{end}}
+
+    {{if eq (index .ServersList "RawStatus") "pending"}}
+    <div class="admin-form-actions">
+      <form method="post" action="/admin/verifications/{{index .ServersList "ID"}}/approve" class="inline-form">
+        <input type="hidden" name="_csrf" value="{{.CSRF}}">
+        <button class="ui-btn" type="submit">审核通过</button>
+      </form>
+    </div>
+
+    <div class="admin-form-section">
+      <h3>拒绝申请</h3>
+      <p class="text-muted small">拒绝原因会展示给用户，请如实填写。</p>
+      <form method="post" action="/admin/verifications/{{index .ServersList "ID"}}/reject" class="stack-form">
+        <input type="hidden" name="_csrf" value="{{.CSRF}}">
+        <label for="reject-reason">拒绝原因</label>
+        <textarea id="reject-reason" name="reason" maxlength="255" required></textarea>
+        <button class="ui-btn ui-btn-danger" type="submit">拒绝申请</button>
+      </form>
+    </div>
+    {{end}}
+  </div>
+</div>
 {{end}}

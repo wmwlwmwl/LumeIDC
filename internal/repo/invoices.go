@@ -88,7 +88,7 @@ func (iv *Invoices) MockByNoUser(ctx context.Context, no string, userID int64, l
 // ListByUser 用户端账单列表（最近 100 条，created_at 已格式化）。
 func (iv *Invoices) ListByUser(ctx context.Context, userID int64) ([]InvoiceRow, error) {
 	rows, err := iv.db.QueryContext(ctx,
-		`SELECT id,no,amount,coalesce(paid_amount,0),coalesce(fee_amount,0),kind,status,to_char(created_at,'YYYY-MM-DD HH24:MI') FROM invoices WHERE user_id=$1 ORDER BY id DESC LIMIT 100`,
+		`SELECT id,no,amount,coalesce(paid_amount,0),coalesce(fee_amount,0),kind,status,to_char(created_at,'YYYY-MM-DD HH24:MI') FROM invoices WHERE user_id=$1 ORDER BY id DESC LIMIT 500`,
 		userID)
 	if err != nil {
 		return nil, err

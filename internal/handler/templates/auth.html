@@ -8,51 +8,159 @@
 {{if .SiteKeywords}}<meta name="keywords" content="{{.SiteKeywords}}">{{end}}
 <link rel="stylesheet" href="/assets/vendor/bootstrap-5.3.3/css/bootstrap.min.css">
 <link rel="stylesheet" href="/assets/css/lume.css">
+<script src="/assets/js/lume.js" defer></script>
 </head>
 <body class="site-body">
 <a class="ui-skip" href="#auth-main">跳到主要内容</a>
 <main class="auth-layout" id="auth-main">
-<section class="auth-visual"><a class="brand" href="/"><span class="brand-mark">{{.SiteMark}}</span><span>{{.SiteName}}</span></a><div class="auth-visual-copy"><h1>稳定的基础设施，<br>从一个账户开始。</h1><p>集中管理你的云服务、订单和资源。</p></div><small class="auth-visual-foot">© {{.SiteName}} · Cloud made simple</small></section>
-<section class="auth-panel"><div class="auth-box"><a class="auth-mobile-brand brand" href="/"><span class="brand-mark">{{.SiteMark}}</span><span>{{.SiteName}}</span></a><div class="auth-box-heading">
-{{if .Error}}<div class="ui-alert ui-alert-error" role="alert">{{.Error}}</div>{{end}}
+  <section class="auth-visual">
+    <a class="brand" href="/"><span class="brand-mark">{{.SiteMark}}</span><span>{{.SiteName}}</span></a>
+    <div class="auth-visual-copy">
+      <h1>稳定的基础设施，<br>从一个账户开始。</h1>
+      <p>集中管理你的云服务、订单和资源。</p>
+    </div>
+    <small class="auth-visual-foot">© {{.SiteName}} · Cloud made simple</small>
+  </section>
+  <section class="auth-panel">
+    <div class="auth-box">
+      <a class="auth-mobile-brand brand" href="/"><span class="brand-mark">{{.SiteMark}}</span><span>{{.SiteName}}</span></a>
+      <div class="auth-box-heading">
+        {{if .Error}}<div class="ui-alert ui-alert-error" role="alert">{{.Error}}</div>{{end}}
 
-{{if .IsAdmin}}
-<h2>管理员登录</h2><form method="post" action="{{.AdminPath}}/login"><input type="hidden" name="_csrf" value="{{.CSRF}}"><label for="admin-user">用户名</label><input class="form-control" id="admin-user" name="email" required autocomplete="username"><label for="admin-password">密码</label><input class="form-control" id="admin-password" name="password" type="password" required autocomplete="current-password"><label for="auth-totp">两步验证码（如已启用）</label><input class="form-control" id="auth-totp" name="totp" inputmode="numeric" autocomplete="one-time-code">{{if .CaptchaAdminLoginEnabled}}{{template "local-captcha" (print "admin_login")}}{{end}}<button class="ui-btn" type="submit">登录</button></form>
+        {{if .IsAdmin}}
+        <h2>管理员登录</h2>
+        <form method="post" action="{{.AdminPath}}/login">
+          <input type="hidden" name="_csrf" value="{{.CSRF}}">
+          <label for="admin-user">用户名</label>
+          <input class="ui-input" id="admin-user" name="email" required autocomplete="username">
+          <label for="admin-password">密码</label>
+          <input class="ui-input" id="admin-password" name="password" type="password" required autocomplete="current-password">
+          <label for="auth-totp">两步验证码（如已启用）</label>
+          <input class="ui-input" id="auth-totp" name="totp" inputmode="numeric" autocomplete="one-time-code">
+          {{if .CaptchaAdminLoginEnabled}}{{template "local-captcha" (print "admin_login")}}{{end}}
+          <button class="ui-btn" type="submit">登录</button>
+        </form>
 
-{{else if .IsRegister}}
-{{if and .RegistrationShowAllMethods .EmailRegistrationEnabled .PhoneRegistrationEnabled}}
-<h2>邮箱注册</h2>
-<form method="post" action="/register" id="emailRegisterForm"><input type="hidden" name="_csrf" value="{{.CSRF}}"><input type="hidden" name="mode" value="email"><label for="email-register-email">邮箱</label><input class="form-control" id="email-register-email" name="email" type="email" required autocomplete="email"><label for="email-register-name">显示名称</label><input class="form-control" id="email-register-name" name="name"><label for="email-register-password">密码</label><input class="form-control" id="email-register-password" name="password" type="password" minlength="8" required autocomplete="new-password"><label for="email-register-confirm">确认密码</label><input class="form-control" id="email-register-confirm" name="password_confirm" type="password" minlength="8" required autocomplete="new-password">{{if .EmailVerificationRequired}}{{template "register-code" (print "email_code")}}{{else}}{{if .EmailExternalCaptcha}}{{template "external-captcha" (print "register")}}{{end}}{{if .EmailDirectCaptchaEnabled}}{{template "local-captcha" (print "register")}}{{end}}{{end}}<button class="ui-btn" type="submit">邮箱注册</button></form>
-<hr>
-<h2>手机号注册</h2>
-<form method="post" action="/register" id="phoneRegisterForm"><input type="hidden" name="_csrf" value="{{.CSRF}}"><input type="hidden" name="mode" value="phone"><label for="phone-register-phone">手机号</label><input class="form-control" id="phone-register-phone" name="phone" type="tel" required autocomplete="tel"><label for="phone-register-name">显示名称</label><input class="form-control" id="phone-register-name" name="name"><label for="phone-register-password">密码</label><input class="form-control" id="phone-register-password" name="password" type="password" minlength="8" required autocomplete="new-password"><label for="phone-register-confirm">确认密码</label><input class="form-control" id="phone-register-confirm" name="password_confirm" type="password" minlength="8" required autocomplete="new-password">{{if .PhoneVerificationRequired}}{{template "register-code" (print "phone_code")}}{{else}}{{if .PhoneExternalCaptcha}}{{template "external-captcha" (print "register")}}{{end}}{{if .PhoneDirectCaptchaEnabled}}{{template "local-captcha" (print "register")}}{{end}}{{end}}<button class="ui-btn" type="submit">手机号注册</button></form>
-{{else}}
-<h2>创建账户</h2>
-<form method="post" action="/register" id="registerForm"><input type="hidden" name="_csrf" value="{{.CSRF}}">
-{{if and .EmailRegistrationEnabled .PhoneRegistrationEnabled}}<label for="register-mode">注册方式</label><select class="form-control" id="register-mode" name="mode" onchange="toggleRegisterMode()"><option value="email">邮箱注册</option><option value="phone">手机号注册</option></select>{{else if .PhoneRegistrationEnabled}}<input type="hidden" name="mode" value="phone">{{else}}<input type="hidden" name="mode" value="email">{{end}}
-<div id="register-email-box" {{if and (not .EmailRegistrationEnabled) .PhoneRegistrationEnabled}}style="display:none"{{end}}><label for="register-email">邮箱</label><input class="form-control" id="register-email" name="email" type="email" {{if .EmailRegistrationEnabled}}required{{end}} autocomplete="email"></div>
-<div id="register-phone-box" {{if .EmailRegistrationEnabled}}style="display:none"{{end}}><label for="register-phone">手机号</label><input class="form-control" id="register-phone" name="phone" type="tel" {{if and (not .EmailRegistrationEnabled) .PhoneRegistrationEnabled}}required{{end}} autocomplete="tel"></div>
-<label for="register-name">显示名称</label><input class="form-control" id="register-name" name="name"><label for="register-password">密码</label><input class="form-control" id="register-password" name="password" type="password" minlength="8" required autocomplete="new-password"><label for="register-confirm">确认密码</label><input class="form-control" id="register-confirm" name="password_confirm" type="password" minlength="8" required autocomplete="new-password">
-<span id="register-policy" data-email-verification="{{.EmailVerificationRequired}}" data-phone-verification="{{.PhoneVerificationRequired}}" hidden></span>
-{{if or .EmailVerificationRequired .PhoneVerificationRequired}}<div id="register-code-box">{{template "register-code" (print "dynamic")}}</div>{{if .ExternalRegisterCaptcha}}<div id="register-external-captcha" data-external-dynamic data-email-verification="{{.EmailVerificationRequired}}" data-phone-verification="{{.PhoneVerificationRequired}}">{{template "external-captcha" (print "register")}}</div>{{end}}{{if .CaptchaRegisterEnabled}}<div id="register-direct-local" data-register-direct-captcha>{{template "local-captcha" (print "register")}}</div>{{end}}{{else}}{{if .ExternalRegisterCaptcha}}{{template "external-captcha" (print "register")}}{{end}}{{if .CaptchaRegisterEnabled}}{{template "local-captcha" (print "register")}}{{end}}{{end}}
-<button class="ui-btn" type="submit">注册</button></form>
-{{end}}
-<p>已有账号？<a href="/login">立即登录</a></p>
+        {{else if .IsRegister}}
+          {{if and .RegistrationShowAllMethods .EmailRegistrationEnabled .PhoneRegistrationEnabled}}
+          <h2>邮箱注册</h2>
+          <form method="post" action="/register" id="emailRegisterForm">
+            <input type="hidden" name="_csrf" value="{{.CSRF}}">
+            <input type="hidden" name="mode" value="email">
+            <label for="email-register-email">邮箱</label>
+            <input class="ui-input" id="email-register-email" name="email" type="email" required autocomplete="email">
+            <label for="email-register-name">显示名称</label>
+            <input class="ui-input" id="email-register-name" name="name">
+            <label for="email-register-password">密码</label>
+            <input class="ui-input" id="email-register-password" name="password" type="password" minlength="8" required autocomplete="new-password">
+            <label for="email-register-confirm">确认密码</label>
+            <input class="ui-input" id="email-register-confirm" name="password_confirm" type="password" minlength="8" required autocomplete="new-password">
+            {{if .EmailVerificationRequired}}{{template "register-code" (print "email_code")}}{{else}}{{if .EmailExternalCaptcha}}{{template "external-captcha" (print "register")}}{{end}}{{if .EmailDirectCaptchaEnabled}}{{template "local-captcha" (print "register")}}{{end}}{{end}}
+            <button class="ui-btn" type="submit">邮箱注册</button>
+          </form>
+          <div class="auth-divider"><span>或</span></div>
+          <h2>手机号注册</h2>
+          <form method="post" action="/register" id="phoneRegisterForm">
+            <input type="hidden" name="_csrf" value="{{.CSRF}}">
+            <input type="hidden" name="mode" value="phone">
+            <label for="phone-register-phone">手机号</label>
+            <input class="ui-input" id="phone-register-phone" name="phone" type="tel" required autocomplete="tel">
+            <label for="phone-register-name">显示名称</label>
+            <input class="ui-input" id="phone-register-name" name="name">
+            <label for="phone-register-password">密码</label>
+            <input class="ui-input" id="phone-register-password" name="password" type="password" minlength="8" required autocomplete="new-password">
+            <label for="phone-register-confirm">确认密码</label>
+            <input class="ui-input" id="phone-register-confirm" name="password_confirm" type="password" minlength="8" required autocomplete="new-password">
+            {{if .PhoneVerificationRequired}}{{template "register-code" (print "phone_code")}}{{else}}{{if .PhoneExternalCaptcha}}{{template "external-captcha" (print "register")}}{{end}}{{if .PhoneDirectCaptchaEnabled}}{{template "local-captcha" (print "register")}}{{end}}{{end}}
+            <button class="ui-btn" type="submit">手机号注册</button>
+          </form>
+          {{else}}
+          <h2>创建账户</h2>
+          <form method="post" action="/register" id="registerForm">
+            <input type="hidden" name="_csrf" value="{{.CSRF}}">
+            {{if and .EmailRegistrationEnabled .PhoneRegistrationEnabled}}
+            <label for="register-mode">注册方式</label>
+            <select class="ui-select" id="register-mode" name="mode">
+              <option value="email">邮箱注册</option>
+              <option value="phone">手机号注册</option>
+            </select>
+            {{else if .PhoneRegistrationEnabled}}<input type="hidden" name="mode" value="phone">{{else}}<input type="hidden" name="mode" value="email">{{end}}
+            <div id="register-email-box" {{if and (not .EmailRegistrationEnabled) .PhoneRegistrationEnabled}}style="display:none"{{end}}>
+              <label for="register-email">邮箱</label>
+              <input class="ui-input" id="register-email" name="email" type="email" {{if .EmailRegistrationEnabled}}required{{end}} autocomplete="email">
+            </div>
+            <div id="register-phone-box" {{if .EmailRegistrationEnabled}}style="display:none"{{end}}>
+              <label for="register-phone">手机号</label>
+              <input class="ui-input" id="register-phone" name="phone" type="tel" {{if and (not .EmailRegistrationEnabled) .PhoneRegistrationEnabled}}required{{end}} autocomplete="tel">
+            </div>
+            <label for="register-name">显示名称</label>
+            <input class="ui-input" id="register-name" name="name">
+            <label for="register-password">密码</label>
+            <input class="ui-input" id="register-password" name="password" type="password" minlength="8" required autocomplete="new-password">
+            <label for="register-confirm">确认密码</label>
+            <input class="ui-input" id="register-confirm" name="password_confirm" type="password" minlength="8" required autocomplete="new-password">
+            <span id="register-policy" data-email-verification="{{.EmailVerificationRequired}}" data-phone-verification="{{.PhoneVerificationRequired}}" hidden></span>
+            {{if or .EmailVerificationRequired .PhoneVerificationRequired}}
+              <div id="register-code-box">{{template "register-code" (print "dynamic")}}</div>
+              {{if .ExternalRegisterCaptcha}}<div id="register-external-captcha" data-external-dynamic data-email-verification="{{.EmailVerificationRequired}}" data-phone-verification="{{.PhoneVerificationRequired}}">{{template "external-captcha" (print "register")}}</div>{{end}}
+              {{if .CaptchaRegisterEnabled}}<div id="register-direct-local" data-register-direct-captcha>{{template "local-captcha" (print "register")}}</div>{{end}}
+            {{else}}
+              {{if .ExternalRegisterCaptcha}}{{template "external-captcha" (print "register")}}{{end}}
+              {{if .CaptchaRegisterEnabled}}{{template "local-captcha" (print "register")}}{{end}}
+            {{end}}
+            <button class="ui-btn" type="submit">注册</button>
+          </form>
+          {{end}}
+          <p>已有账号？<a href="/login">立即登录</a></p>
 
-{{else}}
-<h2>登录账户</h2>
-<form method="post" action="/login"><input type="hidden" name="_csrf" value="{{.CSRF}}"><input type="hidden" name="next" value="{{.Next}}"><label for="auth-account">邮箱或手机号</label><input class="form-control" id="auth-account" name="email" required autocomplete="username"><label for="auth-password">密码</label><input class="form-control" id="auth-password" name="password" type="password" required autocomplete="current-password">{{if .ExternalLoginCaptcha}}{{template "external-captcha" (print "login")}}{{end}}{{if .CaptchaLoginEnabled}}{{template "local-captcha" (print "login")}}{{end}}<button class="ui-btn" type="submit">登录</button></form>
-{{if .PhoneOTPLoginEnabled}}<p class="auth-sub">已绑定手机号？可使用短信验证码登录：</p><form method="post" action="/auth/phone-code"><input type="hidden" name="_csrf" value="{{.CSRF}}"><label for="auth-phone-code">手机号</label><input class="form-control" id="auth-phone-code" name="phone" type="tel" required autocomplete="tel">{{if .ExternalPhoneLoginCaptcha}}{{template "external-captcha" (print "phone_login_code")}}{{end}}{{if .CaptchaPhoneCodeEnabled}}{{template "code-captcha" (print "phone_code")}}{{end}}<button class="ui-btn ui-btn-secondary" type="submit">发送登录验证码</button></form><form method="post" action="/auth/login-by-code"><input type="hidden" name="_csrf" value="{{.CSRF}}"><input type="hidden" name="next" value="{{.Next}}"><label for="auth-login-phone">手机号</label><input class="form-control" id="auth-login-phone" name="phone" type="tel" required autocomplete="tel"><label for="auth-login-code">短信验证码</label><input class="form-control" id="auth-login-code" name="code" inputmode="numeric" minlength="6" maxlength="6" required autocomplete="one-time-code"><button class="ui-btn ui-btn-secondary" type="submit">验证码登录</button></form>{{end}}
-<p>还没有账号？<a href="/register">免费注册</a></p>
-{{end}}
-{{if or .ServiceEmail .ServicePhone .ServiceHours}}
-<p class="auth-sub auth-contact">需要帮助？{{if .ServiceEmail}}<a href="mailto:{{.ServiceEmail}}">{{.ServiceEmail}}</a>{{end}}{{if .ServicePhone}}<a href="tel:{{.ServicePhone}}">{{.ServicePhone}}</a>{{end}}{{if .ServiceHours}} · 工作时间：{{.ServiceHours}}{{end}}</p>
-{{end}}
-</div></div></section></main>
+        {{else}}
+        <h2>登录账户</h2>
+        <form method="post" action="/login">
+          <input type="hidden" name="_csrf" value="{{.CSRF}}">
+          <input type="hidden" name="next" value="{{.Next}}">
+          <label for="auth-account">邮箱或手机号</label>
+          <input class="ui-input" id="auth-account" name="email" required autocomplete="username">
+          <label for="auth-password">密码</label>
+          <input class="ui-input" id="auth-password" name="password" type="password" required autocomplete="current-password">
+          {{if .ExternalLoginCaptcha}}{{template "external-captcha" (print "login")}}{{end}}
+          {{if .CaptchaLoginEnabled}}{{template "local-captcha" (print "login")}}{{end}}
+          <button class="ui-btn" type="submit">登录</button>
+        </form>
+        {{if .PhoneOTPLoginEnabled}}
+        <p class="auth-sub">已绑定手机号？可使用短信验证码登录：</p>
+        <form method="post" action="/auth/phone-code">
+          <input type="hidden" name="_csrf" value="{{.CSRF}}">
+          <label for="auth-phone-code">手机号</label>
+          <input class="ui-input" id="auth-phone-code" name="phone" type="tel" required autocomplete="tel">
+          {{if .ExternalPhoneLoginCaptcha}}{{template "external-captcha" (print "phone_login_code")}}{{end}}
+          {{if .CaptchaPhoneCodeEnabled}}{{template "code-captcha" (print "phone_code")}}{{end}}
+          <button class="ui-btn ui-btn-secondary" type="submit">发送登录验证码</button>
+        </form>
+        <form method="post" action="/auth/login-by-code">
+          <input type="hidden" name="_csrf" value="{{.CSRF}}">
+          <input type="hidden" name="next" value="{{.Next}}">
+          <label for="auth-login-phone">手机号</label>
+          <input class="ui-input" id="auth-login-phone" name="phone" type="tel" required autocomplete="tel">
+          <label for="auth-login-code">短信验证码</label>
+          <input class="ui-input" id="auth-login-code" name="code" inputmode="numeric" minlength="6" maxlength="6" required autocomplete="one-time-code">
+          <button class="ui-btn ui-btn-secondary" type="submit">验证码登录</button>
+        </form>
+        {{end}}
+        <p>还没有账号？<a href="/register">免费注册</a></p>
+        {{end}}
 
-{{define "local-captcha"}}<div class="local-captcha" data-captcha-scene="{{.}}"><div class="d-flex align-items-center gap-2"><img data-captcha-image alt="图形验证码" width="150" height="48"><button type="button" class="ui-btn ui-btn-secondary ui-btn-small" data-captcha-refresh>换一张</button></div><input type="hidden" name="captcha_id" data-captcha-id><label>图形验证码</label><input class="form-control" name="captcha_answer" data-captcha-answer required autocomplete="off" maxlength="5"></div>{{end}}
-{{define "code-captcha"}}<div class="local-captcha" data-captcha-scene="{{.}}"><div class="d-flex align-items-center gap-2"><img data-captcha-image alt="图形验证码" width="150" height="48"><button type="button" class="ui-btn ui-btn-secondary ui-btn-small" data-captcha-refresh>换一张</button></div><input type="hidden" name="captcha_id_code" data-captcha-id><label>图形验证码</label><input class="form-control" name="captcha_answer_code" data-captcha-answer required maxlength="5"></div>{{end}}
+        {{if or .ServiceEmail .ServicePhone .ServiceHours}}
+        <p class="auth-sub auth-contact">需要帮助？{{if .ServiceEmail}}<a href="mailto:{{.ServiceEmail}}">{{.ServiceEmail}}</a>{{end}}{{if .ServicePhone}}<a href="tel:{{.ServicePhone}}">{{.ServicePhone}}</a>{{end}}{{if .ServiceHours}} · 工作时间：{{.ServiceHours}}{{end}}</p>
+        {{end}}
+      </div>
+    </div>
+  </section>
+</main>
+
+{{define "local-captcha"}}<div class="local-captcha" data-captcha-scene="{{.}}"><div class="ui-inline"><img data-captcha-image alt="图形验证码" width="150" height="48"><button type="button" class="ui-btn ui-btn-secondary ui-btn-small" data-captcha-refresh>换一张</button></div><input type="hidden" name="captcha_id" data-captcha-id><label>图形验证码</label><input class="ui-input" name="captcha_answer" data-captcha-answer required autocomplete="off" maxlength="5"></div>{{end}}
+{{define "code-captcha"}}<div class="local-captcha" data-captcha-scene="{{.}}"><div class="ui-inline"><img data-captcha-image alt="图形验证码" width="150" height="48"><button type="button" class="ui-btn ui-btn-secondary ui-btn-small" data-captcha-refresh>换一张</button></div><input type="hidden" name="captcha_id_code" data-captcha-id><label>图形验证码</label><input class="ui-input" name="captcha_answer_code" data-captcha-answer required maxlength="5"></div>{{end}}
 {{define "external-captcha"}}<div class="external-captcha" data-external-captcha data-external-scene="{{.}}" aria-live="polite"></div>{{end}}
-{{define "register-code"}}<label>短信/邮箱验证码</label><div class="d-flex gap-2"><input class="form-control" name="code" inputmode="numeric" minlength="6" maxlength="6" autocomplete="one-time-code"><button class="ui-btn ui-btn-secondary" type="button" onclick="requestRegisterCode(this)">发送验证码</button></div>{{template "code-captcha" .}}{{end}}
+{{define "register-code"}}<label>短信/邮箱验证码</label><div class="ui-inline"><input class="ui-input" name="code" inputmode="numeric" minlength="6" maxlength="6" autocomplete="one-time-code"><button class="ui-btn ui-btn-secondary" type="button" data-register-code-button>发送验证码</button></div>{{template "code-captcha" .}}{{end}}
+
 <script src="/assets/js/auth-captcha.js" defer></script>
 </body></html>

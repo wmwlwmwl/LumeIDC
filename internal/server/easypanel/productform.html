@@ -1,9 +1,9 @@
-<label class="form-label fw-semibold mt-3" for="epSiteType">站点类型</label>
-<select id="epSiteType" class="form-select">
+<label class="ui-label" for="epSiteType">站点类型</label>
+<select id="epSiteType" class="ui-select">
 <option value="vh">虚拟主机</option>
 <option value="cdn">CDN 站点</option>
 </select>
-<p class="muted" style="font-size:.76rem;color:#888;margin:6px 0 0">CDN 站点 = 隐藏配置项 cdn=1 随订单下发（购买页不可见、不计价）；仅弹性模式（PID 留空）生效。</p>
+<p class="ui-hint">CDN 站点 = 隐藏配置项 cdn=1 随订单下发（购买页不可见、不计价）；仅弹性模式（PID 留空）生效。</p>
 <script>
 (function(){
   // cfgOptions/cfgSync/renderCfgList 是共享表单主脚本的全局绑定（let/function），

@@ -1,7 +1,6 @@
 {{define "page"}}
 <div class="admin-page-header">
   <div class="admin-page-title">
-    
     <h1>用户详情</h1>
     <p>查看账户信息、状态与余额变更</p>
   </div>
@@ -205,15 +204,15 @@
                 <td class="td-price">{{.amount}}</td>
                 <td class="td-price">{{.after}}</td>
                 <td>
-                  {{if eq .type "recharge"}}充值
-                  {{else if eq .type "consume"}}消费
-                  {{else if eq .type "refund"}}退款
-                  {{else}}管理员调整{{end}}
+                  {{if eq .type "recharge"}}<span class="badge badge-ok">充值</span>
+                  {{else if eq .type "consume"}}<span class="badge badge-warn">消费</span>
+                  {{else if eq .type "refund"}}<span class="badge badge-info">退款</span>
+                  {{else}}<span class="badge badge-idle">管理员调整</span>{{end}}
                 </td>
                 <td>{{if .note}}{{.note}}{{else}}<span class="text-muted">-</span>{{end}}</td>
               </tr>
               {{else}}
-              <tr><td colspan="5" class="admin-table-empty">暂无流水</td></tr>
+              <tr><td colspan="99" class="admin-table-empty">暂无流水</td></tr>
               {{end}}
             </tbody>
           </table>
@@ -245,7 +244,7 @@
                 <td>{{.CreatedAt.Format "2006-01-02 15:04"}}</td>
               </tr>
               {{else}}
-              <tr><td colspan="4" class="admin-table-empty">暂无操作记录</td></tr>
+              <tr><td colspan="99" class="admin-table-empty">暂无操作记录</td></tr>
               {{end}}
             </tbody>
           </table>

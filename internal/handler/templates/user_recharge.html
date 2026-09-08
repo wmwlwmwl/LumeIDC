@@ -1,9 +1,8 @@
 {{define "page"}}
 <div class="fx-page-head">
   <div class="fx-page-title">
-    
     <h1>账户充值</h1>
-    <p>充值后可直接用于购买和续费服务</p>
+    <p>充值后可直接用于购买与续费服务</p>
   </div>
 </div>
 
@@ -11,14 +10,23 @@
 
 <div class="fx-form-panel">
   <div class="fx-balance-block">
-    <span>当前余额</span>
+    <span>当前可用余额</span>
     <strong>￥{{.Balance}}</strong>
   </div>
-  <form method="post" action="/user/recharge" class="fx-stack-form">
+  <form method="post" action="/user/recharge" class="fx-stack-form" id="rechargeForm">
     <input type="hidden" name="_csrf" value="{{.CSRF}}">
     <label for="recharge-amount">充值金额（元）</label>
-    <input id="recharge-amount" name="amount" type="number" min="0.01" max="9999999999" step="0.01" required placeholder="请输入充值金额">
-    <button class="ui-btn" type="submit">生成充值账单 <span>→</span></button>
+    <input id="recharge-amount" name="amount" type="number" min="0.01" max="9999999999" step="0.01" required placeholder="请输入充值金额" inputmode="decimal">
+    <div class="fx-amount-quick" role="group" aria-label="快捷金额">
+      <span>快捷选择：</span>
+      <button type="button" class="ui-btn ui-btn-soft ui-btn-xs" data-fill="recharge-amount" data-fill-value="50">￥50</button>
+      <button type="button" class="ui-btn ui-btn-soft ui-btn-xs" data-fill="recharge-amount" data-fill-value="100">￥100</button>
+      <button type="button" class="ui-btn ui-btn-soft ui-btn-xs" data-fill="recharge-amount" data-fill-value="200">￥200</button>
+      <button type="button" class="ui-btn ui-btn-soft ui-btn-xs" data-fill="recharge-amount" data-fill-value="500">￥500</button>
+      <button type="button" class="ui-btn ui-btn-soft ui-btn-xs" data-fill="recharge-amount" data-fill-value="1000">￥1000</button>
+    </div>
+    <button class="ui-btn ui-btn-block" type="submit">生成充值账单 <span aria-hidden="true">→</span></button>
   </form>
+  <p class="fx-form-note">在线充值手续费按所选支付方式费率收取；到账金额为充值本金。</p>
 </div>
 {{end}}

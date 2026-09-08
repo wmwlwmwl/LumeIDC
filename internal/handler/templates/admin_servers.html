@@ -1,7 +1,6 @@
 {{define "page"}}
 <div class="admin-page-header">
   <div class="admin-page-title">
-    
     <h1>上游服务器</h1>
     <p>管理供应商连接与商品目录</p>
   </div>
@@ -39,7 +38,7 @@
           <td class="td-name">{{.A}}</td>
           <td>{{.B}}</td>
           <td class="td-url">{{.C}}</td>
-          <td>{{.D}}</td>
+          <td>{{if eq .D "启用"}}<span class="badge badge-ok">{{.D}}</span>{{else}}<span class="badge badge-idle">{{.D}}</span>{{end}}</td>
           <td class="td-actions">
             <a href="/admin/servers/{{.ID}}/edit" class="admin-row-btn">编辑</a>
             <a href="/admin/servers/{{.ID}}/catalog" class="admin-row-btn">浏览商品</a>
@@ -53,7 +52,7 @@
         </tr>
         {{end}}
         {{if not .Rows}}
-        <tr><td colspan="6" class="admin-table-empty">暂无上游服务器。ZJMF 对接需要 API 地址、用户名、密钥。</td></tr>
+        <tr><td colspan="99" class="admin-table-empty">暂无上游服务器。ZJMF 对接需要 API 地址、用户名、密钥。</td></tr>
         {{end}}
       </tbody>
     </table>

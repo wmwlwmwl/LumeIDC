@@ -1,7 +1,6 @@
 {{define "page"}}
 <div class="admin-page-header">
   <div class="admin-page-title">
-    
     <h1>系统公告</h1>
     <p>发布面向用户的通知和维护信息</p>
   </div>
@@ -27,7 +26,6 @@
         <tr>
           <th scope="col">ID</th>
           <th scope="col">标题</th>
-          <th scope="col">置顶</th>
           <th scope="col">显示状态</th>
           <th scope="col">创建时间</th>
           <th scope="col" class="th-actions">操作</th>
@@ -38,7 +36,6 @@
         <tr data-id="{{.ID}}">
           <td class="td-id">{{.ID}}</td>
           <td class="td-name">{{if .Pinned}}<span class="admin-pin-mark">置顶</span>{{end}}{{.Title}}</td>
-          <td>{{if .Pinned}}是{{else}}否{{end}}</td>
           <td>{{if .Hidden}}<span class="badge badge-warn">隐藏</span>{{else}}<span class="badge badge-ok">显示</span>{{end}}</td>
           <td>{{.CreatedAt.Format "2006-01-02 15:04"}}</td>
           <td class="td-actions">
@@ -51,7 +48,7 @@
         </tr>
         {{end}}
         {{if not .Rows}}
-        <tr><td colspan="6" class="admin-table-empty">暂无公告</td></tr>
+        <tr><td colspan="99" class="admin-table-empty">暂无公告</td></tr>
         {{end}}
       </tbody>
     </table>

@@ -30,8 +30,10 @@ type AdminData struct {
 	ConfigJSON    string
 	ServersList   any
 	UpstreamBound bool
-	Secret        string
-	TotalProfit   string
+	Secret       string
+	TotalProfit  string
+	// Pager 服务端分页信息（列表页；nil 表示不渲染分页条）。
+	Pager *Pager
 	// 站点品牌（由 renderAdmin 统一注入）
 	SiteName  string
 	SiteMark  string

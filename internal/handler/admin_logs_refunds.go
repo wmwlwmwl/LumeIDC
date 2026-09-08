@@ -8,7 +8,7 @@ func (a *Admin) adminLogs(w http.ResponseWriter, r *http.Request) {
 	if !a.require(w, r) {
 		return
 	}
-	logs, err := a.AdminLog.List(r.Context(), 100)
+	logs, err := a.AdminLog.List(r.Context(), 300)
 	if err != nil {
 		http.Error(w, "查询失败", 500)
 		return
@@ -22,7 +22,7 @@ func (a *Admin) adminRefunds(w http.ResponseWriter, r *http.Request) {
 	if !a.require(w, r) {
 		return
 	}
-	rows, err := a.Refunds.List(r.Context(), 100)
+	rows, err := a.Refunds.List(r.Context(), 300)
 	if err != nil {
 		http.Error(w, "查询失败", 500)
 		return

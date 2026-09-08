@@ -1,7 +1,6 @@
 {{define "page"}}
 <div class="admin-page-header">
   <div class="admin-page-title">
-    
     <h1>审计日志</h1>
     <p>记录管理员对系统数据的操作</p>
   </div>
@@ -44,7 +43,7 @@
         </tr>
         {{end}}
         {{if not .Rows}}
-        <tr><td colspan="7" class="admin-table-empty">暂无操作记录</td></tr>
+        <tr><td colspan="99" class="admin-table-empty">暂无操作记录</td></tr>
         {{end}}
       </tbody>
     </table>

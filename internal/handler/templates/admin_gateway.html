@@ -1,7 +1,6 @@
 {{define "page"}}
 <div class="admin-page-header">
   <div class="admin-page-title">
-    
     <h1>支付网关</h1>
     <p>配置在线支付通道和回调地址</p>
   </div>
@@ -41,7 +40,7 @@
         {{range .Rows}}
         <tr>
           <td class="td-id">{{.Code}}</td>
-           <td>{{if eq .Driver "epay"}}易支付{{else if eq .Driver "alipay_f2f"}}支付宝当面付{{else}}模拟支付{{end}}</td>
+          <td>{{if eq .Driver "epay"}}易支付{{else if eq .Driver "alipay_f2f"}}支付宝当面付{{else}}模拟支付{{end}}</td>
           <td class="td-name">{{.Name}}</td>
           <td>{{.FeePercent}}%</td>
           <td class="td-url">{{.APIURL}}</td>
@@ -55,7 +54,6 @@
                 <input type="hidden" name="code" value="{{.Code}}">
                 <div class="admin-modal-head">
                   <div>
-                    
                     <h3 id="gateway-modal-title-{{.Code}}">编辑支付网关</h3>
                   </div>
                   <button class="admin-modal-close" type="button" data-gateway-close aria-label="关闭弹窗">×</button>

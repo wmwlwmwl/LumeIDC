@@ -1,38 +1,44 @@
-<div class="card provider-widget provider-easypanel" style="margin-top:16px">
-<h3 class="ep-widget-title">实例管理</h3>
-<table style="font-size:.88rem">
-<tr><td class="muted" width="90">站点账号</td><td><b>{{.Name}}</b></td></tr>
-<tr><td class="muted">站点密码</td><td><span id="epPw" style="display:inline-block">{{.Password}}</span> <button class="cbtn" style="background:#4f46e5;font-size:.75rem;padding:2px 8px" onclick="copyText(this,document.getElementById('epPw').textContent)">复制</button></td></tr>
-{{if .PanelURL}}
-<tr><td class="muted">主机面板</td><td>
-<form class="ep-panel-login" method="post" action="{{.PanelURL}}" target="_blank">
-<input type="hidden" name="username" value="{{.Name}}">
-<input type="hidden" name="passwd" value="{{.Password}}">
-<button class="cbtn" style="background:#15803d;font-size:.8rem;padding:4px 12px">登录主机面板</button>
-</form>
-<span class="muted" style="font-size:.75rem;margin-left:6px">用上方账号密码自动登录上游面板</span>
-</td></tr>
-{{end}}
-</table>
+<div class="provider-widget provider-easypanel" data-service-id="{{.ServiceID}}" data-csrf="{{.CSRF}}">
+  <div class="provider-widget-head">
+    <h3>实例管理</h3>
+  </div>
 
-<section class="ep-operation-section"><h4>账户操作</h4>
-<details class="ep-operation-details"><summary>重置密码（站点/FTP/数据库同步）</summary>
-<form method="post" action="/services/{{.ServiceID}}/console" style="margin-top:8px;display:flex;gap:8px" onsubmit="return confirm('确认重置站点密码？站点、FTP、数据库密码将同步更换。')">
-<input type="hidden" name="_csrf" value="{{.CSRF}}"><input type="hidden" name="do" value="crack_pass">
-<input name="password" type="text" placeholder="留空自动生成" style="flex:1;padding:7px;border:1px solid #ccc;border-radius:6px">
-<button class="cbtn" style="background:#4f46e5">重置</button>
-</form>
-</details></section>
+  <div class="zj-info-table">
+    <div class="zj-info-row"><span>站点账号</span><strong>{{.Name}}</strong></div>
+    <div class="zj-info-row"><span>站点密码</span><strong class="zj-mono" id="epPw">{{.Password}}</strong><button type="button" class="ui-btn ui-btn-ghost ui-btn-xs" data-copy="{{.Password}}">复制</button></div>
+    {{if .PanelURL}}
+    <div class="zj-info-row"><span>主机面板</span><strong>
+      <form class="ep-panel-login" method="post" action="{{.PanelURL}}" target="_blank">
+        <input type="hidden" name="username" value="{{.Name}}">
+        <input type="hidden" name="passwd" value="{{.Password}}">
+        <button class="ui-btn ui-btn-soft is-success ui-btn-small" type="submit">登录主机面板</button>
+      </form>
+      <span class="ep-login-note">用上方账号密码自动登录上游面板</span>
+    </strong></div>
+    {{end}}
+  </div>
 
-<h3 style="margin:16px 0 6px;font-size:.95rem">空间与数据库</h3>
-<table style="font-size:.88rem">
-<tr><td class="muted" width="90">网页空间</td><td>{{.WebQuota}}</td></tr>
-{{if .DBName}}<tr><td class="muted">数据库</td><td>{{.DBName}}{{if .DBQuota}}（{{.DBQuota}}）{{end}} · 已用 {{.DBUsed}}</td></tr>{{end}}
-<tr><td class="muted">FTP</td><td>{{if .FTP}}已开启{{else}}未开启{{end}}</td></tr>
-{{if .Domain}}<tr><td class="muted">可绑域名</td><td>{{.Domain}}</td></tr>{{end}}
-{{if .FlowLimit}}<tr><td class="muted">流量限制</td><td>{{.FlowLimit}}</td></tr>{{end}}
-{{if .SpeedLimit}}<tr><td class="muted">速度限制</td><td>{{.SpeedLimit}}</td></tr>{{end}}
-<tr><td class="muted">创建时间</td><td>{{.CreateTime}}</td></tr>
-</table>
-<p class="muted" style="font-size:.75rem;margin:8px 0 0">生命周期由本站管理：到期自动停用站点，续费自动恢复；上游侧站点长期有效。</p>
+  <h4 class="zj-panel-title">账户操作</h4>
+  <div class="zj-operation-grid">
+    <form method="post" action="/services/{{.ServiceID}}/console" data-confirm="确认重置站点密码？站点、FTP、数据库密码将同步更换。">
+      <input type="hidden" name="_csrf" value="{{.CSRF}}">
+      <input type="hidden" name="do" value="crack_pass">
+      <input class="ui-input" name="password" type="text" placeholder="留空自动生成">
+      <button class="ui-btn ui-btn-soft ui-btn-small" type="submit">重置密码</button>
+    </form>
+  </div>
+
+  <div class="zjpanel">
+    <h4 class="zj-panel-title">空间与数据库</h4>
+    <div class="zj-info-table">
+      <div class="zj-info-row"><span>网页空间</span><strong>{{.WebQuota}}</strong></div>
+      {{if .DBName}}<div class="zj-info-row"><span>数据库</span><strong>{{.DBName}}{{if .DBQuota}}（{{.DBQuota}}）{{end}} · 已用 {{.DBUsed}}</strong></div>{{end}}
+      <div class="zj-info-row"><span>FTP</span><strong>{{if .FTP}}已开启{{else}}未开启{{end}}</strong></div>
+      {{if .Domain}}<div class="zj-info-row"><span>可绑域名</span><strong>{{.Domain}}</strong></div>{{end}}
+      {{if .FlowLimit}}<div class="zj-info-row"><span>流量限制</span><strong>{{.FlowLimit}}</strong></div>{{end}}
+      {{if .SpeedLimit}}<div class="zj-info-row"><span>速度限制</span><strong>{{.SpeedLimit}}</strong></div>{{end}}
+      <div class="zj-info-row"><span>创建时间</span><strong>{{.CreateTime}}</strong></div>
+    </div>
+    <p class="ep-note">生命周期由本站管理：到期自动停用站点，续费自动恢复；上游侧站点长期有效。</p>
+  </div>
 </div>

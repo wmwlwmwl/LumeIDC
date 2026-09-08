@@ -1,22 +1,59 @@
 {{define "page"}}
-<div class="admin-page-header"><div class="admin-page-title"><h1>实名审核</h1><p>仅显示待人工处理的申请。</p></div></div>
+<div class="admin-page-header">
+  <div class="admin-page-title">
+    <h1>实名审核</h1>
+    <p>仅显示待人工处理的申请。</p>
+  </div>
+  <div class="admin-page-actions">
+    <span class="text-muted small">共 {{len .Rows}} 个待审申请</span>
+  </div>
+</div>
+
 {{if .Error}}<div class="ui-alert ui-alert-error" role="alert">{{.Error}}</div>{{end}}
 {{if .Msg}}<div class="ui-alert ui-alert-success" role="status">{{.Msg}}</div>{{end}}
-<div class="admin-panel"><div class="admin-table-wrap"><table class="admin-table"><thead><tr><th scope="col">申请 ID</th><th scope="col">用户</th><th scope="col">手机号</th><th scope="col">提交时间</th><th scope="col">状态</th><th scope="col">操作</th></tr></thead><tbody>
-{{range .Rows}}<tr>
-  <td class="td-id">{{.ID}}</td>
-  <td>{{.Email}}</td>
-  <td>{{.Phone}}</td>
-  <td>{{.SubmittedAt.Format "2006-01-02 15:04"}}</td>
-  <td>待人工审核</td>
-  <td class="td-actions">
-    <form method="post" action="/admin/verifications/{{.ID}}/approve" class="inline-form" data-confirm="确认通过用户 {{.Email}} 的实名认证？">
-      <input type="hidden" name="_csrf" value="{{.CSRF}}">
-      <button class="admin-row-btn is-success" type="submit">通过</button>
-    </form>
-    <a class="admin-row-btn" href="/admin/verifications/{{.ID}}">详情</a>
-  </td>
-</tr>{{end}}
-{{if not .Rows}}<tr><td colspan="6" class="admin-table-empty">暂无待审核申请</td></tr>{{end}}
-</tbody></table></div></div>
+
+<div class="admin-panel">
+  <div class="admin-panel-header">
+    <h2>待审核申请</h2>
+    <label class="list-filter" for="filter-verifs">
+      <span class="fx-search-icon" aria-hidden="true"></span>
+      <input id="filter-verifs" type="search" data-table-filter="#tblVerifs" placeholder="搜索用户 / 手机号">
+    </label>
+  </div>
+  <div class="admin-table-wrap">
+    <table class="admin-table" id="tblVerifs" data-pageable>
+      <thead>
+        <tr>
+          <th scope="col">申请 ID</th>
+          <th scope="col">用户</th>
+          <th scope="col">手机号</th>
+          <th scope="col">提交时间</th>
+          <th scope="col">状态</th>
+          <th scope="col" class="th-actions">操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .Rows}}
+        <tr>
+          <td class="td-id">{{.ID}}</td>
+          <td>{{.Email}}</td>
+          <td>{{.Phone}}</td>
+          <td>{{.SubmittedAt.Format "2006-01-02 15:04"}}</td>
+          <td><span class="badge badge-warn">待人工审核</span></td>
+          <td class="td-actions">
+            <a class="admin-row-btn" href="/admin/verifications/{{.ID}}">详情</a>
+            <form method="post" action="/admin/verifications/{{.ID}}/approve" class="inline-form" data-confirm="确认通过用户 {{.Email}} 的实名认证？">
+              <input type="hidden" name="_csrf" value="{{$.CSRF}}">
+              <button class="admin-row-btn is-success" type="submit">通过</button>
+            </form>
+          </td>
+        </tr>
+        {{end}}
+        {{if not .Rows}}
+        <tr><td colspan="99" class="admin-table-empty">暂无待审核申请</td></tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</div>
 {{end}}

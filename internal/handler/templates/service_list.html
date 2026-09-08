@@ -1,12 +1,11 @@
 {{define "page"}}
 <div class="fx-page-head">
   <div class="fx-page-title">
-    
     <h1>我的服务</h1>
-    <p>查看和管理你已部署的所有服务实例</p>
+    <p>查看并管理你部署的所有服务实例</p>
   </div>
   <div class="fx-page-actions">
-    <a class="ui-btn" href="/products">购买服务 <span>→</span></a>
+    <a class="ui-btn" href="/products">购买服务 <span aria-hidden="true">→</span></a>
   </div>
 </div>
 
@@ -15,7 +14,9 @@
   {{range .Services}}
   <article class="fx-service-card">
     <div class="fx-service-card-head">
-      
+      <span class="fx-service-mark" aria-hidden="true">
+        <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="1.5" width="12" height="4.5" rx="1.5"/><rect x="2" y="10" width="12" height="4.5" rx="1.5"/><path d="M5 3.8h.01M8 3.8h.01M5 12.3h.01M8 12.3h.01"/></svg>
+      </span>
       <div class="fx-service-name-wrap">
         <a class="fx-service-name" href="/services/{{.ID}}">{{.Name}}</a>
         {{if .ConfigDesc}}<small>{{.ConfigDesc}}</small>{{else}}<small>ID #{{.ID}}</small>{{end}}
@@ -28,22 +29,20 @@
         <strong>{{.Hostname}}</strong>
       </div>{{end}}
       {{if .IP}}<div class="fx-service-info-item">
-        <span>IP</span>
-        <strong>{{.IP}}</strong>
+        <span>IP 地址</span>
+        <strong class="fx-ip-mono">{{.IP}}</strong>
       </div>{{end}}
       <div class="fx-service-info-item">
         <span>到期时间</span>
-        <strong class="{{if .ExpiringSoon}}is-warning{{end}}">{{.ExpiresAt.Format "2006-01-02"}}
-          {{if gt .DaysLeft 0}}<small>（{{.DaysLeft}}天后到期）</small>{{else}}<small>（已到期）</small>{{end}}
-        </strong>
+        <strong class="{{if .ExpiringSoon}}is-warning{{end}}">{{.ExpiresAt.Format "2006-01-02"}}</strong>
       </div>
       <div class="fx-service-info-item">
         <span>月付价格</span>
-        <strong>￥{{if .Monthly}}{{.Monthly}}{{else}}-{{end}}/月</strong>
+        <strong>￥{{if .Monthly}}{{.Monthly}}{{else}}-{{end}}<em>/月</em></strong>
       </div>
       {{if .OS}}<div class="fx-service-info-item">
-        <span>系统</span>
-        <strong>{{.OS}}</strong>
+        <span>操作系统</span>
+        <strong class="fx-ellipsis" title="{{.OS}}">{{.OS}}</strong>
       </div>{{end}}
       <div class="fx-service-info-item">
         <span>续费方式</span>
@@ -52,8 +51,9 @@
     </div>
     <div class="fx-service-actions">
       <a class="ui-btn ui-btn-secondary ui-btn-small" href="/services/{{.ID}}">管理服务</a>
+      {{if .ExpiringSoon}}<span class="fx-service-exp">将于 {{.ExpiresAt.Format "01-02"}} 到期</span>{{end}}
       {{if ne .StatusText "待开通"}}
-      <form method="post" action="/services/{{.ID}}/renew" class="fx-renew-form">
+      <form method="post" action="/services/{{.ID}}/renew" class="fx-renew-form" data-confirm="确认立即续费 {{.Name}}？将跳转生成续费账单。">
         <input type="hidden" name="_csrf" value="{{$.CSRF}}">
         <label class="visually-hidden" for="renew-cycle-{{.ID}}">续费周期</label>
         <select name="cycle" id="renew-cycle-{{.ID}}">
@@ -72,8 +72,8 @@
 <div class="fx-panel">
   <div class="fx-empty-state">
     <div class="fx-empty-icon"></div>
-    <h3>还没有服务</h3>
-    <p>购买一个产品后，服务实例会显示在这里</p>
+    <h3>还没有服务实例</h3>
+    <p>购买一个产品后，已开通的实例会显示在这里</p>
     <a class="ui-btn" href="/products">浏览产品 →</a>
   </div>
 </div>

@@ -7,6 +7,7 @@
 <title>{{if .PageTitle}}{{.PageTitle}} - {{end}}{{.SiteName}}</title>
 {{if .SiteDescription}}<meta name="description" content="{{.SiteDescription}}">{{end}}
 {{if .SiteKeywords}}<meta name="keywords" content="{{.SiteKeywords}}">{{end}}
+<meta name="csrf" content="{{.CSRF}}">
 <link rel="stylesheet" href="/assets/vendor/bootstrap-5.3.3/css/bootstrap.min.css">
 <link rel="stylesheet" href="/assets/css/lume.css">
 <script src="/assets/js/lume.js" defer></script>
@@ -29,7 +30,8 @@
     <nav class="fx-nav" id="site-nav" aria-label="主导航">
       <a href="/products" class="{{if eq .Page "products.html"}}is-active{{end}}">产品与服务</a>
       {{if .LoggedIn}}
-      <a href="/services" class="{{if or (eq .Page "service_list.html") (eq .Page "service_detail.html")}}is-active{{end}}">我的服务</a>
+      <a href="/services" class="{{if or (eq .Page "service_list.html") (eq .Page "service_detail.html") (eq .Page "service_upgrade.html")}}is-active{{end}}">我的服务</a>
+      <a href="/user" class="{{if eq .Page "user_home.html"}}is-active{{end}}">账户中心</a>
       {{end}}
     </nav>
 
@@ -37,15 +39,15 @@
       {{if .LoggedIn}}
       <div class="fx-account">
         <a class="fx-account-chip" href="/user">
-          
+          <span class="fx-avatar">{{.SiteMark}}</span>
           <span class="fx-account-info">
             <strong>我的账户</strong>
-            <small>￥{{.Balance}}</small>
+            <small>余额 ￥{{.Balance}}</small>
           </span>
         </a>
         <form method="post" action="/logout" class="fx-logout-form">
           <input type="hidden" name="_csrf" value="{{.CSRF}}">
-          <button class="fx-logout-btn" type="submit">退出</button>
+          <button class="ui-btn ui-btn-ghost ui-btn-xs" type="submit">退出</button>
         </form>
       </div>
       {{else}}
@@ -56,44 +58,53 @@
   </div>
 </header>
 
-{{if or (eq .Page "user_home.html") (eq .Page "service_list.html") (eq .Page "service_detail.html") (eq .Page "user_recharge.html") (eq .Page "user_invoices.html") (eq .Page "user_notifications.html") (eq .Page "user_password.html") (eq .Page "user_profile.html") (eq .Page "user_verification.html")}}
+{{if or (eq .Page "user_home.html") (eq .Page "service_list.html") (eq .Page "service_detail.html") (eq .Page "service_upgrade.html") (eq .Page "user_recharge.html") (eq .Page "user_invoices.html") (eq .Page "user_notifications.html") (eq .Page "user_password.html") (eq .Page "user_profile.html") (eq .Page "user_verification.html")}}
 <div class="fx-account-layout">
   <aside class="fx-account-side">
     <div class="fx-account-side-brand">
-      
+      <span class="fx-account-side-mark">{{.SiteMark}}</span>
       <div>
         <strong>账户中心</strong>
-        <small>ACCOUNT</small>
+        <small>MY ACCOUNT</small>
       </div>
     </div>
     <nav class="fx-account-nav" aria-label="账户导航">
       <a href="/user" class="{{if eq .Page "user_home.html"}}is-active{{end}}">
-        <span class="fx-nav-ind"></span>概览
+        <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="1.5" y="1.5" width="13" height="13" rx="2.5"/><path d="M5.5 7.5h5M5.5 10.5h3"/></svg>
+        概览
       </a>
-      <a href="/services" class="{{if or (eq .Page "service_list.html") (eq .Page "service_detail.html")}}is-active{{end}}">
-        <span class="fx-nav-ind"></span>我的服务
+      <a href="/services" class="{{if or (eq .Page "service_list.html") (eq .Page "service_detail.html") (eq .Page "service_upgrade.html")}}is-active{{end}}">
+        <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="1.5" y="2" width="13" height="12" rx="2"/><path d="M1.5 6h13M5.5 2v4M10.5 2v4"/></svg>
+        我的服务
       </a>
       <a href="/user/invoices" class="{{if eq .Page "user_invoices.html"}}is-active{{end}}">
-        <span class="fx-nav-ind"></span>财务记录
+        <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5.5 1.5h5L14 5v9H2V1.5z"/><path d="M5.5 1.5V5H2M9.5 9h-3M9.5 11.5h-3"/></svg>
+        财务记录
       </a>
       <a href="/user/recharge" class="{{if eq .Page "user_recharge.html"}}is-active{{end}}">
-        <span class="fx-nav-ind"></span>账户充值
+        <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="1" y="4" width="14" height="8" rx="2"/><path d="M11 8h.5M4 8h.5M7 6.5v3"/></svg>
+        账户充值
       </a>
       <a href="/notifications" class="{{if eq .Page "user_notifications.html"}}is-active{{end}}">
-        <span class="fx-nav-ind"></span>消息中心
+        <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.5a4.5 4.5 0 0 0-4.5 4.5v3.2L2 12h12l-1.5-2.8V6A4.5 4.5 0 0 0 8 1.5z"/><path d="M6.5 13a1.6 1.6 0 0 0 3 0"/></svg>
+        消息中心
       </a>
-      <div class="fx-account-nav-label">账户设置</div>
+      <span class="fx-account-nav-label">账户设置</span>
       <a href="/user/verification" class="{{if eq .Page "user_verification.html"}}is-active{{end}}">
-        <span class="fx-nav-ind"></span>实名认证
+        <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.5 2.5 4v4c0 3.5 2.4 6.3 5.5 7.5 3.1-1.2 5.5-4 5.5-7.5V4L8 1.5z"/><path d="m5.8 8 1.5 1.5 3-3.2"/></svg>
+        实名认证
       </a>
       <a href="/user/profile" class="{{if eq .Page "user_profile.html"}}is-active{{end}}">
-        <span class="fx-nav-ind"></span>资料与手机号
+        <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="5.2" r="2.7"/><path d="M2.5 14.5c.6-3 3-4.5 5.5-4.5s4.9 1.5 5.5 4.5"/></svg>
+        资料与手机号
       </a>
       <a href="/user/password" class="{{if eq .Page "user_password.html"}}is-active{{end}}">
-        <span class="fx-nav-ind"></span>安全设置
+        <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="7.5" width="12" height="6.5" rx="1.5"/><path d="M5 7.5V5a3 3 0 0 1 6 0v2.5M8 10v1.5"/></svg>
+        安全设置
       </a>
       <a href="/products">
-        <span class="fx-nav-ind"></span>购买产品
+        <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="6.5"/><path d="M8 4.5 10.5 8 8 11.5 5.5 8z"/></svg>
+        购买产品
       </a>
     </nav>
   </aside>

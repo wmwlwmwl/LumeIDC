@@ -53,6 +53,34 @@ func (u *Users) ListUsers(ctx context.Context) ([]UserRow, error) {
 	return out, rows.Err()
 }
 
+// ListUsersPage 后台用户列表分页+关键词查询（limit/offset），并返回匹配总数。
+// q 匹配邮箱/姓名/手机号；空串表示不过滤。
+func (u *Users) ListUsersPage(ctx context.Context, q string, limit, offset int) ([]UserRow, int64, error) {
+	where := `WHERE ($3='' OR email ILIKE '%'||$3||'%' OR name ILIKE '%'||$3||'%' OR coalesce(phone_e164,'') LIKE '%'||$3||'%')`
+	var total int64
+	if err := u.db.QueryRowContext(ctx,
+		`SELECT count(*) FROM users `+where, q).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	rows, err := u.db.QueryContext(ctx,
+		`SELECT id,coalesce(email,''),name,coalesce(phone_e164,''),status,balance::float8,
+		        to_char(created_at,'YYYY-MM-DD HH24:MI')
+		 FROM users `+where+` ORDER BY id DESC LIMIT $1 OFFSET $2`, limit, offset, q)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	var out []UserRow
+	for rows.Next() {
+		var r UserRow
+		if err := rows.Scan(&r.ID, &r.Email, &r.Name, &r.Phone, &r.Status, &r.Balance, &r.CreatedAt); err != nil {
+			return nil, 0, err
+		}
+		out = append(out, r)
+	}
+	return out, total, rows.Err()
+}
+
 // AdminUserByID 读取后台用户编辑所需的最小字段。
 func (u *Users) AdminUserByID(ctx context.Context, userID int64) (*AdminUser, error) {
 	row := u.db.QueryRowContext(ctx, `
