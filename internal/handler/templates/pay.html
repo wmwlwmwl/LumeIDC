@@ -25,6 +25,9 @@
     {{if .Recharge}}
     <p class="fx-pay-redirect" role="status">支付成功，3 秒后自动返回余额充值页</p>
     <script>setTimeout(function(){location.href='/user/recharge'},3000);</script>
+    {{else}}
+    <p class="fx-pay-redirect" role="status">支付成功，3 秒后自动前往我的服务</p>
+    <script>setTimeout(function(){location.href='/services'},3000);</script>
     {{end}}
     {{else}}
     <div class="fx-pay-balance">
