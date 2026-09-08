@@ -338,7 +338,7 @@ func (h *Pay) notify(w http.ResponseWriter, r *http.Request) {
 	params := notifyParams(r)
 	result, err := impl.VerifyNotify(params, inst.Config)
 	if err != nil {
-		log.Printf("[notify] 网关 %s 校验失败: %v (out_trade_no=%s trade_no=%s trade_status=%s)", code, err, params["out_trade_no"], params["trade_no"], params["trade_status"])
+		log.Printf("[notify] 网关 %s 校验失败: %v (out_trade_no=%s trade_no=%s trade_status=%s) 参数=%s", code, err, params["out_trade_no"], params["trade_no"], params["trade_status"], notifyParamDump(params))
 		w.Write([]byte("fail"))
 		return
 	}
@@ -395,6 +395,18 @@ func notifyParams(r *http.Request) map[string]string {
 		params[k] = vals[0]
 	}
 	return params
+}
+
+// notifyParamDump 输出回调参数明细用于排查验签失败；sign 只保留前缀避免日志过长。
+func notifyParamDump(params map[string]string) string {
+	parts := make([]string, 0, len(params))
+	for k, v := range params {
+		if k == "sign" && len(v) > 16 {
+			v = v[:16] + "..."
+		}
+		parts = append(parts, k+"="+v)
+	}
+	return strings.Join(parts, " ")
 }
 
 func equalAmount(a, b string) bool {
