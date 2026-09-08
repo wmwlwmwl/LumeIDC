@@ -22,6 +22,10 @@
 
     {{if .Status}}
     <div class="ui-alert ui-alert-info" role="status">{{.Status}}</div>
+    {{if .Recharge}}
+    <p class="fx-pay-redirect" role="status">支付成功，3 秒后自动返回余额充值页</p>
+    <script>setTimeout(function(){location.href='/user/recharge'},3000);</script>
+    {{end}}
     {{else}}
     <div class="fx-pay-balance">
       <span>账户余额</span>
