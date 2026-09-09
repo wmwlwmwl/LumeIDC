@@ -56,7 +56,7 @@ func (u *Users) ListUsers(ctx context.Context) ([]UserRow, error) {
 // ListUsersPage 后台用户列表分页+关键词查询（limit/offset），并返回匹配总数。
 // q 匹配邮箱/姓名/手机号；空串表示不过滤。
 func (u *Users) ListUsersPage(ctx context.Context, q string, limit, offset int) ([]UserRow, int64, error) {
-	where := `WHERE ($3='' OR email ILIKE '%'||$3||'%' OR name ILIKE '%'||$3||'%' OR coalesce(phone_e164,'') LIKE '%'||$3||'%')`
+	where := `WHERE ($1='' OR email ILIKE '%'||$1||'%' OR name ILIKE '%'||$1||'%' OR coalesce(phone_e164,'') LIKE '%'||$1||'%')`
 	var total int64
 	if err := u.db.QueryRowContext(ctx,
 		`SELECT count(*) FROM users `+where, q).Scan(&total); err != nil {
@@ -65,7 +65,7 @@ func (u *Users) ListUsersPage(ctx context.Context, q string, limit, offset int) 
 	rows, err := u.db.QueryContext(ctx,
 		`SELECT id,coalesce(email,''),name,coalesce(phone_e164,''),status,balance::float8,
 		        to_char(created_at,'YYYY-MM-DD HH24:MI')
-		 FROM users `+where+` ORDER BY id DESC LIMIT $1 OFFSET $2`, limit, offset, q)
+		 FROM users `+where+` ORDER BY id DESC LIMIT $2 OFFSET $3`, q, limit, offset)
 	if err != nil {
 		return nil, 0, err
 	}
