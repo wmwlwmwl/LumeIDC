@@ -38,6 +38,74 @@ type Payment struct {
 	TriggerFulfillment func()
 }
 
+// triggerFulfillment 手动催一次履约队列。管理员点「重试」后立刻开跑，
+// 不必干等 cron 的 15 秒轮询；未注入（精简部署/测试）时静默退回轮询。
+func (p *Payment) triggerFulfillment() {
+	if p.TriggerFulfillment != nil {
+		p.TriggerFulfillment()
+	}
+}
+
+// VerifyOrderPriceBeforePay 付款前复核：新购订单的「下单时成本」与该商品「本地当前成本」不一致（涨价）时拒绝收款。
+// 场景：用户下单后把账单挂着，等上游改价了才付款。不拦的话钱先收进来，开通时才发现上游贵了，
+// 只能转人工让管理员垫差价或退款。这里在付款入口用同步后的本地价（最多滞后一个同步周期）先拦一道，
+// 让用户按新价重新下单；上游临时改价的实时差异仍由开通前比价兜底。
+// 只对新购订单生效（service_id 为空）：续费/升级的本地价与上游成本本就不同步（续费走冻结价），
+// 拦了会让用户永远续不了费，这两种维持「开通前比价转人工」。
+// 读不到订单/快照/价格时一律放行，不阻断正常支付。
+func (p *Payment) VerifyOrderPriceBeforePay(ctx context.Context, invoiceID, userID int64) error {
+	var productID int64
+	var cycle, kind string
+	var svcID sql.NullInt64
+	var raw []byte
+	if err := p.db.QueryRowContext(ctx,
+		`SELECT o.product_id, o.cycle, coalesce(o.kind,''), o.service_id, coalesce(o.config_snapshot::text,'')
+		   FROM invoices i JOIN orders o ON o.id=i.order_id
+		  WHERE i.id=$1 AND i.user_id=$2`, invoiceID, userID).
+		Scan(&productID, &cycle, &kind, &svcID, &raw); err != nil {
+		return nil // 充值账单等无关联订单：不拦
+	}
+	if svcID.Valid || kind == "upgrade" {
+		return nil
+	}
+	var snap struct {
+		Quote struct {
+			Total float64 `json:"total"`
+			Setup float64 `json:"setup"`
+		} `json:"quote"`
+		Selection map[string]string `json:"selection"`
+	}
+	if json.Unmarshal([]byte(raw), &snap) != nil {
+		return nil // 老订单无快照：无从比对
+	}
+	psID, err := p.Products.DefaultPricesetID(ctx)
+	if err != nil {
+		return nil
+	}
+	pr, err := p.Products.Price(ctx, productID, psID)
+	if err != nil {
+		return nil
+	}
+	base, err := strconv.ParseFloat(cyclePrice(pr, cycle), 64)
+	if err != nil || base < 0 {
+		return nil
+	}
+	opts, err := p.Products.GetConfigOptions(ctx, productID)
+	if err != nil {
+		return nil // 配置损坏：交给开通流程报错，不在这里拦支付
+	}
+	cur, err := CalculateQuote(opts, base, cycle, snap.Selection)
+	if err != nil {
+		return fmt.Errorf("%w：商品配置已更新，请重新下单", ErrUpstreamPriceChanged)
+	}
+	if cur.PayableOnce() <= snap.Quote.Total+snap.Quote.Setup+server.PriceTolerance {
+		return nil // 未涨价（含降价）：照常支付
+	}
+	pt, pv, _ := p.Products.ProductSellProfit(ctx, productID)
+	return fmt.Errorf("%w：现价 ￥%.2f，请重新下单后支付", ErrUpstreamPriceChanged,
+		mathRound(applyProfit(cur.PayableOnce(), pt, pv)))
+}
+
 // MarkPaidByBalance 用余额支付账单。余额不足返回错误，账单保持未支付。
 func (p *Payment) MarkPaidByBalance(ctx context.Context, invoiceNo string, userID int64) error {
 	tx, err := p.db.BeginTx(ctx, nil)
@@ -47,9 +115,12 @@ func (p *Payment) MarkPaidByBalance(ctx context.Context, invoiceNo string, userI
 	defer tx.Rollback()
 	var invID int64
 	var status int16
-	var kind string
+	var kind, credit string
+	// 写路径以数据库持久状态为准：已过期账单由 cron 置为 3 后才拒绝。
+	// 不用 due_at 动态判过期，避免"到期前发起支付、到期后才回调"的真实付款被拒收丢单。
 	if err := tx.QueryRowContext(ctx,
-		`SELECT id, status, kind FROM invoices WHERE no=$1 AND user_id=$2 FOR UPDATE`, invoiceNo, userID).Scan(&invID, &status, &kind); err != nil {
+		`SELECT id,status,kind,coalesce(credit,0)::text
+		 FROM invoices WHERE no=$1 AND user_id=$2 FOR UPDATE`, invoiceNo, userID).Scan(&invID, &status, &kind, &credit); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return errNotFound("账单不存在")
 		}
@@ -59,18 +130,27 @@ func (p *Payment) MarkPaidByBalance(ctx context.Context, invoiceNo string, userI
 		if status == 1 {
 			return ErrAlreadyPaid
 		}
+		if status == 3 {
+			return fmt.Errorf("账单已过期")
+		}
 		return fmt.Errorf("账单不可支付")
 	}
 	if kind == "recharge" {
 		return fmt.Errorf("充值账单不能使用余额支付")
 	}
-	var pending bool
-	if err := tx.QueryRowContext(ctx,
-		`SELECT EXISTS(SELECT 1 FROM payment_attempts WHERE invoice_id=$1 AND status=0)`, invID).Scan(&pending); err != nil {
+	// 此前若已用余额抵扣过部分，先归还再按全额扣款，避免重复占用。
+	if _, cents, perr := money.ParseNonNegative(credit, 999999999999); perr == nil && cents > 0 {
+		if err := p.releaseCreditTx(ctx, tx, userID, invoiceNo, cents); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE invoices SET credit=0 WHERE id=$1`, invID); err != nil {
 		return err
 	}
-	if pending {
-		return errors.New("账单已有支付进行中")
+	// 余额支付也可以接管用户已退出的在线支付尝试，避免被旧 pending 记录锁死。
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE payment_attempts SET status=2 WHERE invoice_id=$1 AND status=0`, invID); err != nil {
+		return err
 	}
 	var amountStr string
 	var orderID, productID int64
@@ -150,11 +230,9 @@ func (p *Payment) MarkPaidByBalance(ctx context.Context, invoiceNo string, userI
 			return fmt.Errorf("订单缺失: %w", err)
 		}
 		expiresAt, _ := CycleAddDate(time.Now().UTC(), cycle)
-		if err := tx.QueryRowContext(ctx,
-			`INSERT INTO services(user_id,product_id,server_id,order_id,name,status,expires_at,upstream_provider,upstream_pid)
-			 SELECT $1,$2,p.server_id,$3,p.name,0,$4,coalesce(s.provider,''),p.upstream_pid
-			 FROM products p LEFT JOIN servers s ON s.id=p.server_id WHERE p.id=$2 RETURNING id`,
-			userIDFromOrder, productID, orderID, expiresAt).Scan(&svcIDNew); err != nil {
+		if err := tx.QueryRowContext(ctx, insertServiceSQL,
+			userIDFromOrder, productID, orderID, expiresAt, cycle,
+			p.frozenRenewAmount(ctx, tx, orderID, amountStr)).Scan(&svcIDNew); err != nil {
 			return err
 		}
 		svcID = svcIDNew
@@ -198,6 +276,232 @@ func (p *Payment) MarkPaidByBalance(ctx context.Context, invoiceNo string, userI
 		}
 	}
 	return nil
+}
+
+// OnlinePrep 是“余额 + 在线”组合支付下单的结果。
+type OnlinePrep struct {
+	FullyCovered bool // 余额已覆盖全部应付，无需在线支付
+	AttemptID    int64
+	Payable      string // 在线应付（含手续费）
+	Online       string // 在线本金（不含手续费）
+	Credit       string // 本次余额抵扣
+	FeePercent   string
+	FeeAmount    string
+}
+
+// PrepareOnline 为在线支付准备账单，支持余额抵扣剩余应付：
+//   - 释放上一次已抵扣的余额（重新选择支付方式时不重复占用）；
+//   - useBalance 为真时用余额抵扣剩余应付（最多抵扣到 0，充值账单不允许）；
+//   - 余额已覆盖全部时返回 FullyCovered，由调用方走余额核销；
+//   - 否则就剩余本金创建在线支付尝试，手续费只对在线本金收取。
+//
+// 余额在此时实时扣减；若调用方最终无法生成支付链接，必须调用
+// ReleaseInvoiceCredit 归还。
+func (p *Payment) PrepareOnline(ctx context.Context, invoiceID, userID int64, gatewayCode, feePercent string, useBalance bool) (OnlinePrep, error) {
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return OnlinePrep{}, err
+	}
+	defer tx.Rollback()
+
+	var no, amount, credit, kind, balance string
+	var status int16
+	if err := tx.QueryRowContext(ctx,
+		`SELECT i.no,i.amount::text,coalesce(i.credit,0)::text,i.status,i.kind,u.balance::text
+		 FROM invoices i JOIN users u ON u.id=i.user_id
+		 WHERE i.id=$1 AND i.user_id=$2
+		 FOR UPDATE OF i,u`, invoiceID, userID).
+		Scan(&no, &amount, &credit, &status, &kind, &balance); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return OnlinePrep{}, errNotFound("账单不存在")
+		}
+		return OnlinePrep{}, err
+	}
+	if status != 0 {
+		if status == 1 {
+			return OnlinePrep{}, ErrAlreadyPaid
+		}
+		if status == 3 {
+			return OnlinePrep{}, fmt.Errorf("账单已过期")
+		}
+		return OnlinePrep{}, fmt.Errorf("账单不可支付")
+	}
+	if kind == "recharge" {
+		useBalance = false // 充值账单不使用余额抵扣
+	}
+	_, amountCents, err := money.ParsePositive(amount, 999999999999)
+	if err != nil {
+		return OnlinePrep{}, fmt.Errorf("账单金额无效")
+	}
+	_, creditCents, err := money.ParseNonNegative(credit, 999999999999)
+	if err != nil || creditCents > amountCents {
+		creditCents = 0
+	}
+	// 释放上一次抵扣，保证重新选择支付方式时不重复占用余额。
+	if creditCents > 0 {
+		if err := p.releaseCreditTx(ctx, tx, userID, no, creditCents); err != nil {
+			return OnlinePrep{}, err
+		}
+		if err := tx.QueryRowContext(ctx, `SELECT balance::text FROM users WHERE id=$1 FOR UPDATE`, userID).Scan(&balance); err != nil {
+			return OnlinePrep{}, err
+		}
+	}
+	remainingCents := amountCents - creditCents
+	var applyCents int64
+	if useBalance && remainingCents > 0 {
+		balanceCents := int64(0)
+		if _, bc, berr := money.ParseNonNegative(balance, 999999999999); berr == nil {
+			balanceCents = bc
+		}
+		applyCents = balanceCents
+		if applyCents > remainingCents {
+			applyCents = remainingCents
+		}
+	}
+	if remainingCents > 0 && applyCents >= remainingCents {
+		// 余额可覆盖全部：交回调用方走余额核销，不在本次预扣。
+		if _, err := tx.ExecContext(ctx, `UPDATE invoices SET credit=0 WHERE id=$1`, invoiceID); err != nil {
+			return OnlinePrep{}, err
+		}
+		if err := tx.Commit(); err != nil {
+			return OnlinePrep{}, err
+		}
+		return OnlinePrep{FullyCovered: true}, nil
+	}
+	if applyCents > 0 {
+		if err := p.applyCreditTx(ctx, tx, userID, no, applyCents); err != nil {
+			return OnlinePrep{}, err
+		}
+	}
+	online := money.FormatCents(remainingCents - applyCents)
+	feeAmount, payable, ferr := money.AddPercent(online, feePercent)
+	if ferr != nil {
+		return OnlinePrep{}, fmt.Errorf("支付网关手续费配置无效")
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE payment_attempts SET status=2 WHERE invoice_id=$1 AND status=0`, invoiceID); err != nil {
+		return OnlinePrep{}, err
+	}
+	var attemptID int64
+	if err := tx.QueryRowContext(ctx,
+		`INSERT INTO payment_attempts(invoice_id,gateway_code,amount,fee_percent,fee_amount) VALUES($1,$2,$3,$4,$5) RETURNING id`,
+		invoiceID, gatewayCode, payable, feePercent, feeAmount).Scan(&attemptID); err != nil {
+		return OnlinePrep{}, err
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE invoices SET credit=$2, gateway=$3 WHERE id=$1 AND status=0`,
+		invoiceID, money.FormatCents(applyCents), gatewayCode); err != nil {
+		return OnlinePrep{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return OnlinePrep{}, err
+	}
+	return OnlinePrep{AttemptID: attemptID, Payable: payable, Online: online,
+		Credit: money.FormatCents(applyCents), FeePercent: feePercent, FeeAmount: feeAmount}, nil
+}
+
+// ReleaseInvoiceCredit 归还未完成在线支付的账单已抵扣余额，并把 credit 清零、
+// 结束对应支付尝试（在线下单失败等场景）。
+func (p *Payment) ReleaseInvoiceCredit(ctx context.Context, invoiceID, attemptID int64) error {
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var no, credit string
+	var userID int64
+	if err := tx.QueryRowContext(ctx,
+		`SELECT no,user_id,coalesce(credit,0)::text FROM invoices WHERE id=$1 FOR UPDATE`, invoiceID).
+		Scan(&no, &userID, &credit); err != nil {
+		return err
+	}
+	if _, cents, perr := money.ParseNonNegative(credit, 999999999999); perr == nil && cents > 0 {
+		if err := p.releaseCreditTx(ctx, tx, userID, no, cents); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE invoices SET credit=0 WHERE id=$1`, invoiceID); err != nil {
+		return err
+	}
+	if attemptID > 0 {
+		if _, err := tx.ExecContext(ctx, `UPDATE payment_attempts SET status=2 WHERE id=$1 AND status=0`, attemptID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// CreditCapturedToBalance 把一笔无法再核销的在线到账退回用户余额（如切换网关
+// 或重复支付）。以支付尝试的 provider_trade_no 作为幂等标记，重复回调不会重复入账。
+func (p *Payment) CreditCapturedToBalance(ctx context.Context, attemptID int64, tradeNo string) error {
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	// 幂等：仅当该尝试尚未记录外部流水号时处理一次（唯一索引兜底防并发）。
+	res, err := tx.ExecContext(ctx,
+		`UPDATE payment_attempts SET provider_trade_no=$2, paid_at=now() WHERE id=$1 AND provider_trade_no=''`,
+		attemptID, tradeNo)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return tx.Commit() // 已处理过，直接成功
+	}
+	var userID int64
+	var amount, no string
+	if err := tx.QueryRowContext(ctx,
+		`SELECT i.user_id,p.amount::text,i.no FROM payment_attempts p JOIN invoices i ON i.id=p.invoice_id WHERE p.id=$1`,
+		attemptID).Scan(&userID, &amount, &no); err != nil {
+		return err
+	}
+	if _, cents, perr := money.ParsePositive(amount, 999999999999); perr != nil || cents <= 0 {
+		return tx.Commit() // 金额异常时不入账，避免错误退款
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE users SET balance=balance+$2::numeric WHERE id=$1`, userID, amount); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO balance_logs(user_id,amount,balance_after,type,note)
+		 SELECT $1,$2::numeric,balance,'refund',$3 FROM users WHERE id=$1`,
+		userID, amount, "重复/失效支付退回 "+no); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// applyCreditTx 在事务内扣减余额作为账单抵扣并记录流水（余额不足报错）。
+func (p *Payment) applyCreditTx(ctx context.Context, tx *sql.Tx, userID int64, invoiceNo string, cents int64) error {
+	amount := money.FormatCents(cents)
+	var enough bool
+	if err := tx.QueryRowContext(ctx,
+		`SELECT balance >= $2::numeric FROM users WHERE id=$1 FOR UPDATE`, userID, amount).Scan(&enough); err != nil {
+		return err
+	}
+	if !enough {
+		return repo.ErrInsufficientBalance
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE users SET balance=balance-$2::numeric WHERE id=$1`, userID, amount); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx,
+		`INSERT INTO balance_logs(user_id,amount,balance_after,type,note)
+		 SELECT $1,-$2::numeric,balance,'consume',$3 FROM users WHERE id=$1`,
+		userID, amount, "账单余额抵扣 "+invoiceNo)
+	return err
+}
+
+// releaseCreditTx 在事务内把账单抵扣的余额归还用户并记录流水。
+func (p *Payment) releaseCreditTx(ctx context.Context, tx *sql.Tx, userID int64, invoiceNo string, cents int64) error {
+	amount := money.FormatCents(cents)
+	if _, err := tx.ExecContext(ctx, `UPDATE users SET balance=balance+$2::numeric WHERE id=$1`, userID, amount); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx,
+		`INSERT INTO balance_logs(user_id,amount,balance_after,type,note)
+		 SELECT $1,$2::numeric,balance,'refund',$3 FROM users WHERE id=$1`,
+		userID, amount, "账单余额抵扣释放 "+invoiceNo)
+	return err
 }
 
 func validPositiveAmount(ctx context.Context, tx *sql.Tx, amount string) (bool, error) {
@@ -246,6 +550,16 @@ func (p *Payment) enqueueFulfillment(ctx context.Context, tx *sql.Tx, serviceID,
 	return p.Jobs.EnqueueTx(ctx, tx, serviceID, orderID, kind, cycle)
 }
 
+// markPaidTx 聚合一次核销的已校验参数，供充值/履约两个事务内分支共用。
+type markPaidTx struct {
+	invoiceNo                         string
+	invID, userID, orderID            int64
+	now                               time.Time
+	gatewayCode, tradeNo              string
+	paidAmount, feePercent, feeAmount string
+	attemptID                         int64 // 余额核销无支付尝试记录时为 0
+}
+
 // MarkPaid 原子核销账单并开通/续期服务。幂等：重复调用返回 ErrAlreadyPaid。
 func (p *Payment) MarkPaid(ctx context.Context, invoiceNo, tradeNo, gatewayCode string, attemptIDs ...int64) error {
 	tx, err := p.db.BeginTx(ctx, nil)
@@ -257,8 +571,10 @@ func (p *Payment) MarkPaid(ctx context.Context, invoiceNo, tradeNo, gatewayCode 
 	var invID, userID, orderID int64
 	var status int16
 	var kind string
+	// 同 MarkPaidByBalance：写路径只认持久状态，过期由 cron 显式置 3。
 	err = tx.QueryRowContext(ctx,
-		`SELECT id,user_id,coalesce(order_id,0),status,kind FROM invoices WHERE no=$1 FOR UPDATE`, invoiceNo).
+		`SELECT id,user_id,coalesce(order_id,0),status,kind
+		 FROM invoices WHERE no=$1 FOR UPDATE`, invoiceNo).
 		Scan(&invID, &userID, &orderID, &status, &kind)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound2
@@ -270,9 +586,11 @@ func (p *Payment) MarkPaid(ctx context.Context, invoiceNo, tradeNo, gatewayCode 
 		if status == 1 {
 			return ErrAlreadyPaid
 		}
+		if status == 3 {
+			return fmt.Errorf("账单已过期")
+		}
 		return fmt.Errorf("账单不可支付")
 	}
-	now := time.Now().UTC()
 	var attemptID int64
 	var paidAmount, feePercent, feeAmount string
 	if gatewayCode == "balance" {
@@ -291,38 +609,16 @@ func (p *Payment) MarkPaid(ctx context.Context, invoiceNo, tradeNo, gatewayCode 
 			return fmt.Errorf("支付记录不存在或已处理")
 		}
 	}
+	args := markPaidTx{
+		invoiceNo: invoiceNo, invID: invID, userID: userID, orderID: orderID,
+		now: time.Now().UTC(), gatewayCode: gatewayCode, tradeNo: tradeNo,
+		paidAmount: paidAmount, feePercent: feePercent, feeAmount: feeAmount, attemptID: attemptID,
+	}
+
 	if kind == "recharge" {
-		var amount string
-		if err := tx.QueryRowContext(ctx, `SELECT amount::text FROM invoices WHERE id=$1`, invID).Scan(&amount); err != nil {
-			return err
-		}
-		if ok, err := validPositiveAmount(ctx, tx, amount); err != nil {
-			return err
-		} else if !ok {
-			return fmt.Errorf("充值金额无效")
-		}
-		if _, err := tx.ExecContext(ctx, `UPDATE users SET balance=balance+$2::numeric WHERE id=$1`, userID, amount); err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO balance_logs(user_id,amount,balance_after,type,note)
-			 SELECT $1,$2::numeric,balance,'recharge',$3 FROM users WHERE id=$1`,
-			userID, amount, "在线充值 "+invoiceNo); err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx,
-			`UPDATE invoices SET status=1,paid_at=$2,gateway=$3,trade_no=$4,paid_amount=$5,fee_percent=$6,fee_amount=$7 WHERE id=$1`,
-			invID, now, gatewayCode, tradeNo, paidAmount, feePercent, feeAmount); err != nil {
-			return err
-		}
-		res, err := tx.ExecContext(ctx,
-			`UPDATE payment_attempts SET status=1,provider_trade_no=$2,paid_at=$3 WHERE id=$1`,
-			attemptID, tradeNo, now)
+		amount, err := p.rechargeInvoiceTx(ctx, tx, args)
 		if err != nil {
 			return err
-		}
-		if n, err := res.RowsAffected(); err != nil || n != 1 {
-			return fmt.Errorf("支付记录不存在或已处理")
 		}
 		if err := tx.Commit(); err != nil {
 			return err
@@ -332,117 +628,10 @@ func (p *Payment) MarkPaid(ctx context.Context, invoiceNo, tradeNo, gatewayCode 
 		}
 		return nil
 	}
-	var productID int64
-	var cycle string
-	var renewServiceID sql.NullInt64
-	var orderKind string
-	var targetProductID int64
-	var diffAmount float64
-	err = tx.QueryRowContext(ctx,
-		`SELECT product_id,cycle,service_id,kind,coalesce(target_product_id,0),coalesce(diff_amount,0)::float8 FROM orders WHERE id=$1`, orderID).
-		Scan(&productID, &cycle, &renewServiceID, &orderKind, &targetProductID, &diffAmount)
-	if err != nil {
-		return fmt.Errorf("订单缺失: %w", err)
-	}
-	if renewServiceID.Valid && renewServiceID.Int64 <= 0 {
-		renewServiceID.Valid = false
-	}
-	if !renewServiceID.Valid {
-		if err := p.reserveStock(ctx, tx, productID, orderID); err != nil {
-			return err
-		}
-	}
-	if _, err := tx.ExecContext(ctx,
-		`UPDATE invoices SET status=1,paid_at=$2,gateway=$3,trade_no=$4,paid_amount=$5,fee_percent=$6,fee_amount=$7 WHERE id=$1`,
-		invID, now, gatewayCode, tradeNo, paidAmount, feePercent, feeAmount); err != nil {
-		return err
-	}
-	// 只结束本次网关实例最近的一条支付尝试，保留同一账单切换网关的历史记录。
-	res, err := tx.ExecContext(ctx,
-		`UPDATE payment_attempts SET status=1,provider_trade_no=$2,paid_at=$3 WHERE id=$1`,
-		attemptID, tradeNo, now)
+
+	res, err := p.fulfillOrderTx(ctx, tx, args)
 	if err != nil {
 		return err
-	}
-	if n, err := res.RowsAffected(); err != nil || n != 1 {
-		return fmt.Errorf("支付记录不存在或已处理")
-	}
-	if err := tx.QueryRowContext(ctx,
-		`UPDATE orders SET status=1,paid_at=$2 WHERE id=$1 AND status=0 RETURNING id`, orderID, now).Scan(&orderID); err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return err
-	}
-
-	interval, err := CycleInterval(cycle)
-	if err != nil {
-		return err
-	}
-
-	isUpgrade := orderKind == "upgrade"
-	isRenew := false
-	var svcID int64
-	switch {
-	case isUpgrade:
-		// 升降级单：支付事务内仅退差 + 标记"升级中"；换产品由 Lifecycle.Upgrade 在上游成功后落地
-		if !renewServiceID.Valid || renewServiceID.Int64 <= 0 {
-			return fmt.Errorf("升级订单缺少服务")
-		}
-		if targetProductID <= 0 {
-			return fmt.Errorf("升级订单缺少目标产品")
-		}
-		svcID = renewServiceID.Int64
-		if err := p.prepareUpgrade(ctx, tx, userID, svcID, diffAmount, orderID); err != nil {
-			return err
-		}
-	case renewServiceID.Valid && renewServiceID.Int64 > 0:
-		// 续费单：直接延期指定服务并触发上游 Renew
-		isRenew = true
-		svcID = renewServiceID.Int64
-		var svcStatus int16
-		var transition string
-		if err := tx.QueryRowContext(ctx, `SELECT status,coalesce(transition_state,'') FROM services WHERE id=$1 FOR UPDATE`, svcID).Scan(&svcStatus, &transition); err != nil {
-			return err
-		}
-		if (svcStatus != 1 && svcStatus != 2) || transition != "" {
-			return fmt.Errorf("服务当前状态不可续费")
-		}
-		// 检查是否已授权，防止重复续费
-		if p.PeriodGrants != nil {
-			if err := p.PeriodGrants.Grant(ctx, tx, svcID, invID, cycle); err != nil {
-				return err
-			}
-		}
-		// 续费：从当前到期时间（或现在，取较晚者）延长一个周期
-		if _, err := tx.ExecContext(ctx,
-			`UPDATE services SET expires_at=GREATEST(expires_at,now()) + $2::interval, expire_warn_sent=false WHERE id=$1 AND status IN (1,2) AND coalesce(transition_state,'')=''`,
-			svcID, interval); err != nil {
-			return err
-		}
-	default:
-		// 新购：每次支付独立建一个待开通服务（不合并既有同产品服务；续费走 isRenew 分支）
-		var svcIDNew int64
-		expiresAt, _ := CycleAddDate(now, cycle)
-		err = tx.QueryRowContext(ctx,
-			`INSERT INTO services(user_id,product_id,server_id,order_id,name,status,expires_at,upstream_provider,upstream_pid)
-			 SELECT $1,$2,p.server_id,$3,p.name,0,$4,coalesce(s.provider,''),p.upstream_pid
-			 FROM products p LEFT JOIN servers s ON s.id=p.server_id WHERE p.id=$2 RETURNING id`,
-			userID, productID, orderID, expiresAt).Scan(&svcIDNew)
-		if err != nil {
-			return err
-		}
-		svcID = svcIDNew
-	}
-
-	if p.Jobs != nil {
-		kind := "provision"
-		switch {
-		case isUpgrade:
-			kind = "upgrade"
-		case isRenew:
-			kind = "renew"
-		}
-		if err := p.enqueueFulfillment(ctx, tx, svcID, orderID, kind, cycle); err != nil {
-			return err
-		}
 	}
 	if err := tx.Commit(); err != nil {
 		return err
@@ -452,24 +641,248 @@ func (p *Payment) MarkPaid(ctx context.Context, invoiceNo, tradeNo, gatewayCode 
 	}
 	if p.Notifier != nil {
 		msg := "账单 " + invoiceNo + " 已支付，服务开通中。"
-		if isUpgrade {
+		if res.kind == "upgrade" {
 			msg = "账单 " + invoiceNo + " 已支付，服务升降级已生效。"
-		} else if isRenew {
+		} else if res.kind == "renew" {
 			msg = "账单 " + invoiceNo + " 已支付，服务已续费。"
 		}
 		p.Notifier.Notify(ctx, userID, "支付成功", msg)
 	}
 	if p.Jobs == nil {
-		switch {
-		case isUpgrade:
-			p.upgradeAsync(svcID, cycle, orderID)
-		case isRenew:
-			p.renewAsync(svcID, cycle, orderID)
+		switch res.kind {
+		case "upgrade":
+			p.upgradeAsync(res.svcID, res.cycle, res.orderID)
+		case "renew":
+			p.renewAsync(res.svcID, res.cycle, res.orderID)
 		default:
-			p.provisionAsync(svcID, productID, cycle)
+			p.provisionAsync(res.svcID, res.productID, res.cycle)
 		}
 	}
 	return nil
+}
+
+// markPaidResult 履约结果：kind 为 provision/renew/upgrade，决定后续队列与提示文案。
+type markPaidResult struct {
+	svcID     int64
+	cycle     string
+	productID int64
+	orderID   int64
+	kind      string
+}
+
+// rechargeInvoiceTx 充值账单核销：加余额、写流水、结账单与支付尝试，返回充值金额。
+func (p *Payment) rechargeInvoiceTx(ctx context.Context, tx *sql.Tx, a markPaidTx) (string, error) {
+	var amount string
+	if err := tx.QueryRowContext(ctx, `SELECT amount::text FROM invoices WHERE id=$1`, a.invID).Scan(&amount); err != nil {
+		return "", err
+	}
+	if ok, err := validPositiveAmount(ctx, tx, amount); err != nil {
+		return "", err
+	} else if !ok {
+		return "", fmt.Errorf("充值金额无效")
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE users SET balance=balance+$2::numeric WHERE id=$1`, a.userID, amount); err != nil {
+		return "", err
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO balance_logs(user_id,amount,balance_after,type,note)
+		 SELECT $1,$2::numeric,balance,'recharge',$3 FROM users WHERE id=$1`,
+		a.userID, amount, "在线充值 "+a.invoiceNo); err != nil {
+		return "", err
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE invoices SET status=1,paid_at=$2,gateway=$3,trade_no=$4,paid_amount=$5,fee_percent=$6,fee_amount=$7 WHERE id=$1`,
+		a.invID, a.now, a.gatewayCode, a.tradeNo, a.paidAmount, a.feePercent, a.feeAmount); err != nil {
+		return "", err
+	}
+	// 余额支付不产生 payment_attempts 记录（attemptID=0），跳过该更新。
+	if a.attemptID > 0 {
+		res, err := tx.ExecContext(ctx,
+			`UPDATE payment_attempts SET status=1,provider_trade_no=$2,paid_at=$3 WHERE id=$1`,
+			a.attemptID, a.tradeNo, a.now)
+		if err != nil {
+			return "", err
+		}
+		if n, err := res.RowsAffected(); err != nil || n != 1 {
+			return "", fmt.Errorf("支付记录不存在或已处理")
+		}
+	}
+	return amount, nil
+}
+
+// insertServiceSQL 新购建服务：把下单时的「周期费售价」冻结为对应周期的固定续费价
+// （对齐魔方财务 host.amount 的「下单冻结、续费沿用」语义，产品改价不影响存量服务）。
+// 金额 ≤0 时留 NULL，保持「跟随产品当前价」；管理员可在后台改或清空。
+// 参数：$1 用户 / $2 产品 / $3 订单 / $4 到期 / $5 周期 / $6 周期费售价（见 frozenRenewAmount）。
+const insertServiceSQL = `INSERT INTO services(user_id,product_id,server_id,order_id,name,status,expires_at,
+			upstream_provider,upstream_pid,renew_monthly,renew_quarterly,renew_yearly)
+		 SELECT $1,$2,p.server_id,$3,p.name,0,$4,coalesce(s.provider,''),p.upstream_pid,
+		        CASE WHEN $5='monthly'   AND $6::numeric>0 THEN $6::numeric END,
+		        CASE WHEN $5='quarterly' AND $6::numeric>0 THEN $6::numeric END,
+		        CASE WHEN $5='yearly'    AND $6::numeric>0 THEN $6::numeric END
+		 FROM products p LEFT JOIN servers s ON s.id=p.server_id WHERE p.id=$2 RETURNING id`
+
+// frozenRenewAmount 冻结的续费价 = 订单成交额里「周期费」那部分的售价。
+// 初装费是一次性费用（只首购收），不能被一起冻结，否则每次续费都会再收一遍：
+// 例如成交额 33 = 周期费 28 + 初装费 5，冻结 33 后续费就一直多收 5。
+// 利润对「周期费 + 初装费」整体加成，故先各自算售价再作差，得到初装费在成交额里的份额。
+// 无初装费、无快照、金额非法时原样返回成交额（保持既有行为，兼容老数据）。
+func (p *Payment) frozenRenewAmount(ctx context.Context, tx *sql.Tx, orderID int64, amount string) string {
+	var productID int64
+	var raw []byte
+	if err := tx.QueryRowContext(ctx,
+		`SELECT product_id, coalesce(config_snapshot::text,'') FROM orders WHERE id=$1`, orderID).
+		Scan(&productID, &raw); err != nil {
+		return amount
+	}
+	var snap struct {
+		Quote struct {
+			Total float64 `json:"total"`
+			Setup float64 `json:"setup"`
+		} `json:"quote"`
+	}
+	if json.Unmarshal([]byte(raw), &snap) != nil || snap.Quote.Setup <= 0 {
+		return amount
+	}
+	amt, err := strconv.ParseFloat(amount, 64)
+	if err != nil {
+		return amount
+	}
+	pt, pv, err := p.Products.ProductSellProfit(ctx, productID)
+	if err != nil {
+		return amount
+	}
+	if v := frozenRenewValue(amt, snap.Quote.Total, snap.Quote.Setup, pt, pv); v > 0 {
+		return strconv.FormatFloat(v, 'f', 2, 64)
+	}
+	return "0"
+}
+
+// frozenRenewValue 冻结续费价的纯计算：成交额 − 初装费在成交额里的售价份额。
+func frozenRenewValue(amount, quoteTotal, quoteSetup float64, profitType int16, profitValue float64) float64 {
+	setupSell := mathRound(applyProfit(quoteTotal+quoteSetup, profitType, profitValue)) -
+		mathRound(applyProfit(quoteTotal, profitType, profitValue))
+	return mathRound(amount - setupSell)
+}
+
+// fulfillOrderTx 订单账单核销：结账单/结束支付尝试/结束订单后，按订单种类完成
+// 升级（退差+标记升级中）/续费（延期）/新购（建服务）三分支并入队履约。
+func (p *Payment) fulfillOrderTx(ctx context.Context, tx *sql.Tx, a markPaidTx) (markPaidResult, error) {
+	var productID int64
+	var cycle string
+	var amountStr string
+	var renewServiceID sql.NullInt64
+	var orderKind string
+	var targetProductID int64
+	var diffAmount float64
+	err := tx.QueryRowContext(ctx,
+		`SELECT product_id,cycle,coalesce(amount,0)::text,service_id,kind,coalesce(target_product_id,0),coalesce(diff_amount,0)::float8 FROM orders WHERE id=$1`, a.orderID).
+		Scan(&productID, &cycle, &amountStr, &renewServiceID, &orderKind, &targetProductID, &diffAmount)
+	if err != nil {
+		return markPaidResult{}, fmt.Errorf("订单缺失: %w", err)
+	}
+	if renewServiceID.Valid && renewServiceID.Int64 <= 0 {
+		renewServiceID.Valid = false
+	}
+	if !renewServiceID.Valid {
+		if err := p.reserveStock(ctx, tx, productID, a.orderID); err != nil {
+			return markPaidResult{}, err
+		}
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE invoices SET status=1,paid_at=$2,gateway=$3,trade_no=$4,paid_amount=$5,fee_percent=$6,fee_amount=$7 WHERE id=$1`,
+		a.invID, a.now, a.gatewayCode, a.tradeNo, a.paidAmount, a.feePercent, a.feeAmount); err != nil {
+		return markPaidResult{}, err
+	}
+	// 只结束本次网关实例最近的一条支付尝试，保留同一账单切换网关的历史记录。
+	// 余额支付没有支付尝试记录（attemptID=0），跳过。
+	if a.attemptID > 0 {
+		res, err := tx.ExecContext(ctx,
+			`UPDATE payment_attempts SET status=1,provider_trade_no=$2,paid_at=$3 WHERE id=$1`,
+			a.attemptID, a.tradeNo, a.now)
+		if err != nil {
+			return markPaidResult{}, err
+		}
+		if n, err := res.RowsAffected(); err != nil || n != 1 {
+			return markPaidResult{}, fmt.Errorf("支付记录不存在或已处理")
+		}
+	}
+	if err := tx.QueryRowContext(ctx,
+		`UPDATE orders SET status=1,paid_at=$2 WHERE id=$1 AND status=0 RETURNING id`, a.orderID, a.now).Scan(&a.orderID); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return markPaidResult{}, err
+	}
+
+	interval, err := CycleInterval(cycle)
+	if err != nil {
+		return markPaidResult{}, err
+	}
+
+	isUpgrade := orderKind == "upgrade"
+	isRenew := false
+	var svcID int64
+	switch {
+	case isUpgrade:
+		// 升降级单：支付事务内仅退差 + 标记"升级中"；换产品由 Lifecycle.Upgrade 在上游成功后落地
+		if !renewServiceID.Valid || renewServiceID.Int64 <= 0 {
+			return markPaidResult{}, fmt.Errorf("升级订单缺少服务")
+		}
+		if targetProductID <= 0 {
+			return markPaidResult{}, fmt.Errorf("升级订单缺少目标产品")
+		}
+		svcID = renewServiceID.Int64
+		if err := p.prepareUpgrade(ctx, tx, a.userID, svcID, diffAmount, a.orderID); err != nil {
+			return markPaidResult{}, err
+		}
+	case renewServiceID.Valid && renewServiceID.Int64 > 0:
+		// 续费单：直接延期指定服务并触发上游 Renew
+		isRenew = true
+		svcID = renewServiceID.Int64
+		var svcStatus int16
+		var transition string
+		if err := tx.QueryRowContext(ctx, `SELECT status,coalesce(transition_state,'') FROM services WHERE id=$1 FOR UPDATE`, svcID).Scan(&svcStatus, &transition); err != nil {
+			return markPaidResult{}, err
+		}
+		if (svcStatus != 1 && svcStatus != 2) || transition != "" {
+			return markPaidResult{}, fmt.Errorf("服务当前状态不可续费")
+		}
+		// 检查是否已授权，防止重复续费
+		if p.PeriodGrants != nil {
+			if err := p.PeriodGrants.Grant(ctx, tx, svcID, a.invID, cycle); err != nil {
+				return markPaidResult{}, err
+			}
+		}
+		// 续费：从当前到期时间（或现在，取较晚者）延长一个周期
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE services SET expires_at=GREATEST(expires_at,now()) + $2::interval, expire_warn_sent=false WHERE id=$1 AND status IN (1,2) AND coalesce(transition_state,'')=''`,
+			svcID, interval); err != nil {
+			return markPaidResult{}, err
+		}
+	default:
+		// 新购：每次支付独立建一个待开通服务（不合并既有同产品服务；续费走 isRenew 分支）
+		var svcIDNew int64
+		expiresAt, _ := CycleAddDate(a.now, cycle)
+		err = tx.QueryRowContext(ctx, insertServiceSQL,
+			a.userID, productID, a.orderID, expiresAt, cycle,
+			p.frozenRenewAmount(ctx, tx, a.orderID, amountStr)).Scan(&svcIDNew)
+		if err != nil {
+			return markPaidResult{}, err
+		}
+		svcID = svcIDNew
+	}
+
+	kind := "provision"
+	switch {
+	case isUpgrade:
+		kind = "upgrade"
+	case isRenew:
+		kind = "renew"
+	}
+	if p.Jobs != nil {
+		if err := p.enqueueFulfillment(ctx, tx, svcID, a.orderID, kind, cycle); err != nil {
+			return markPaidResult{}, err
+		}
+	}
+	return markPaidResult{svcID: svcID, cycle: cycle, productID: productID, orderID: a.orderID, kind: kind}, nil
 }
 
 const opRenewTimeout = 90 * time.Second
@@ -526,8 +939,8 @@ func (p *Payment) prepareUpgrade(ctx context.Context, tx *sql.Tx, userID, svcID 
 		}
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO balance_logs(user_id,amount,balance_after,type,note)
-			 SELECT $1,$2::numeric,balance,'refund','服务降级退款 订单#'||$3::text FROM users WHERE id=$1`,
-			userID, refund, orderID); err != nil {
+			 SELECT $1,$2::numeric,balance,'refund','服务降级退款 订单#'||$3 FROM users WHERE id=$1`,
+			userID, refund, strconv.FormatInt(orderID, 10)); err != nil {
 			return err
 		}
 	}
@@ -588,7 +1001,7 @@ func (p *Payment) provision(ctx context.Context, serviceID, _ int64, cycle strin
 	cfg := server.Config{APIURL: sv.APIURL, APIUsername: sv.APIUsername, APIKey: sv.APIKey, CredentialRevision: sv.CredentialRevision}
 	unlock, err := lockUpstreamAccount(ctx, p.db, cfg)
 	if err != nil {
-		return p.failProvision(ctx, serviceID, fmt.Errorf("锁定上游账户失败: %w", err))
+		return p.failProvision(ctx, serviceID, fmt.Errorf("锁定账户失败: %w", err))
 	}
 	defer unlock()
 	res, err := prov.Provision(ctx, cfg, server.ProvisionRequest{
@@ -599,6 +1012,8 @@ func (p *Payment) provision(ctx context.Context, serviceID, _ int64, cycle strin
 		ConfigOpts: p.orderConfigOpts(ctx, serviceID),
 		// ServiceID 供上游派生唯一标识（如 EasyPanel 站点名 u{id}）。
 		ServiceID: serviceID,
+		// 下单时的成本额，供上游开通前比对账单金额；上游已涨价则转人工决定强制开通或退款。
+		ExpectAmount: p.orderCostAmount(ctx, serviceID),
 	}, &serviceCheckpoint{repo: p.Provisions, serviceID: serviceID, ctx: ctx})
 	if err != nil {
 		return p.failProvision(ctx, serviceID, err)
@@ -676,6 +1091,69 @@ func (s *serviceCheckpoint) GetCheckpoint(key string) (string, bool, error) {
 
 func (s *serviceCheckpoint) SetCheckpoint(key, val string) error {
 	return s.repo.SetCheckpoint(s.ctx, s.serviceID, key, val)
+}
+
+func (s *serviceCheckpoint) DeleteCheckpoint(key string) error {
+	return s.repo.DeleteCheckpoint(s.ctx, s.serviceID, key)
+}
+
+// orderCostAmount 读取服务对应订单在下单时的成本额（config_snapshot.quote 的周期费 + 初装费），
+// 作为开通前比价的基准。上游开通账单里含一次性初装费，基准漏掉它会每次都误判成"上游涨价"。
+// 取不到（老数据无快照）返回 0，调用方跳过比价。
+func (p *Payment) orderCostAmount(ctx context.Context, serviceID int64) float64 {
+	var raw []byte
+	if err := p.db.QueryRowContext(ctx,
+		`SELECT o.config_snapshot FROM services sv JOIN orders o ON o.id=sv.order_id WHERE sv.id=$1`,
+		serviceID).Scan(&raw); err != nil {
+		return 0
+	}
+	var snap struct {
+		Quote struct {
+			Total float64 `json:"total"`
+			Setup float64 `json:"setup"`
+		} `json:"quote"`
+	}
+	if json.Unmarshal(raw, &snap) != nil {
+		return 0
+	}
+	return snap.Quote.Total + snap.Quote.Setup
+}
+
+// RefundPendingService 关闭一个「已付款但未开通」的服务：全额退订单实付 → 取消订单 → 终止服务。
+// 用于上游涨价后管理员选择退款给用户（不再按新价开通）。
+// 可重入：以 refunds 表是否已有记录判定。退款成功但关单失败时，重试只补齐关单、不重复退款；
+// 反过来若先关单后退款，退款失败会让用户钱货两空，故顺序固定为"先退后关"。
+func (p *Payment) RefundPendingService(ctx context.Context, adminID, serviceID int64, reason string) error {
+	var orderID int64
+	var amount string
+	if err := p.db.QueryRowContext(ctx,
+		`SELECT o.id, o.amount::text
+		   FROM services sv JOIN orders o ON o.id=sv.order_id
+		  WHERE sv.id=$1 AND sv.status=0`, serviceID).Scan(&orderID, &amount); err != nil {
+		return fmt.Errorf("服务不存在或非待开通状态")
+	}
+	var refunded bool
+	if err := p.db.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM refunds WHERE order_id=$1 AND status='done')`, orderID).Scan(&refunded); err != nil {
+		return err
+	}
+	if !refunded {
+		if err := p.Refund(ctx, adminID, orderID, amount, reason, "balance"); err != nil {
+			return err
+		}
+	}
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `UPDATE orders SET status=2 WHERE id=$1`, orderID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE services SET status=3 WHERE id=$1 AND status=0`, serviceID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 var ErrNotFound2 = errNotFound("账单不存在")

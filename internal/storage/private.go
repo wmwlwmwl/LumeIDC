@@ -17,35 +17,81 @@ import (
 )
 
 const maxIdentityPhotoBytes = 5 << 20
+const maxTicketAttachmentBytes = 10 << 20
 
 // PrivateFiles 将实名照片保存到 web root 外的私有目录。
 type PrivateFiles struct {
 	Root string
 }
 
+// readUpload 读入上传文件并嗅探 MIME：大小校验 → 读取（限额）→ 内容类型探测。
+// kind/limitText 仅用于错误文案（如 "附件"/"10 MB"）。
+func readUpload(header *multipart.FileHeader, maxBytes int64, kind, limitText string) ([]byte, string, error) {
+	if header == nil || header.Size <= 0 || header.Size > maxBytes {
+		return nil, "", fmt.Errorf("%s大小必须在 1 字节至 %s 之间", kind, limitText)
+	}
+	f, err := header.Open()
+	if err != nil {
+		return nil, "", fmt.Errorf("读取%s失败", kind)
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, maxBytes+1))
+	if err != nil || len(data) == 0 {
+		return nil, "", fmt.Errorf("读取%s失败", kind)
+	}
+	if len(data) > int(maxBytes) {
+		return nil, "", fmt.Errorf("%s不能超过 %s", kind, limitText)
+	}
+	return data, http.DetectContentType(data), nil
+}
+
+// writePrivate 随机名已生成的前提下写入私有目录（Base 校验 + 0600）。
+func (s *PrivateFiles) writePrivate(name string, data []byte, kind string) error {
+	if err := os.MkdirAll(s.Root, 0o700); err != nil {
+		return fmt.Errorf("创建私有目录失败: %w", err)
+	}
+	path := filepath.Join(s.Root, name)
+	if filepath.Base(path) != name {
+		return fmt.Errorf("%s路径无效", kind)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return fmt.Errorf("保存%s失败", kind)
+	}
+	return nil
+}
+
+// SaveAttachment stores a ticket attachment outside the web root.
+func (s *PrivateFiles) SaveAttachment(header *multipart.FileHeader) (string, string, string, int64, error) {
+	if s == nil || s.Root == "" {
+		return "", "", "", 0, errors.New("私有存储未配置")
+	}
+	data, mimeType, err := readUpload(header, maxTicketAttachmentBytes, "附件", "10 MB")
+	if err != nil {
+		return "", "", "", 0, err
+	}
+	allowed := map[string]bool{"image/jpeg": true, "image/png": true, "image/gif": true, "application/pdf": true, "text/plain; charset=utf-8": true, "application/zip": true}
+	if !allowed[mimeType] {
+		return "", "", "", 0, errors.New("仅支持 JPG、PNG、GIF、PDF、TXT 或 ZIP 附件")
+	}
+	var nameBytes [24]byte
+	if _, err := rand.Read(nameBytes[:]); err != nil {
+		return "", "", "", 0, err
+	}
+	name := fmt.Sprintf("ticket-%x", nameBytes)
+	if err := s.writePrivate(name, data, "附件"); err != nil {
+		return "", "", "", 0, err
+	}
+	return name, filepath.Base(header.Filename), mimeType, int64(len(data)), nil
+}
+
 func (s *PrivateFiles) SavePhoto(header *multipart.FileHeader) (string, error) {
 	if s == nil || s.Root == "" {
 		return "", errors.New("私有存储未配置")
 	}
-	if header == nil || header.Size <= 0 || header.Size > maxIdentityPhotoBytes {
-		return "", errors.New("照片大小必须在 1 字节至 5 MB 之间")
-	}
-	if err := os.MkdirAll(s.Root, 0o700); err != nil {
-		return "", fmt.Errorf("创建私有目录失败: %w", err)
-	}
-	f, err := header.Open()
+	data, contentType, err := readUpload(header, maxIdentityPhotoBytes, "照片", "5 MB")
 	if err != nil {
-		return "", errors.New("读取照片失败")
+		return "", err
 	}
-	defer f.Close()
-	data, err := io.ReadAll(io.LimitReader(f, maxIdentityPhotoBytes+1))
-	if err != nil || len(data) == 0 {
-		return "", errors.New("读取照片失败")
-	}
-	if len(data) > maxIdentityPhotoBytes {
-		return "", errors.New("照片不能超过 5 MB")
-	}
-	contentType := http.DetectContentType(data)
 	if contentType != "image/jpeg" && contentType != "image/png" {
 		return "", errors.New("只支持 JPG 或 PNG 照片")
 	}
@@ -62,12 +108,8 @@ func (s *PrivateFiles) SavePhoto(header *multipart.FileHeader) (string, error) {
 		ext = ".png"
 	}
 	name := fmt.Sprintf("%x%s", nameBytes, ext)
-	path := filepath.Join(s.Root, name)
-	if filepath.Base(path) != name {
-		return "", errors.New("照片路径无效")
-	}
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		return "", errors.New("保存照片失败")
+	if err := s.writePrivate(name, data, "照片"); err != nil {
+		return "", err
 	}
 	return name, nil
 }

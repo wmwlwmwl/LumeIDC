@@ -17,12 +17,20 @@ func (a *Admin) adminUpdatePage(w http.ResponseWriter, r *http.Request) {
 	if !adminRequire(w, r) { // 未登录 303 跳后台登录页（与其他后台页一致，不裸显 401 文本）
 		return
 	}
-	data := AdminData{CSRF: a.adminCSRF(w, r), UpdateDisabled: runtime.GOOS != "linux"}
+	data := AdminData{UpdateDisabled: runtime.GOOS != "linux"}
 	if a.Updater != nil {
 		data.UpdateInfo = &update.Info{CurrentVersion: a.Updater.Version}
 		data.UpdatePending = a.Updater.HasPendingRestart()
 	}
-	a.renderAdmin(w, "admin_update.html", data)
+	out := map[string]any{
+		"ok":              1,
+		"disabled":        data.UpdateDisabled, // 非 Linux 不支持在线更新
+		"pending_restart": data.UpdatePending,  // 已替换二进制、待重启
+	}
+	if data.UpdateInfo != nil {
+		out["current_version"] = data.UpdateInfo.CurrentVersion
+	}
+	writeJSON(w, out)
 }
 
 // updateRequireAdmin 更新相关 JSON 接口的会话校验：失效时返回 JSON 错误，

@@ -19,16 +19,23 @@ type QuoteLine struct {
 	Name  string  `json:"name"`
 	Value string  `json:"value"`
 	Price float64 `json:"price"`
+	// Setup 该项初装费（上游一次性费用）：只在首次购买收取，续费不收。
+	Setup float64 `json:"setup,omitempty"`
 }
 
 // Quote 服务端重算的报价结果。
 type Quote struct {
 	Base   float64     `json:"base"`
 	Config []QuoteLine `json:"config"`
-	Total  float64     `json:"total"`
+	// Setup 初装费合计（一次性）：仅首次购买计入应付；续费/升级不含。
+	Setup float64 `json:"setup"`
+	Total float64 `json:"total"`
 }
 
-// CalculateQuote 服务端权威计价：基础周期价 + Σ配置加价。
+// PayableOnce 首次购买的成本基数 = 周期费 + 初装费。利润加成由调用方施加。
+func (q *Quote) PayableOnce() float64 { return q.Total + q.Setup }
+
+// CalculateQuote 服务端权威计价：基础周期价 + Σ配置加价（另汇总一次性初装费）。
 // 只认产品声明的配置项，用户提交的多余键一律丢弃（防注入/防篡改）。
 func CalculateQuote(opts []repo.ConfigOption, basePrice float64, cycle string, selection map[string]string) (*Quote, error) {
 	if !money.FiniteNonNegative(basePrice) {
@@ -54,7 +61,8 @@ func CalculateQuote(opts []repo.ConfigOption, basePrice float64, cycle string, s
 			}
 			q.Config = append(q.Config, line)
 			q.Total += line.Price
-			if !money.FiniteNonNegative(q.Total) {
+			q.Setup += line.Setup
+			if !money.FiniteNonNegative(q.Total) || !money.FiniteNonNegative(q.Setup) {
 				return nil, fmt.Errorf("总价无效")
 			}
 		default: // select
@@ -66,9 +74,14 @@ func CalculateQuote(opts []repo.ConfigOption, basePrice float64, cycle string, s
 			if !money.FiniteNonNegative(p) {
 				return nil, fmt.Errorf("%s: 配置价格无效", opt.Name)
 			}
-			q.Config = append(q.Config, QuoteLine{Field: opt.Field, Name: opt.Name, Value: sub.Name, Price: p})
+			s := sub.SetupPrice(cycle)
+			if !money.FiniteNonNegative(s) {
+				return nil, fmt.Errorf("%s: 初装费无效", opt.Name)
+			}
+			q.Config = append(q.Config, QuoteLine{Field: opt.Field, Name: opt.Name, Value: sub.Name, Price: p, Setup: s})
 			q.Total += p
-			if !money.FiniteNonNegative(q.Total) {
+			q.Setup += s
+			if !money.FiniteNonNegative(q.Total) || !money.FiniteNonNegative(q.Setup) {
 				return nil, fmt.Errorf("总价无效")
 			}
 		}
@@ -144,6 +157,8 @@ func priceRange(opt repo.ConfigOption, valStr, cycle string) (QuoteLine, error) 
 		Field: opt.Field, Name: opt.Name,
 		Value: fmt.Sprintf("%g%s", v, opt.Unit),
 		Price: math.Round(price*100) / 100,
+		// 初装费按档位取一次，不随数量成倍（一次性费用，语义是开通/安装费）。
+		Setup: matched.SetupPrice(cycle),
 	}, nil
 }
 
@@ -231,8 +246,21 @@ func SellPriceFromData(base float64, opts []repo.ConfigOption, pt int16, pv floa
 
 // DisplayPrice 目录展示月价：（基础价 + 最低一档配置价）×(1+利润比例%) 或 +固定利润。
 // 无配置项的产品退化为仅基础价。纯展示用，绝不参与真实计价（真实计价在 CreateOrder）。
+// 不含一次性初装费——后台“月价”列与 0 元订单判定要的是周期价口径。
 // ponytail: 配置型产品基础价只是“裸产品价”，必须叠加最低可选配置（CPU/内存等）才是真实起步价。
 func DisplayPrice(base float64, opts []repo.ConfigOption, profitType int16, profitValue float64) float64 {
+	return displayPrice(base, opts, profitType, profitValue, "monthly", false)
+}
+
+// DisplayStartPrice 门店起步价：周期价 + 最低配置价 + 最低配置档的初装费（一次性），再按利润加成。
+// 对齐魔方财务商品列表口径（ViewModel：product_price = 周期价 + 初装费 + 最低配置价(含该项初装费)）：
+// 上游 348 即 3 + 25 + 5 = ￥33.00，只看周期价会显示 28，比上游少。
+// 用于商品列表与购买页周期标签。
+func DisplayStartPrice(base float64, opts []repo.ConfigOption, profitType int16, profitValue float64, cycle string) float64 {
+	return displayPrice(base, opts, profitType, profitValue, cycle, true)
+}
+
+func displayPrice(base float64, opts []repo.ConfigOption, profitType int16, profitValue float64, cycle string, withSetup bool) float64 {
 	var cfgTotal float64
 	for _, o := range opts {
 		if o.Hidden || o.Field == "os" { // 同 CalculateQuote 口径：os 不计价
@@ -254,11 +282,14 @@ func DisplayPrice(base float64, opts []repo.ConfigOption, profitType int16, prof
 					if step <= 0 {
 						step = 1
 					}
-					unit := s.Price("")
+					unit := s.Price(cycle)
 					if s.Max > s.Min {
 						cfgTotal += unit * math.Floor(v/step)
 					} else {
 						cfgTotal += unit
+					}
+					if withSetup {
+						cfgTotal += s.SetupPrice(cycle) // 初装费按档位取一次，不随数量成倍
 					}
 					break
 				}
@@ -266,17 +297,21 @@ func DisplayPrice(base float64, opts []repo.ConfigOption, profitType int16, prof
 			continue
 		}
 		best := -1.0
+		var bestSub repo.ConfigValue
 		for _, s := range o.Subs {
-			p := s.Price("")
+			p := s.Price(cycle)
 			if p < 0 {
 				p = 0
 			}
 			if best < 0 || p < best {
-				best = p
+				best, bestSub = p, s
 			}
 		}
 		if best > 0 {
 			cfgTotal += best
+		}
+		if withSetup {
+			cfgTotal += bestSub.SetupPrice(cycle) // 最低档也可能是 0 元周期价 + 初装费
 		}
 	}
 	return math.Round(applyProfit(base+cfgTotal, profitType, profitValue)*100) / 100

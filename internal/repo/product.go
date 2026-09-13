@@ -11,34 +11,38 @@ import (
 )
 
 type Product struct {
-	ID               int64
-	TypeID           sql.NullInt64
-	ServerID         sql.NullInt64
-	UpstreamPID      int64
-	UpstreamCycle    string
-	Name             string
-	Description      string
-	Stock            int
-	Hidden           bool
-	ProfitType       int16   // 0百分比 1固定金额（对齐 ZJMF 上游利润方式）
-	ProfitValue      float64 // 百分比或固定金额
-	RequiresIdentity bool    // 购买该产品是否必须已通过实名认证
+	ID            int64
+	TypeID        sql.NullInt64
+	ServerID      sql.NullInt64
+	UpstreamPID   int64
+	UpstreamCycle string
+	Name          string
+	Description   string
+	Stock         int
+	Hidden        bool
+	// UpstreamOfflineReason 上游停售原因（定时同步写入，与手动 Hidden 互不覆盖）：
+	// "" 正常，"unshelved" 上游已下架/删除。见 053 迁移。
+	UpstreamOfflineReason string
+	ProfitType            int16   // 0百分比 1固定金额（对齐 ZJMF 上游利润方式）
+	ProfitValue           float64 // 百分比或固定金额
+	RequiresIdentity      bool    // 购买该产品是否必须已通过实名认证
 }
 
 // AdminProductRow 是后台产品列表一次查询所需的展示数据。
 // 配置项在这里解析，避免列表模板为每个产品再次访问数据库。
 type AdminProductRow struct {
-	ID               int64
-	Name             string
-	TypeName         string
-	ServerName       string
-	UpstreamPID      int64
-	Monthly          string
-	Hidden           bool
-	Options          []ConfigOption
-	ProfitType       int16
-	ProfitValue      float64
-	RequiresIdentity bool
+	ID                    int64
+	Name                  string
+	TypeName              string
+	ServerName            string
+	UpstreamPID           int64
+	Monthly               string
+	Hidden                bool
+	UpstreamOfflineReason string
+	Options               []ConfigOption
+	ProfitType            int16
+	ProfitValue           float64
+	RequiresIdentity      bool
 }
 
 type ProductType struct {
@@ -52,11 +56,11 @@ type ProductType struct {
 
 type Products struct{ db *sql.DB }
 
-const productCols = `SELECT id,type_id,server_id,upstream_pid,upstream_cycle,name,description,stock,hidden,profit_type,profit_value,requires_identity`
+const productCols = `SELECT id,type_id,server_id,upstream_pid,upstream_cycle,name,description,stock,hidden,profit_type,profit_value,requires_identity,upstream_offline_reason`
 
 func scanProduct(rows *sql.Rows, pr *Product) error {
 	return rows.Scan(&pr.ID, &pr.TypeID, &pr.ServerID, &pr.UpstreamPID, &pr.UpstreamCycle,
-		&pr.Name, &pr.Description, &pr.Stock, &pr.Hidden, &pr.ProfitType, &pr.ProfitValue, &pr.RequiresIdentity)
+		&pr.Name, &pr.Description, &pr.Stock, &pr.Hidden, &pr.ProfitType, &pr.ProfitValue, &pr.RequiresIdentity, &pr.UpstreamOfflineReason)
 }
 
 // ListAll 后台用：包含隐藏产品
@@ -89,7 +93,7 @@ func (p *Products) ListAdmin(ctx context.Context, pricesetID int64) ([]AdminProd
 		       coalesce(pp.monthly::text, ''), p.hidden, p.requires_identity,
 		       coalesce(p.configoption::text, '[]'),
 		       p.profit_type, p.profit_value,
-		       coalesce(s.profit_type, 0), coalesce(s.profit_value, 0)
+		       coalesce(s.profit_type, 0), coalesce(s.profit_value, 0), p.upstream_offline_reason
 		FROM products p
 		LEFT JOIN product_types t ON t.id = p.type_id
 		LEFT JOIN product_types parent ON parent.id = t.parent_id
@@ -108,7 +112,7 @@ func (p *Products) ListAdmin(ctx context.Context, pricesetID int64) ([]AdminProd
 		var productProfitType, serverProfitType int16
 		var productProfitValue, serverProfitValue float64
 		if err := rows.Scan(&row.ID, &row.Name, &row.TypeName, &row.ServerName, &row.UpstreamPID, &row.Monthly, &row.Hidden, &row.RequiresIdentity,
-			&raw, &productProfitType, &productProfitValue, &serverProfitType, &serverProfitValue); err != nil {
+			&raw, &productProfitType, &productProfitValue, &serverProfitType, &serverProfitValue, &row.UpstreamOfflineReason); err != nil {
 			return nil, err
 		}
 		if productProfitValue > 0 {
@@ -132,7 +136,7 @@ func (p *Products) ListVisibleByTypes(ctx context.Context, typeIDs []int64) ([]P
 		return nil, nil
 	}
 	rows, err := p.db.QueryContext(ctx,
-		productCols+` FROM products WHERE hidden=false AND type_id = ANY($1) ORDER BY id`, typeIDs)
+		productCols+` FROM products WHERE hidden=false AND upstream_offline_reason='' AND type_id = ANY($1) ORDER BY id`, typeIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -151,7 +155,7 @@ func (p *Products) ListVisibleByTypes(ctx context.Context, typeIDs []int64) ([]P
 func (p *Products) IsSellable(ctx context.Context, id int64) (bool, error) {
 	var ok bool
 	err := p.db.QueryRowContext(ctx, `
-		SELECT p.hidden=false AND t.id IS NOT NULL AND t.hidden=false
+		SELECT p.hidden=false AND p.upstream_offline_reason='' AND t.id IS NOT NULL AND t.hidden=false
 			AND (t.parent_id=0 OR EXISTS (
 				SELECT 1 FROM product_types parent WHERE parent.id=t.parent_id AND parent.hidden=false
 			))
@@ -163,7 +167,7 @@ func (p *Products) Get(ctx context.Context, id int64) (*Product, error) {
 	err := p.db.QueryRowContext(ctx,
 		productCols+` FROM products WHERE id=$1`, id).
 		Scan(&pr.ID, &pr.TypeID, &pr.ServerID, &pr.UpstreamPID, &pr.UpstreamCycle,
-			&pr.Name, &pr.Description, &pr.Stock, &pr.Hidden, &pr.ProfitType, &pr.ProfitValue, &pr.RequiresIdentity)
+			&pr.Name, &pr.Description, &pr.Stock, &pr.Hidden, &pr.ProfitType, &pr.ProfitValue, &pr.RequiresIdentity, &pr.UpstreamOfflineReason)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -355,6 +359,70 @@ func (p *Products) Price(ctx context.Context, productID, pricesetID int64) (*Pri
 	return &r, err
 }
 
+// PricesByProduct 批量读取一组产品在指定价格组下的价格（列表页批量计价用）。
+// 无价格行或查询失败的产品不在结果中，调用方按"无价"处理（与逐条 Price 出错语义一致）。
+func (p *Products) PricesByProduct(ctx context.Context, pricesetID int64, ids []int64) map[int64]PriceRow {
+	out := make(map[int64]PriceRow, len(ids))
+	if len(ids) == 0 {
+		return out
+	}
+	rows, err := p.db.QueryContext(ctx,
+		`SELECT product_id, monthly, quarterly, yearly FROM product_prices WHERE priceset_id=$1 AND product_id = ANY($2)`,
+		pricesetID, ids)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		var r PriceRow
+		if err := rows.Scan(&id, &r.Monthly, &r.Quarterly, &r.Yearly); err != nil {
+			continue
+		}
+		out[id] = r
+	}
+	return out
+}
+
+// ProfitFallback 服务器级默认利润（产品未设置利润值时回退使用）。
+type ProfitFallback struct {
+	Type  int16
+	Value float64
+}
+
+// ServerProfitFallbacks 批量取产品关联服务器的默认利润，与 ServerProfitFallback 同口径：
+// st<=0、sv<=0 分别钳为 0；未绑定服务器或查询失败的产品按 (0,0) 处理。
+func (p *Products) ServerProfitFallbacks(ctx context.Context, ids []int64) map[int64]ProfitFallback {
+	out := make(map[int64]ProfitFallback, len(ids))
+	if len(ids) == 0 {
+		return out
+	}
+	rows, err := p.db.QueryContext(ctx,
+		`SELECT pr.id, coalesce(s.profit_type,0), coalesce(s.profit_value,0)
+		 FROM products pr LEFT JOIN servers s ON s.id=pr.server_id
+		 WHERE pr.id = ANY($1)`, ids)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		var st int16
+		var sv float64
+		if err := rows.Scan(&id, &st, &sv); err != nil {
+			continue
+		}
+		if st <= 0 {
+			st = 0
+		}
+		if sv <= 0 {
+			sv = 0
+		}
+		out[id] = ProfitFallback{Type: st, Value: sv}
+	}
+	return out
+}
+
 // DefaultPricesetID returns the lowest priceset id. ponytail: 一期单价格组简化，
 // 多价格组/分组折扣二期改为按用户 group 关联。
 func (p *Products) DefaultPricesetID(ctx context.Context) (int64, error) {
@@ -441,6 +509,35 @@ func (p *Products) UpdatePriceAndStock(ctx context.Context, productID int64, mon
 
 func money(v float64) string { return fmt.Sprintf("%.2f", v) }
 
+// UpdatePriceAndStockSkippingZero 同步专用：只覆盖上游有价（>0）的周期，
+// 上游为 0 的周期保留本地现值，避免把有效价写成 0（0 元购），也避免上游关掉某周期时误伤。
+// 首次插入时按原值写入（本地本就是 0，无有效价可保留）。库存始终跟随上游。
+func (p *Products) UpdatePriceAndStockSkippingZero(ctx context.Context, productID int64, monthly, quarterly, yearly float64, stock int) error {
+	if !moneypkg.FiniteNonNegative(monthly) || !moneypkg.FiniteNonNegative(quarterly) || !moneypkg.FiniteNonNegative(yearly) {
+		return fmt.Errorf("商品价格无效")
+	}
+	psID, _ := p.DefaultPricesetID(ctx)
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO product_prices(product_id,priceset_id,monthly,quarterly,yearly) VALUES($1,$2,$3,$4,$5)
+		 ON CONFLICT (product_id,priceset_id) DO UPDATE SET
+		   monthly   = CASE WHEN $3::numeric > 0 THEN $3::numeric ELSE product_prices.monthly   END,
+		   quarterly = CASE WHEN $4::numeric > 0 THEN $4::numeric ELSE product_prices.quarterly END,
+		   yearly    = CASE WHEN $5::numeric > 0 THEN $5::numeric ELSE product_prices.yearly    END`,
+		productID, psID, money(monthly), money(quarterly), money(yearly)); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE products SET stock=$2 WHERE id=$1`, productID, stock); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // UpsertPrice 按价格组 upsert 产品月/季/年价（价格保留调用方原文）。
 func (p *Products) UpsertPrice(ctx context.Context, productID, pricesetID int64, monthly, quarterly, yearly string) error {
 	_, err := p.db.ExecContext(ctx,
@@ -460,6 +557,24 @@ func (p *Products) SetDescription(ctx context.Context, productID int64, desc str
 func (p *Products) SetStock(ctx context.Context, productID int64, stock int) error {
 	_, err := p.db.ExecContext(ctx, `UPDATE products SET stock=$2 WHERE id=$1`, productID, stock)
 	return err
+}
+
+// UpstreamOfflineUnshelved 上游可售目录中已不存在（下架/删除）。取值与 053 迁移注释一致。
+const UpstreamOfflineUnshelved = "unshelved"
+
+// SetUpstreamOfflineReason 批量设置产品“上游停售原因”（定时同步专用，不影响管理员手动 hidden）。
+// reason 为空表示恢复正常在售，见 053 迁移中的取值说明；仅写入有变化的行，返回实际变更行数。
+func (p *Products) SetUpstreamOfflineReason(ctx context.Context, ids []int64, reason string) (int64, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	res, err := p.db.ExecContext(ctx,
+		`UPDATE products SET upstream_offline_reason=$2 WHERE id = ANY($1) AND upstream_offline_reason <> $2`,
+		ids, reason)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 // FindByUpstreamPID 按 (server_id, upstream_pid) 反查已对接本地产品 id；未找到返回 0,nil。

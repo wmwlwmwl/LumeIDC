@@ -22,6 +22,7 @@ type AdminGateway struct {
 type adminGatewayRow struct {
 	ID                                                                     int64
 	Code, Driver, Name, APIURL, PID, Channel, AppID, PrivateKey, PublicKey string
+	Key                                                                    string // 易支付商户密钥（仅用于“是否已配置”判断，不回传）
 	FeePercent                                                             string
 	Enabled                                                                bool
 	Sort                                                                   int
@@ -34,12 +35,7 @@ func (g *AdminGateway) Register(mux *http.ServeMux) {
 }
 
 func (g *AdminGateway) require(w http.ResponseWriter, r *http.Request) bool {
-	sess := middleware.FromSession(r.Context())
-	if sess == nil || !sess.IsAdmin {
-		http.Redirect(w, r, "/admin/login", http.StatusSeeOther)
-		return false
-	}
-	return true
+	return adminRequire(w, r)
 }
 
 func (g *AdminGateway) form(w http.ResponseWriter, r *http.Request) {
@@ -58,48 +54,77 @@ func (g *AdminGateway) form(w http.ResponseWriter, r *http.Request) {
 			feePercent = v.Config["fee_percent"]
 		}
 		rows = append(rows, adminGatewayRow{ID: v.ID, Code: v.Code, Driver: v.Driver, Name: v.Name,
-			APIURL: v.Config["api_url"], PID: v.Config["pid"], Channel: v.Config["channel"], AppID: v.Config["app_id"], PrivateKey: v.Config["private_key"], PublicKey: v.Config["public_key"], FeePercent: feePercent, Enabled: v.Enabled, Sort: v.Sort})
+			APIURL: v.Config["api_url"], PID: v.Config["pid"], Channel: v.Config["channel"], AppID: v.Config["app_id"], PrivateKey: v.Config["private_key"], PublicKey: v.Config["public_key"], Key: v.Config["key"], FeePercent: feePercent, Enabled: v.Enabled, Sort: v.Sort})
 	}
-	g.renderAdmin(w, "admin_gateway.html", AdminData{Rows: rows, CSRF: g.adminCSRF(w, r), Error: r.URL.Query().Get("err"), Msg: r.URL.Query().Get("msg")})
+	// 密钥类字段不回传（仅给是否已配置的标志）；编辑时留空即沿用旧值，
+	// 与保存逻辑一致。
+	out := make([]map[string]any, 0, len(rows))
+	for _, v := range rows {
+		out = append(out, map[string]any{
+			"id": v.ID, "code": v.Code, "driver": v.Driver, "name": v.Name,
+			"api_url": v.APIURL, "pid": v.PID, "channel": v.Channel, "app_id": v.AppID,
+			"fee_percent": v.FeePercent, "enabled": v.Enabled, "sort": v.Sort,
+			"has_key":         v.Key != "",
+			"has_private_key": v.PrivateKey != "",
+			"has_public_key":  v.PublicKey != "",
+		})
+	}
+	writeJSON(w, map[string]any{"ok": 1, "list": out})
 }
 
 func (g *AdminGateway) save(w http.ResponseWriter, r *http.Request) {
 	if !g.require(w, r) {
 		return
 	}
-	if tok := r.PostFormValue("_csrf"); tok == "" || !checkCSRF(r, tok) {
-		middleware.RedirectToLogin(w, r, "页面已过期，请重新登录后重试")
-		return
+	vals := jsonVals(r)
+	if vals == nil {
+		if tok := r.PostFormValue("_csrf"); tok == "" || !checkCSRF(r, tok) {
+			middleware.RedirectToLogin(w, r, "页面已过期，请重新登录后重试")
+			return
+		}
 	}
-	code := strings.TrimSpace(r.PostFormValue("code"))
-	driver := strings.TrimSpace(r.PostFormValue("driver"))
-	name := strings.TrimSpace(r.PostFormValue("name"))
+	fv := func(k string) string {
+		if vals != nil {
+			return vals[k]
+		}
+		return r.PostFormValue(k)
+	}
+	fail := func(msg string) {
+		if wantsJSON(r) {
+			writeJSON(w, map[string]any{"ok": 0, "msg": msg})
+			return
+		}
+		http.Redirect(w, r, "/admin/gateway?err="+url.QueryEscape(msg), http.StatusSeeOther)
+	}
+	code := strings.TrimSpace(fv("code"))
+	driver := strings.TrimSpace(fv("driver"))
+	name := strings.TrimSpace(fv("name"))
 	if code == "" || driver == "" || name == "" || strings.ContainsAny(code, " /?&") {
-		http.Redirect(w, r, "/admin/gateway?err="+url.QueryEscape("网关编码、类型和名称不能为空，编码不能含空格或特殊字符"), http.StatusSeeOther)
+		fail("网关编码、类型和名称不能为空，编码不能含空格或特殊字符")
 		return
 	}
 	impl, ok := g.Gateways[driver]
 	if !ok || impl.Driver() != driver {
-		http.Redirect(w, r, "/admin/gateway?err="+url.QueryEscape("支付插件类型不存在"), http.StatusSeeOther)
+		fail("支付插件类型不存在")
 		return
 	}
-	sort, _ := strconv.Atoi(r.PostFormValue("sort"))
-	feePercent, _, feeErr := moneyutil.ParsePercent(strings.TrimSpace(r.PostFormValue("fee_percent")))
+	sort, _ := strconv.Atoi(fv("sort"))
+	feePercent, _, feeErr := moneyutil.ParsePercent(strings.TrimSpace(fv("fee_percent")))
 	if feeErr != nil {
-		http.Redirect(w, r, "/admin/gateway?err="+url.QueryEscape("手续费率无效（请输入 0 到 100 之间、最多两位小数的百分比）"), http.StatusSeeOther)
+		fail("手续费率无效（请输入 0 到 100 之间、最多两位小数的百分比）")
 		return
 	}
 	cfg := map[string]string{
-		"api_url":     strings.TrimSpace(r.PostFormValue("api_url")),
-		"pid":         strings.TrimSpace(r.PostFormValue("pid")),
-		"channel":     strings.TrimSpace(r.PostFormValue("channel")),
-		"app_id":      strings.TrimSpace(r.PostFormValue("app_id")),
-		"private_key": strings.TrimSpace(r.PostFormValue("private_key")),
-		"public_key":  strings.TrimSpace(r.PostFormValue("public_key")),
+		"api_url":     strings.TrimSpace(fv("api_url")),
+		"pid":         strings.TrimSpace(fv("pid")),
+		"channel":     strings.TrimSpace(fv("channel")),
+		"app_id":      strings.TrimSpace(fv("app_id")),
+		"private_key": strings.TrimSpace(fv("private_key")),
+		"public_key":  strings.TrimSpace(fv("public_key")),
 		"fee_percent": feePercent,
 	}
 	old, oldErr := g.GwRepo.Get(r.Context(), code)
-	key := strings.TrimSpace(r.PostFormValue("key"))
+	key := strings.TrimSpace(fv("key"))
 	if key == "" && oldErr == nil {
 		key = old.Config["key"]
 	}
@@ -111,13 +136,23 @@ func (g *AdminGateway) save(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	if driver == "alipay_f2f" && cfg["private_key"] == "" {
-		http.Redirect(w, r, "/admin/gateway?err="+url.QueryEscape("支付宝当面付必须填写应用私钥"), http.StatusSeeOther)
+	enabled := fv("enabled") == "1"
+	// 由网关自身声明配置校验规则，避免在通用后台处理器里写死支付品牌。
+	// 仅启用时校验：允许先保存未填全凭据的停用草稿。
+	if enabled {
+		if validator, ok := impl.(gateway.ConfigValidator); ok {
+			if err := validator.ValidateConfig(cfg); err != nil {
+				fail(err.Error())
+				return
+			}
+		}
+	}
+	if err := g.GwRepo.SaveConfig(r.Context(), code, driver, name, cfg, enabled, sort); err != nil {
+		fail("保存失败")
 		return
 	}
-	enabled := r.PostFormValue("enabled") == "1"
-	if err := g.GwRepo.SaveConfig(r.Context(), code, driver, name, cfg, enabled, sort); err != nil {
-		http.Redirect(w, r, "/admin/gateway?err="+url.QueryEscape("保存失败"), http.StatusSeeOther)
+	if wantsJSON(r) {
+		writeJSON(w, map[string]any{"ok": 1, "msg": "已保存"})
 		return
 	}
 	http.Redirect(w, r, "/admin/gateway?msg="+url.QueryEscape("已保存"), http.StatusSeeOther)
@@ -127,12 +162,20 @@ func (g *AdminGateway) delete(w http.ResponseWriter, r *http.Request) {
 	if !g.require(w, r) {
 		return
 	}
-	if !g.requireCSRF(w, r) {
+	if jsonVals(r) == nil && !g.requireCSRF(w, r) {
 		return
 	}
 	code := r.PathValue("code")
 	if err := g.GwRepo.Delete(r.Context(), code); err != nil && !errors.Is(err, repo.ErrNotFound) {
+		if wantsJSON(r) {
+			writeJSON(w, map[string]any{"ok": 0, "msg": "删除失败"})
+			return
+		}
 		http.Redirect(w, r, "/admin/gateway?err="+url.QueryEscape("删除失败"), http.StatusSeeOther)
+		return
+	}
+	if wantsJSON(r) {
+		writeJSON(w, map[string]any{"ok": 1, "msg": "已删除"})
 		return
 	}
 	http.Redirect(w, r, "/admin/gateway?msg="+url.QueryEscape("已删除"), http.StatusSeeOther)

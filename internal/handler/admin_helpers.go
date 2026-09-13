@@ -13,11 +13,17 @@ import (
 
 func adminRequire(w http.ResponseWriter, r *http.Request) bool {
 	sess := middleware.FromSession(r.Context())
-	if sess == nil || !sess.IsAdmin {
-		http.Redirect(w, r, "/admin/login", http.StatusSeeOther)
+	if sess != nil && sess.IsAdmin {
+		return true
+	}
+	// 浏览器导航跳后台登录页；SPA（Accept: application/json）返回 401 JSON。
+	if wantsJSON(r) {
+		w.WriteHeader(http.StatusUnauthorized)
+		writeJSON(w, map[string]any{"ok": 0, "msg": "登录已过期，请重新登录"})
 		return false
 	}
-	return true
+	http.Redirect(w, r, "/admin/login", http.StatusSeeOther)
+	return false
 }
 
 const requestTimeout = 15 * time.Second

@@ -1,17 +1,41 @@
 <!doctype html>
 <html lang="zh-CN">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>安装完成</title>
-<link rel="stylesheet" href="/assets/vendor/bootstrap-5.3.3/css/bootstrap.min.css"><link rel="stylesheet" href="/assets/css/lume.css"></head>
-<body class="site-body">
-<main class="fx-pay-wrap">
-  <div class="fx-pay-card fx-result-card">
-    <div class="fx-result-mark"></div>
-    
-    <h1>安装完成</h1>
-    <p class="text-muted">config.yaml 已生成，安装向导已永久锁定。</p>
-    <div class="fx-result-actions">
-      <a class="ui-btn" href="/">前往首页 <span>→</span></a>
-      <a class="ui-btn ui-btn-secondary" href="/admin/login">管理员登录</a>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:"HarmonyOS Sans SC","MiSans","PingFang SC","Microsoft YaHei",ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;background:#f3f6fb;color:#26303f;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:1.5rem}
+.fx-pay-card{width:100%;max-width:520px}
+.auth-brand{text-align:center;margin-bottom:1rem}
+.auth-brand-name{display:block;font-size:1.35rem;font-weight:700;color:#101828}
+.auth-brand small{display:block;color:#94a0b2;font-size:.78rem;margin-top:.1rem}
+.card{background:#fff;border:1px solid #e7edf5;border-radius:.85rem;box-shadow:0 20px 60px rgba(22,60,160,.14)}
+.card-body{padding:1.5rem}
+.result-card{text-align:center;padding:1rem 0}
+.result-card h1{font-size:1.4rem;margin:0 0 .5rem}
+.result-icon{width:64px;height:64px;margin:0 auto 1rem;display:flex;align-items:center;justify-content:center;border-radius:50%;background:#e7f6ec;color:#0a8f4c;font-size:2rem;box-shadow:0 10px 26px rgba(16,24,40,.08)}
+.text-secondary{color:#6b7790}
+.btn-row{display:flex;flex-wrap:wrap;justify-content:center;gap:.5rem;margin-top:1.5rem}
+.btn{display:inline-block;padding:.5rem 1.25rem;border-radius:.5rem;font-weight:600;font-size:.9rem;text-decoration:none;cursor:pointer;border:1px solid transparent;text-align:center}
+.btn-primary{background:#5D87FF;color:#fff;border-color:#5D87FF}
+.btn-primary:hover{background:#4a70e6;border-color:#4a70e6}
+.btn-outline-secondary{background:transparent;color:#6b7790;border-color:#dee2e6}
+.btn-outline-secondary:hover{color:#5D87FF;border-color:#5D87FF;background:#eef3ff}
+</style>
+</head>
+<body>
+<main class="fx-pay-card">
+  <div class="auth-brand"><span class="auth-brand-name">LumeIDC</span><small>安装</small></div>
+  <div class="card">
+    <div class="card-body">
+      <div class="result-card">
+        <div class="result-icon" aria-hidden="true">✓</div>
+        <h1>安装完成</h1>
+        <p class="text-secondary">config.yaml 已生成，安装向导已永久锁定。</p>
+        <div class="btn-row">
+          <a class="btn btn-primary" href="/">前往首页 <span aria-hidden="true">→</span></a>
+          <a class="btn btn-outline-secondary" href="/admin/login">管理员登录</a>
+        </div>
+      </div>
     </div>
   </div>
 </main>

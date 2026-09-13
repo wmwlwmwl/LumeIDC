@@ -20,7 +20,7 @@ import (
 	"lumeidc/internal/repo"
 )
 
-// ConfiguredSMSProvider 内置实现 TuraIDC/ZJMF 的短信 provider 语义。
+// ConfiguredSMSProvider 内置实现 LumeIDC/ZJMF 的短信 provider 语义。
 // provider 只能取 aliyun、aliyun_sms 或 stay33；不执行任意上传代码。
 type ConfiguredSMSProvider struct {
 	Settings *repo.Settings

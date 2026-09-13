@@ -2,11 +2,10 @@ package easypanel
 
 import (
 	"context"
-	"embed"
 	"fmt"
-	"html/template"
 	"strconv"
 	"strings"
+	"time"
 
 	"lumeidc/internal/server"
 )
@@ -79,20 +78,6 @@ var flexibleFields = []string{
 }
 
 const ckAddVH = "ep_add_vh"
-
-//go:embed productform.html
-var productFormFS embed.FS
-
-var productFormTpl = template.Must(template.ParseFS(productFormFS, "productform.html"))
-
-// ProductFormWidget 产品表单独立区块：站点类型（虚拟主机/CDN）↔ 隐藏配置项 cdn。
-func (Provider) ProductFormWidget() (template.HTML, error) {
-	var sb strings.Builder
-	if err := productFormTpl.Execute(&sb, nil); err != nil {
-		return "", err
-	}
-	return template.HTML(sb.String()), nil
-}
 
 // TestConnection a=info 验证安全码与连通性。
 func (p Provider) TestConnection(ctx context.Context, cfg server.Config) error {
@@ -189,8 +174,8 @@ func (p Provider) Provision(ctx context.Context, cfg server.Config, req server.P
 	return server.ProvisionResult{UpstreamHostID: req.ServiceID, Password: pw}, nil
 }
 
-// Renew 策略A：上游永不过期 + 本地管控，续费无需上游操作。
-func (p Provider) Renew(ctx context.Context, cfg server.Config, upstreamHostID int64, cycle string) error {
+// Renew 策略A：上游永不过期 + 本地管控，续费无需上游操作（不使用 checkpoint）。
+func (p Provider) Renew(ctx context.Context, cfg server.Config, upstreamHostID int64, cycle string, ck server.CheckpointStore) error {
 	return nil
 }
 
@@ -306,8 +291,42 @@ func (p Provider) HostOverview(ctx context.Context, cfg server.Config, upstreamH
 		OSName:   strField(vh, "module"), // php / iis
 		PanelURL: c.base + "/vhost/index.php?c=session&a=login",
 	}
+	d.WebQuota = humanQuota(numField(vh, "web_quota"))
+	d.DBQuota = humanQuota(numField(vh, "db_quota"))
+	d.DBName = strField(vh, "db_name")
+	d.FTP = numField(vh, "ftp") == 1
+	if domain := strField(vh, "domain"); domain != "" && domain != "0" {
+		if domain == "-1" {
+			d.Domain = "不限"
+		} else {
+			d.Domain = domain
+		}
+	}
+	if flow := numField(vh, "flow_limit"); flow > 0 {
+		d.FlowLimit = humanQuota(flow)
+	}
+	if speed := numField(vh, "speed_limit"); speed > 0 {
+		d.SpeedLimit = fmt.Sprintf("%dMbps", int(speed))
+	}
+	if created := numField(vh, "create_time"); created > 0 {
+		d.CreateTime = time.Unix(int64(created), 0).Format("2006-01-02")
+	}
+	if used, uerr := c.call(ctx, "getDbUsed", map[string]string{"name": SiteName(id)}); uerr == nil {
+		d.DBUsed = humanQuota(numField(used, "used"))
+	}
 	if numField(vh, "status") == 1 {
 		d.Status = "已关闭"
 	}
 	return server.HostOverview{Detail: d}, nil
+}
+
+// humanQuota MB 数值 → 人类可读（1024MB → 1G）。0/null 返回 "-"。
+func humanQuota(mb float64) string {
+	if mb <= 0 {
+		return "-"
+	}
+	if mb >= 1024 && int(mb)%1024 == 0 {
+		return fmt.Sprintf("%dG", int(mb)/1024)
+	}
+	return fmt.Sprintf("%dM", int(mb))
 }

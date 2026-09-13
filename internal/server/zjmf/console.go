@@ -224,9 +224,19 @@ func (p Provider) Usage(ctx context.Context, cfg server.Config, hostID int64) (s
 		return server.UsageInfo{}, err
 	}
 	d := out.Data
+	// ponytail: bw_* 与 traffic_* 因上游模块版本只会有一个生效；
+	// 原实现直接相加会在两者同时下发时双计流量，改为取非零者。
+	used := num(rawNum(d["bw_usage"]))
+	if used == 0 {
+		used = num(rawNum(d["traffic_used"]))
+	}
+	limit := num(rawNum(d["bw_limit"]))
+	if limit == 0 {
+		limit = num(rawNum(d["traffic_limit"]))
+	}
 	info := server.UsageInfo{
-		TrafficUsed:  num(rawNum(d["bw_usage"])) + num(rawNum(d["traffic_used"])),
-		TrafficLimit: num(rawNum(d["bw_limit"])) + num(rawNum(d["traffic_limit"])),
+		TrafficUsed:  used,
+		TrafficLimit: limit,
 	}
 	return info, nil
 }
@@ -282,11 +292,7 @@ func (p Provider) TrafficUsage(ctx context.Context, cfg server.Config, hostID in
 // defaultModuleAction 所有实例操作的统一入口：POST /provision/default {id, func, ...}。
 func defaultModuleAction(ctx context.Context, cfg server.Config, hostID int64, fn string, extra url.Values) error {
 	form := url.Values{"id": {strconv.FormatInt(hostID, 10)}, "func": {fn}}
-	for k, vs := range extra {
-		for _, v := range vs {
-			form.Add(k, v)
-		}
-	}
+	copyValues(form, extra)
 	return postForm(ctx, cfg, "/provision/default", form, &map[string]any{})
 }
 
@@ -294,11 +300,7 @@ func defaultModuleAction(ctx context.Context, cfg server.Config, hostID int64, f
 // 适用于上游返回非标准响应格式的操作（如 exitRescue）。
 func customModuleAction(ctx context.Context, cfg server.Config, hostID int64, fn string, extra url.Values) (string, error) {
 	form := url.Values{"func": {fn}}
-	for k, vs := range extra {
-		for _, v := range vs {
-			form.Add(k, v)
-		}
-	}
+	copyValues(form, extra)
 	token, err := ensureToken(ctx, cfg)
 	if err != nil {
 		return "", err

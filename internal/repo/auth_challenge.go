@@ -59,7 +59,9 @@ func (r *AuthChallenges) ConsumeAnonymous(ctx context.Context, channel, purpose,
 	}
 	if attempts >= 5 || !expires.After(now) {
 		_, _ = tx.ExecContext(ctx, `UPDATE auth_challenges SET invalidated_at=$2 WHERE id=$1`, id, now)
-		_ = tx.Commit()
+		if err := tx.Commit(); err != nil {
+			return err
+		}
 		return ErrAuthChallengeInvalid
 	}
 	if !secureEqual(saved, codeHMAC) {

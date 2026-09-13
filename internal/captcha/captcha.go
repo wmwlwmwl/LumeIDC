@@ -70,13 +70,20 @@ func (s *Service) issue(ctx context.Context, scene, ip string) (string, []byte, 
 		return "", nil, errors.New("生成验证码失败")
 	}
 	id := base64.RawURLEncoding.EncodeToString(idBytes)
-	answerBytes := make([]byte, answerSize)
-	if _, err := rand.Read(answerBytes); err != nil {
-		return "", nil, errors.New("生成验证码失败")
-	}
+	// 拒绝采样消除取模偏差（256 不整除字符集长度时首部字符概率偏高）
 	answer := make([]byte, answerSize)
-	for i, b := range answerBytes {
-		answer[i] = alphabet[int(b)%len(alphabet)]
+	max := 256 - (256 % len(alphabet))
+	for i := range answer {
+		for {
+			var b [1]byte
+			if _, err := rand.Read(b[:]); err != nil {
+				return "", nil, errors.New("生成验证码失败")
+			}
+			if int(b[0]) < max {
+				answer[i] = alphabet[int(b[0])%len(alphabet)]
+				break
+			}
+		}
 	}
 	digest := s.digest(scene, id, string(answer))
 	if _, err := s.DB.ExecContext(ctx, `INSERT INTO captcha_challenges(id,scene,answer_hmac,request_ip,expires_at) VALUES($1,$2,$3,$4,$5)`, id, strings.ToLower(scene), digest, ip, time.Now().Add(10*time.Minute)); err != nil {

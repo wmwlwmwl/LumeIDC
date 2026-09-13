@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -35,9 +36,11 @@ func main() {
 // 免手动重启（安装向导与完整应用分属两套路由，切换是必需的）。
 func runInstaller(version string) {
 	mux := http.NewServeMux()
-	handler.RegisterAssets(mux) // 安装向导页同样需要样式/脚本静态资源
+	handler.RegisterWebUI(mux) // 安装向导页由 SPA 承载（/app/* 资源 + index.html）
 	inst := &handler.Installer{ConfigPath: "config.yaml"}
-	inst.Register(mux)
+	inst.Register(mux) // POST /install（JSON）
+	// 精确匹配优先于 RegisterWebUI 的 GET /{path...} 兜底。
+	mux.HandleFunc("GET /install", handler.InstallPage)
 	addr := installListenAddr()
 	srv := &http.Server{Addr: addr, Handler: mux}
 	sigCh := make(chan os.Signal, 1)
@@ -47,8 +50,10 @@ func runInstaller(version string) {
 		srv.Close()
 	}()
 	done := make(chan struct{})
+	var installed atomic.Bool
 	inst.OnInstalled = func(cfg *config.Config) {
 		signal.Stop(sigCh) // 安装阶段信号监听已无用，防止吞掉正式运行后的 SIGTERM
+		installed.Store(true)
 		go func() {
 			// 先让"安装完成"页完整送达浏览器，再切关旧服务、启动完整应用。
 			time.Sleep(800 * time.Millisecond)
@@ -64,6 +69,10 @@ func runInstaller(version string) {
 	log.Printf("LumeIDC 未安装，安装向导已启动: http://%s/install", host)
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
+	}
+	if !installed.Load() {
+		// SIGINT/SIGTERM 中断安装向导：直接退出（done 只在安装完成切换路径关闭）
+		return
 	}
 	<-done // 等待完整应用结束
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 
 	"golang.org/x/crypto/bcrypt"
 )
@@ -66,10 +67,59 @@ func (a *Admins) ChangePassword(ctx context.Context, adminID int64, oldPassword,
 
 var errWrongOldPassword = errors.New("旧密码错误")
 var errPasswordTooShort = errors.New("新密码至少8位")
+var errUsernameEmpty = errors.New("用户名不能为空")
+var errUsernameTaken = errors.New("用户名已被占用")
 
 // IsWrongOldPassword / IsPasswordTooShort 供 handler 转成用户可读提示。
 func IsWrongOldPassword(err error) bool { return err == errWrongOldPassword }
 func IsPasswordTooShort(err error) bool { return err == errPasswordTooShort }
+
+// IsUsernameEmpty / IsUsernameTaken 同上。
+func IsUsernameEmpty(err error) bool { return err == errUsernameEmpty }
+func IsUsernameTaken(err error) bool { return err == errUsernameTaken }
+
+// Username 读取管理员登录名（后台账户设置展示用）。
+func (a *Admins) Username(ctx context.Context, adminID int64) (string, error) {
+	var name string
+	err := a.db.QueryRowContext(ctx, `SELECT username FROM admin_users WHERE id=$1`, adminID).Scan(&name)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	return name, err
+}
+
+// ChangeUsername 修改管理员登录名：先验证当前密码，再检查唯一性。
+func (a *Admins) ChangeUsername(ctx context.Context, adminID int64, password, newUsername string) error {
+	newUsername = strings.TrimSpace(newUsername)
+	if newUsername == "" {
+		return errUsernameEmpty
+	}
+	var hash []byte
+	err := a.db.QueryRowContext(ctx,
+		`SELECT password_hash FROM admin_users WHERE id=$1`, adminID).Scan(&hash)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if bcrypt.CompareHashAndPassword(hash, []byte(password)) != nil {
+		return errWrongOldPassword
+	}
+	// 预检唯一性，给出明确提示（比直接撞 UNIQUE 约束更友好）
+	var taken bool
+	if err := a.db.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM admin_users WHERE username=$1 AND id<>$2)`,
+		newUsername, adminID).Scan(&taken); err != nil {
+		return err
+	}
+	if taken {
+		return errUsernameTaken
+	}
+	_, err = a.db.ExecContext(ctx,
+		`UPDATE admin_users SET username=$2 WHERE id=$1`, adminID, newUsername)
+	return err
+}
 
 // GetTOTP 读取管理员的 TOTP 配置。
 func (a *Admins) GetTOTP(ctx context.Context, adminID int64) (secret string, enabled bool, err error) {

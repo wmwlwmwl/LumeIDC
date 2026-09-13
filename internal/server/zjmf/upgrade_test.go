@@ -3,6 +3,7 @@ package zjmf
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -219,12 +220,44 @@ func TestUpgradeDowngradeAutoApplied(t *testing.T) {
 		}
 	})
 	var p Provider
-	err := p.Upgrade(context.Background(), cfg, 5, server.UpgradeRequest{TargetPID: 402, Cycle: "monthly", DiffAmount: -30})
+	err := p.Upgrade(context.Background(), cfg, 5, server.UpgradeRequest{TargetPID: 402, Cycle: "monthly", DiffAmount: -30}, nil)
 	if err != nil {
 		t.Fatalf("降级应成功: %v", err)
 	}
 	if applied {
 		t.Fatal("降级自动生效，不应调 apply_credit")
+	}
+}
+
+// 上游未给账单号（显式 invoiceid=null，0 元升级/降级直接生效）：按已完成处理，
+// 不能拿 "null" 去查金额或付款——上游只会回"未找到支付项目"。
+func TestUpgradeNullInvoiceTreatedAsApplied(t *testing.T) {
+	var detailCalled, payCalled bool
+	cfg := newUpgEnv(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/zjmf_api_login":
+			loginOK(w)
+		case "/upgrade/upgrade_product_post":
+			w.Write([]byte(`{"status":200,"msg":"成功"}`))
+		case "/upgrade/checkout_upgrade_product":
+			w.Write([]byte(`{"status":200,"msg":"成功","data":{"invoiceid":null}}`))
+		case "/get_invoices_detail":
+			detailCalled = true
+			w.Write([]byte(invoiceResp(`"50.00"`)))
+		case "/apply_credit":
+			payCalled = true
+			w.Write([]byte(`{"status":200}`))
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	var p Provider
+	if err := p.Upgrade(context.Background(), cfg, 5,
+		server.UpgradeRequest{OrderID: 82, TargetPID: 402, Cycle: "monthly", DiffAmount: 50}, newMemCheckpoint()); err != nil {
+		t.Fatalf("上游未生成账单应视为已生效: %v", err)
+	}
+	if detailCalled || payCalled {
+		t.Fatalf("没有账单就不该比价/付款，实得 detail=%v pay=%v", detailCalled, payCalled)
 	}
 }
 
@@ -258,7 +291,8 @@ func TestUpgradePaidFlow(t *testing.T) {
 		}
 	})
 	var p Provider
-	err := p.Upgrade(context.Background(), cfg, 5, server.UpgradeRequest{TargetPID: 402, Cycle: "yearly", DiffAmount: 50})
+	ck := newMemCheckpoint()
+	err := p.Upgrade(context.Background(), cfg, 5, server.UpgradeRequest{OrderID: 77, TargetPID: 402, Cycle: "yearly", DiffAmount: 50}, ck)
 	if err != nil {
 		t.Fatalf("升级应成功: %v", err)
 	}
@@ -273,9 +307,14 @@ func TestUpgradePaidFlow(t *testing.T) {
 	if pay.Get("invoiceid") != "9001" || pay.Get("use_credit") != "1" {
 		t.Fatalf("支付参数错误: %+v", pay)
 	}
+	// 成功后必须清掉账单检查点，否则同一订单重试会误复用这张已付账单。
+	if v, ok, _ := ck.GetCheckpoint(ckUpgradeInvoice(77)); ok {
+		t.Fatalf("升级成功后应清除账单检查点，实得 %q", v)
+	}
 }
 
-// 金额超差：返回 ManualReviewError，不自动支付上游账单。
+// 金额超差：返回 PriceChangedError，停在未付款等管理员二选一（按新价开通 / 退款）；
+// 账单已记入检查点，重试才能复用同一张账单强制开通。
 func TestUpgradeAmountMismatch(t *testing.T) {
 	var applied bool
 	cfg := newUpgEnv(t, func(w http.ResponseWriter, r *http.Request) {
@@ -296,14 +335,138 @@ func TestUpgradeAmountMismatch(t *testing.T) {
 		}
 	})
 	var p Provider
-	err := p.Upgrade(context.Background(), cfg, 5, server.UpgradeRequest{TargetPID: 402, Cycle: "monthly", DiffAmount: 50})
+	ck := newMemCheckpoint()
+	err := p.Upgrade(context.Background(), cfg, 5, server.UpgradeRequest{OrderID: 78, TargetPID: 402, Cycle: "monthly", DiffAmount: 50}, ck)
 	if err == nil {
 		t.Fatal("金额超差应报错")
 	}
+	var pce *server.PriceChangedError
+	if !errors.As(err, &pce) {
+		t.Fatalf("应为 PriceChangedError，实际: %v", err)
+	}
 	if !server.IsManualReview(err) {
-		t.Fatalf("应为 ManualReviewError，实际: %v", err)
+		t.Fatalf("涨价应转人工复核，实际: %v", err)
+	}
+	if pce.UpstreamAmount != 80 || pce.ExpectAmount != 50 || pce.UpstreamInvoiceID != "9002" {
+		t.Fatalf("错误内容不符: %+v", pce)
 	}
 	if applied {
 		t.Fatal("金额不一致时不应自动支付")
+	}
+	if got, ok, _ := ck.GetCheckpoint(ckUpgradeInvoice(78)); !ok || got != "9002" {
+		t.Fatalf("超差时账单应留在检查点供重试复用，实得 %q,%v", got, ok)
+	}
+}
+
+// 管理员确认后重试：检查点里已有账单 → 不重新结算、不重新比价，直接付款即"按新价强制开通"。
+func TestUpgradeReusesInvoiceFromCheckpoint(t *testing.T) {
+	var selectCalls, checkoutCalls, detailCalls, payCalls int
+	cfg := newUpgEnv(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/zjmf_api_login":
+			loginOK(w)
+		case "/upgrade/upgrade_product_post":
+			selectCalls++
+			w.Write([]byte(`{"status":200}`))
+		case "/upgrade/checkout_upgrade_product":
+			checkoutCalls++
+			w.Write([]byte(`{"status":200,"data":{"invoiceid":"9100"}}`))
+		case "/get_invoices_detail":
+			detailCalls++
+			w.Write([]byte(invoiceResp(`"80.00"`)))
+		case "/apply_credit":
+			payCalls++
+			w.Write([]byte(`{"status":200}`))
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	var p Provider
+	ck := newMemCheckpoint()
+	_ = ck.SetCheckpoint(ckUpgradeInvoice(79), "9100")
+	// 本地差价 50、上游账单 80：若重新比价会再次超差，复用检查点则跳过比价直接付款。
+	err := p.Upgrade(context.Background(), cfg, 5, server.UpgradeRequest{OrderID: 79, TargetPID: 402, Cycle: "monthly", DiffAmount: 50}, ck)
+	if err != nil {
+		t.Fatalf("复用检查点应直接支付成功: %v", err)
+	}
+	if selectCalls != 0 || checkoutCalls != 0 || detailCalls != 0 {
+		t.Fatalf("不应重复结算/比价，实得 select=%d checkout=%d detail=%d", selectCalls, checkoutCalls, detailCalls)
+	}
+	if payCalls != 1 {
+		t.Fatalf("应付款一次，实得 %d", payCalls)
+	}
+}
+
+// 付款失败但账单仍在上游（余额不足）：保持重试不消耗次数，检查点保留供下次重付同一张账单。
+func TestUpgradeKeepsRetryingWhileInvoiceAlive(t *testing.T) {
+	cfg := newUpgEnv(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/zjmf_api_login":
+			loginOK(w)
+		case "/upgrade/upgrade_product_post":
+			w.Write([]byte(`{"status":200}`))
+		case "/upgrade/checkout_upgrade_product":
+			w.Write([]byte(`{"status":200,"data":{"invoiceid":"9101"}}`))
+		case "/get_invoices_detail":
+			w.Write([]byte(invoiceResp(`"50.00"`)))
+		case "/apply_credit":
+			w.Write([]byte(`{"status":400,"msg":"余额不足"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	var p Provider
+	ck := newMemCheckpoint()
+	err := p.Upgrade(context.Background(), cfg, 5, server.UpgradeRequest{OrderID: 80, TargetPID: 402, Cycle: "monthly", DiffAmount: 50}, ck)
+	if err == nil {
+		t.Fatal("付款失败应报错")
+	}
+	if !server.IsRetryLater(err) {
+		t.Fatalf("余额不足应保持重试，实际: %v", err)
+	}
+	if server.IsManualReview(err) {
+		t.Fatalf("余额不足不应转人工: %v", err)
+	}
+	if got, ok, _ := ck.GetCheckpoint(ckUpgradeInvoice(80)); !ok || got != "9101" {
+		t.Fatalf("重试要复用同一张账单，检查点不应被清，实得 %q,%v", got, ok)
+	}
+}
+
+// 付款失败且账单已被删/作废：重试永远付不掉，清检查点并转人工重新结算。
+func TestUpgradeDropsCheckpointWhenInvoiceGone(t *testing.T) {
+	// 首次查询（比价）账单正常，之后（付款失败后的探测）上游回"账单不存在"。
+	var detailCalls int
+	cfg := newUpgEnv(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/zjmf_api_login":
+			loginOK(w)
+		case "/upgrade/upgrade_product_post":
+			w.Write([]byte(`{"status":200}`))
+		case "/upgrade/checkout_upgrade_product":
+			w.Write([]byte(`{"status":200,"data":{"invoiceid":"9102"}}`))
+		case "/get_invoices_detail":
+			detailCalls++
+			if detailCalls == 1 {
+				w.Write([]byte(invoiceResp(`"50.00"`)))
+				return
+			}
+			w.Write([]byte(`{"status":400,"msg":"账单不存在"}`))
+		case "/apply_credit":
+			w.Write([]byte(`{"status":400,"msg":"账单不存在"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	var p Provider
+	ck := newMemCheckpoint()
+	err := p.Upgrade(context.Background(), cfg, 5, server.UpgradeRequest{OrderID: 81, TargetPID: 402, Cycle: "monthly", DiffAmount: 50}, ck)
+	if err == nil {
+		t.Fatal("账单不存在应报错")
+	}
+	if !server.IsManualReview(err) {
+		t.Fatalf("账单被删应转人工，实际: %v", err)
+	}
+	if got, ok, _ := ck.GetCheckpoint(ckUpgradeInvoice(81)); ok {
+		t.Fatalf("失效账单的检查点应被清除，实得 %q", got)
 	}
 }

@@ -28,10 +28,9 @@ func (Provider) Name() string { return "智简魔方财务（ZJMF）" }
 //     不再调用目标接口（省一次请求，也不依赖 400 报错判定）；
 //  2. 开关开启后调 GET /upgrade/upgrade_product/{hid} 取可升级产品列表（data.host[]，配置在
 //     product_upgrade_products 表）；成功但列表为空 = 无目标。
+//
 // 两者均视为"不支持/无目标"，返回空让调用方隐藏升降级入口（见 Console.UpgradeTargets 语义）。
 // best-effort：网络/解析失败同样返回空并记日志，不阻断详情页。
-// 注：此前调 CBAP v10 /api/v1/product/:id/upgrade_product（商品维度、需 pid），
-// 真实魔方财务无此端点恒 404，是"不管什么都显示升降级"的根因之一；现按 host 维度重写。
 func (p Provider) UpgradeTargets(ctx context.Context, cfg server.Config, upstreamHostID int64) ([]server.UpgradeTarget, error) {
 	data, err := fetchHostHeaderRaw(ctx, cfg, upstreamHostID)
 	if err != nil {
@@ -489,6 +488,22 @@ func (p Provider) FetchProductPrice(ctx context.Context, cfg server.Config, upst
 	return m, q, y, nil
 }
 
+// FetchProductSnapshot 单商品快照：复用 fetchProductConfigRaw 一次请求拿基础价与配置项。
+// 供下单前的实时价格校验使用（口径与 Catalog 回填一致）。
+func (p Provider) FetchProductSnapshot(ctx context.Context, cfg server.Config, upstreamPID int64) (server.ProductSnapshot, error) {
+	rawBody, pc, err := fetchProductConfigRaw(ctx, cfg, int(upstreamPID))
+	if err != nil {
+		return server.ProductSnapshot{}, err
+	}
+	m, q, y := baseMonthly(pc)
+	return server.ProductSnapshot{
+		Monthly:       m,
+		Quarterly:     q,
+		Yearly:        y,
+		ConfigOptions: parseConfigOptions([]byte(rawBody)),
+	}, nil
+}
+
 // fetchProductConfigRaw 拉取商品配置并解析，同时返回原始 body 供诊断。
 func fetchProductConfigRaw(ctx context.Context, cfg server.Config, pid int) (string, prodConfigResp, error) {
 	path := "/cart/get_product_config?pid=" + strconv.Itoa(pid)
@@ -582,19 +597,6 @@ func nodeIDName(m map[string]json.RawMessage) (float64, string) {
 	return id, strings.TrimSpace(name)
 }
 
-func pickStr(vals ...json.RawMessage) string {
-	for _, v := range vals {
-		if len(v) == 0 {
-			continue
-		}
-		var s string
-		if json.Unmarshal(v, &s) == nil && s != "" {
-			return s
-		}
-	}
-	return ""
-}
-
 // ---------- 开通（购物车 7 步编排） ----------
 
 // cycleMap 本地周期 → ZJMF 计费周期。上游用 annually(非 yearly) 表示年付。
@@ -603,8 +605,11 @@ var cycleMap = map[string]string{
 }
 
 const (
-	ckInvoice = "upstream_invoice_id" // checkpoint：已生成上游账单号
-	ckHosts   = "upstream_host_ids"   // checkpoint：已开通 host id 列表(逗号分隔)
+	ckInvoice = server.CheckpointUpstreamInvoiceID // checkpoint：已生成上游账单号
+	ckHosts   = server.CheckpointUpstreamHostIDs   // checkpoint：已开通 host id 列表(逗号分隔)
+	// ckRenewInvoice 续费账单号。重试时复用它直接付款，避免每次重试都在上游新建续费单；
+	// 续费成功后清除，否则下次续费（新订单）会误复用这张已付账单。
+	ckRenewInvoice = server.CheckpointRenewInvoice
 )
 
 // configOptionMap 把订单选择(field→子项值) 解析成上游 add_to_shop 识别的
@@ -689,124 +694,234 @@ func (p Provider) Provision(ctx context.Context, cfg server.Config, req server.P
 		invoiceID = v
 	}
 
-	if invoiceID == "" {
-		// 步骤1: 清空购物车（幂等保护）。
-		// 旧版魔方会把"同人重复开通同商品"检查也放在该接口：status=400
-		// "该订单已开通,请勿重新开通"。此错误不代表购物车清理失败——
-		// 真正的重复购买会在后续 add_to_shop/settle 报错，这里跳过以放行流程。
-		if err := postForm(ctx, cfg, "/cart/clear", url.Values{}, &map[string]any{}); err != nil {
-			if !strings.Contains(err.Error(), "该订单已开通") {
-				return server.ProvisionResult{}, fmt.Errorf("清空购物车失败: %w", err)
+	// 一次调用内最多走两轮：首轮用检查点里的账单（没有就结算一张）；若发现账单已失效
+	// （被上游删除/作废），清掉检查点自动重新结算一轮，不劳管理员先"重置检查点"再重试。
+	// 只重建一次：账单失效说明上游侧已异常，继续自动重建只会不断堆积 Pending host，转人工更稳。
+	for round := 0; ; round++ {
+		// builtInvoice 本轮是否新建了上游账单：只有新建的账单才做开通前比价。
+		// 账单来自检查点（管理员确认后的重试）时跳过比价，直接付款即"按此价强制开通"。
+		builtInvoice := false
+		if invoiceID == "" {
+			// 步骤1: 清空购物车（幂等保护）。
+			// 旧版魔方会把"同人重复开通同商品"检查也放在该接口：status=400
+			// "该订单已开通,请勿重新开通"。此错误不代表购物车清理失败——
+			// 真正的重复购买会在后续 add_to_shop/settle 报错，这里跳过以放行流程。
+			if err := postForm(ctx, cfg, "/cart/clear", url.Values{}, &map[string]any{}); err != nil {
+				if !strings.Contains(err.Error(), "该订单已开通") {
+					return server.ProvisionResult{}, fmt.Errorf("清空购物车失败: %w", err)
+				}
+			}
+			// 步骤2: 取商品配置（currencyid 等）
+			var pc map[string]any
+			if err := getJSON(ctx, cfg,
+				"/cart/get_product_config?pid="+strconv.FormatInt(req.UpstreamPID, 10), &pc); err != nil {
+				return server.ProvisionResult{}, fmt.Errorf("读取商品配置失败: %w", err)
+			}
+			currencyID := extractCurrency(pc)
+			if currencyID == "" {
+				// 配置响应未必含顶层 currencyid；缺它 add_to_shop 会报“周期未配置价格”。
+				// 本系统单一币种人民币，缺省用 1（与主流 ZJMF 默认币种一致）。
+				currencyID = "1"
+			}
+
+			// 步骤3: 加购。configoption 结构依赖上游商品定义，一期传空让上游用默认配置
+			pw := req.Password
+			if !validHostPassword(pw) {
+				pw = randomHostPassword() // 空或不合规时生成合规密码（必含大写+小写+数字），避免魔方云模块校验失败
+			}
+			// 主机名：上游规则 = 商品前缀(如 XAGJB) + 所填 host，总长 ≥10。
+			// 调用方未传时用 u{ServiceID}（中性标识，虚拟主机/CDN/服务器均适用），
+			// 不足 10 位补随机字母数字。
+			hostname := req.Hostname
+			if hostname == "" && req.ServiceID > 0 {
+				hostname = "u" + strconv.FormatInt(req.ServiceID, 10)
+			}
+			for len(hostname) < 10 {
+				hostname += server.RandomAlnum(3) // 主机名仅允许字母数字，不能混入密码特殊字符
+			}
+			form := url.Values{
+				"pid":          {strconv.FormatInt(req.UpstreamPID, 10)},
+				"billingcycle": {cycle},
+				"qty":          {"1"},
+				"checkout":     {"0"},
+				"host":         {hostname},
+				"password":     {pw},
+			}
+			if currencyID != "" {
+				form.Set("currencyid", currencyID)
+			}
+			for k, v := range configOptionMap(pc, req.ConfigOpts) {
+				form.Set("configoption["+k+"]", v)
+			}
+			if err := postForm(ctx, cfg, "/cart/add_to_shop", form, &map[string]any{}); err != nil {
+				return server.ProvisionResult{}, fmt.Errorf("加入购物车失败: %w", err)
+			}
+			// 步骤4: 结算 → 上游账单号（部分版本结算时已返回 hostid，另一些则留待付款后创建）。
+			// pos 是购物车位置（0 起）：清空+加购后唯一商品固定在第 0 位；传商品 ID 会被
+			// 魔方财务 settle 的位置过滤落空，进而误结算整个购物车。
+			settleBody, settle, serr := postFormSettle(ctx, cfg, "/cart/settle",
+				url.Values{"pos[0]": {"0"}, "checkout": {"1"}})
+			if serr != nil {
+				return server.ProvisionResult{}, fmt.Errorf("结算失败: %w", serr)
+			}
+			invoiceID = string(settle.Data.InvoiceID)
+			if !validInvoiceID(invoiceID) {
+				log.Printf("[zjmf] pid=%d settle 原始响应: %.500s", req.UpstreamPID, settleBody)
+				return server.ProvisionResult{}, fmt.Errorf("结算未返回账单号，响应: %.200s", settleBody)
+			}
+			if len(settle.Data.HostIDs) > 0 {
+				hostID = settle.Data.HostIDs[0]
+			}
+			builtInvoice = true
+			if err := ck.SetCheckpoint(ckInvoice, invoiceID); err != nil {
+				// settle 成功但 checkpoint 未落库：标记人工复核，避免重试重复创建账单
+				return server.ProvisionResult{}, &server.ManualReviewError{
+					Msg:               fmt.Sprintf("保存上游账单检查点失败（settle 已成功，invoice=%s）: %v", invoiceID, err),
+					UpstreamInvoiceID: invoiceID,
+					UpstreamHostID:    hostID,
+				}
+			}
+			// ckHosts 刻意不在这里写：它兼作"已完成"标记，checkpoint 1 靠它短路返回成功。
+			// 此处 host 可能已建但账单未付（auto_setup=order），提前写会让付款失败后的重试
+			// 被误判为已完成。统一放到付款成功之后再写。
+		} // end 未结算分支（invoiceID 已有值时跳过加购/结算，直接支付）
+
+		// 开通前比价：上游按当前价出的账单若高于下单时的成本额，说明上游已涨价，
+		// 继续付款会吃掉利润甚至亏损。停在这里不付款（账单已存在但不付不扣钱），
+		// 交后台人工二选一：重试即按此账单强制开通，或退款给用户。
+		if builtInvoice && req.ExpectAmount > 0 {
+			upAmount, aerr := fetchUpstreamInvoiceAmount(ctx, cfg, invoiceID)
+			if aerr != nil {
+				return server.ProvisionResult{}, &server.ManualReviewError{
+					Msg:               fmt.Sprintf("读取上游账单 %s 金额失败，无法核对价格: %v", invoiceID, aerr),
+					UpstreamInvoiceID: invoiceID,
+				}
+			}
+			if upAmount-req.ExpectAmount > upgTolerance {
+				return server.ProvisionResult{}, &server.PriceChangedError{
+					UpstreamAmount:    upAmount,
+					ExpectAmount:      req.ExpectAmount,
+					UpstreamInvoiceID: invoiceID,
+					UpstreamPID:       req.UpstreamPID,
+				}
 			}
 		}
-		// 步骤2: 取商品配置（currencyid 等）
-		var pc map[string]any
-		if err := getJSON(ctx, cfg,
-			"/cart/get_product_config?pid="+strconv.FormatInt(req.UpstreamPID, 10), &pc); err != nil {
-			return server.ProvisionResult{}, fmt.Errorf("读取商品配置失败: %w", err)
-		}
-		currencyID := extractCurrency(pc)
-		if currencyID == "" {
-			// 配置响应未必含顶层 currencyid；缺它 add_to_shop 会报“周期未配置价格”。
-			// 本系统单一币种人民币，缺省用 1（与主流 ZJMF 默认币种一致）。
-			currencyID = "1"
-		}
 
-		// 步骤3: 加购。configoption 结构依赖上游商品定义，一期传空让上游用默认配置
-		pw := req.Password
-		if !validHostPassword(pw) {
-			pw = randomHostPassword() // 空或不合规时生成合规密码（必含大写+小写+数字），避免魔方云模块校验失败
+		// 步骤5: 余额支付账单。upstream_auto_setup=payment 的商品在付款时自动创建 host，
+		// 其 id 由 apply_credit 响应 data.hostid[] 返回（结算阶段通常无 hostid）。
+		payForm := url.Values{"invoiceid": {invoiceID}, "use_credit": {"1"}, "enough": {"1"}}
+		var payResp struct {
+			Data struct {
+				HostIDs []int64 `json:"hostid"`
+			} `json:"data"`
 		}
-		// 主机名：上游规则 = 商品前缀(如 XAGJB) + 所填 host，总长 ≥10。
-		// 调用方未传时用 u{ServiceID}（中性标识，虚拟主机/CDN/服务器均适用），
-		// 不足 10 位补随机字母数字。
-		hostname := req.Hostname
-		if hostname == "" && req.ServiceID > 0 {
-			hostname = "u" + strconv.FormatInt(req.ServiceID, 10)
+		perr := postForm(ctx, cfg, "/apply_credit", payForm, &payResp)
+		if perr != nil {
+			// 先看账单是否还能付：失效（被删除/作废）就去重新结算，可付则是上游余额不足。
+			unusable, probeErr := upstreamInvoiceUnusable(ctx, cfg, invoiceID)
+			if probeErr != nil {
+				log.Printf("[zjmf] 查询上游账单 %s 状态失败: %v", invoiceID, probeErr)
+			} else if unusable {
+				if round == 0 {
+					// 账单已失效：清掉检查点，本轮自动重新结算（含付款前比价），无需人工重置。
+					if derr := ck.DeleteCheckpoint(ckInvoice); derr != nil {
+						return server.ProvisionResult{}, fmt.Errorf("清除失效账单检查点失败: %w", derr)
+					}
+					log.Printf("[zjmf] 上游账单 %s 已失效，自动重新结算后重试付款", invoiceID)
+					invoiceID, hostID = "", 0
+					continue
+				}
+				return server.ProvisionResult{}, &server.ManualReviewError{
+					Msg: fmt.Sprintf("上游账单 %s 已失效（不存在或已作废），自动重新结算后仍付不掉，"+
+						"请人工核对上游是否残留待开通主机: %v", invoiceID, perr),
+					UpstreamInvoiceID: invoiceID,
+					UpstreamHostID:    hostID,
+				}
+			}
+			// 账单仍待支付（多为上游余额不足）：保持重试、不消耗重试次数，充值到账后自动付掉。
+			// host 若在结算阶段已建（auto_setup=order），重试也复用同一张账单重新付款，不会重复下单。
+			return server.ProvisionResult{}, &server.RetryLaterError{
+				Msg: fmt.Sprintf("上游账单 %s 支付失败（请检查上游余额）: %v", invoiceID, perr),
+			}
 		}
-		for len(hostname) < 10 {
-			hostname += randomHostPassword()[:3]
+		if hostID == 0 && len(payResp.Data.HostIDs) > 0 {
+			hostID = payResp.Data.HostIDs[0]
 		}
-		form := url.Values{
-			"pid":          {strconv.FormatInt(req.UpstreamPID, 10)},
-			"billingcycle": {cycle},
-			"qty":          {"1"},
-			"checkout":     {"0"},
-			"host":         {hostname},
-			"password":     {pw},
+		if hostID == 0 {
+			log.Printf("[zjmf] pid=%d settle 响应: %.500s", req.UpstreamPID, settleBody)
+			return server.ProvisionResult{}, fmt.Errorf("结算与支付均未返回 host id，响应: %.200s", settleBody)
 		}
-		if currencyID != "" {
-			form.Set("currencyid", currencyID)
-		}
-		for k, v := range configOptionMap(pc, req.ConfigOpts) {
-			form.Set("configoption["+k+"]", v)
-		}
-		if err := postForm(ctx, cfg, "/cart/add_to_shop", form, &map[string]any{}); err != nil {
-			return server.ProvisionResult{}, fmt.Errorf("加入购物车失败: %w", err)
-		}
-		// 步骤4: 结算 → 上游账单号（部分版本结算时已返回 hostid，另一些则留待付款后创建）。
-		// pos 是购物车位置（0 起）：清空+加购后唯一商品固定在第 0 位；传商品 ID 会被
-		// 魔方财务 settle 的位置过滤落空，进而误结算整个购物车。
-		settleBody, settle, serr := postFormSettle(ctx, cfg, "/cart/settle",
-			url.Values{"pos[0]": {"0"}, "checkout": {"1"}})
-		if serr != nil {
-			return server.ProvisionResult{}, fmt.Errorf("结算失败: %w", serr)
-		}
-		invoiceID = string(settle.Data.InvoiceID)
-		if invoiceID == "" {
-			log.Printf("[zjmf] pid=%d settle 原始响应: %.500s", req.UpstreamPID, settleBody)
-			return server.ProvisionResult{}, fmt.Errorf("结算未返回账单号，上游响应: %.200s", settleBody)
-		}
-		if len(settle.Data.HostIDs) > 0 {
-			hostID = settle.Data.HostIDs[0]
-		}
-		if err := ck.SetCheckpoint(ckInvoice, invoiceID); err != nil {
-			// settle 成功但 checkpoint 未落库：标记人工复核，避免重试重复创建账单
+		// 付款成功后才写 ckHosts：它兼作"已完成"标记，checkpoint 1 靠它短路返回成功。
+		// 若在结算时就写，付款失败后的重试会误判为已完成，把一张未付的上游账单悄悄甩掉
+		// （本地显示已开通、上游欠费停机，且任务标 succeeded 不再重试）。
+		if err := ck.SetCheckpoint(ckHosts, strconv.FormatInt(hostID, 10)); err != nil {
 			return server.ProvisionResult{}, &server.ManualReviewError{
-				Msg:               fmt.Sprintf("保存上游账单检查点失败（settle 已成功，invoice=%s）: %v", invoiceID, err),
+				Msg:               fmt.Sprintf("保存主机检查点失败（账单 %s 已支付，host=%d）: %v", invoiceID, hostID, err),
 				UpstreamInvoiceID: invoiceID,
 				UpstreamHostID:    hostID,
 			}
 		}
-		if hostID > 0 {
-			if err := ck.SetCheckpoint(ckHosts, strconv.FormatInt(hostID, 10)); err != nil {
-				return server.ProvisionResult{}, fmt.Errorf("保存上游主机检查点失败: %w", err)
-			}
-		}
-	} // end 未结算分支（invoiceID 已有值时跳过加购/结算，直接支付）
-
-	// 步骤5: 余额支付账单。upstream_auto_setup=payment 的商品在付款时自动创建 host，
-	// 其 id 由 apply_credit 响应 data.hostid[] 返回（结算阶段通常无 hostid）。
-	payForm := url.Values{"invoiceid": {invoiceID}, "use_credit": {"1"}, "enough": {"1"}}
-	var payResp struct {
-		Data struct {
-			HostIDs []int64 `json:"hostid"`
-		} `json:"data"`
+		return server.ProvisionResult{UpstreamHostID: hostID}, nil
 	}
-	if err := postForm(ctx, cfg, "/apply_credit", payForm, &payResp); err != nil {
-		if hostID > 0 {
-			return server.ProvisionResult{UpstreamHostID: hostID}, fmt.Errorf("host %d 已开通但上游账单支付失败（请检查上游余额）: %w", hostID, err)
-		}
-		// 结算已成功（invoice 检查点已存）但支付失败：通常为上游余额不足等持久性错误。
-		// 返回 ManualReviewError 停止自动重试——重试会重新加购，在上游重复创建 Pending host。
-		return server.ProvisionResult{}, &server.ManualReviewError{
-			Msg:               fmt.Sprintf("上游账单 %s 支付失败（请检查上游余额）: %v", invoiceID, err),
-			UpstreamInvoiceID: invoiceID,
-		}
-	}
-	if hostID == 0 && len(payResp.Data.HostIDs) > 0 {
-		hostID = payResp.Data.HostIDs[0]
-		if err := ck.SetCheckpoint(ckHosts, strconv.FormatInt(hostID, 10)); err != nil {
-			return server.ProvisionResult{}, fmt.Errorf("保存上游主机检查点失败: %w", err)
-		}
-	}
-	if hostID == 0 {
-		log.Printf("[zjmf] pid=%d settle 响应: %.500s", req.UpstreamPID, settleBody)
-		return server.ProvisionResult{}, fmt.Errorf("结算与支付均未返回 host id，上游响应: %.200s", settleBody)
-	}
-	return server.ProvisionResult{UpstreamHostID: hostID}, nil
 }
 
 // 密码策略统一走 server 包（生成+校验），与其它上游共用。
 func validHostPassword(s string) bool { return server.ValidHostPassword(s) }
 func randomHostPassword() string      { return server.RandomHostPassword() }
+
+// validInvoiceID 上游返回的账单号是否可用。
+// 上游在"无需付款"时（0 元商品续费、降级自动退差）不生成账单，字段显式为 invoiceid=null，
+// flexString 把它解析成字符串 "null"。拿这种值当账单号去支付，上游只会回"未找到支付项目"。
+func validInvoiceID(s string) bool {
+	switch strings.TrimSpace(s) {
+	case "", "null", "0":
+		return false
+	}
+	return true
+}
+
+// fetchUpstreamInvoiceAmount 读取上游账单金额（元）：升级前比价与开通前比价共用。
+func fetchUpstreamInvoiceAmount(ctx context.Context, cfg server.Config, invoiceID string) (float64, error) {
+	var inv struct {
+		Data struct {
+			Detail struct {
+				Total flexString `json:"total"`
+			} `json:"detail"`
+		} `json:"data"`
+	}
+	if err := getJSON(ctx, cfg, "/get_invoices_detail?id="+invoiceID, &inv); err != nil {
+		return 0, err
+	}
+	amt, err := strconv.ParseFloat(strings.TrimSpace(string(inv.Data.Detail.Total)), 64)
+	if err != nil {
+		return 0, fmt.Errorf("账单金额无效: %q", inv.Data.Detail.Total)
+	}
+	return amt, nil
+}
+
+// upstreamInvoiceUnusable 判断上游账单是否已不可支付：不存在（上游业务错误）或状态不是待支付。
+// 上游后台"删除账单"实际是置为 Cancelled，记录仍可查询——只看"是否存在"会把已作废的账单
+// 当成可付账单无限重试，而付款只会一直回与账单无关的"余额不足"，把人工引向错误方向。
+// 状态字段缺失时按仍可支付处理（字段异常不该把可付账单判死）；传输/解析故障返回 perr，
+// 由调用方维持原有提示，避免上游抖动被误判成账单失效。账单不存在时上游回非成功业务码。
+func upstreamInvoiceUnusable(ctx context.Context, cfg server.Config, invoiceID string) (bool, error) {
+	var inv struct {
+		Data struct {
+			Detail struct {
+				Status flexString `json:"status"`
+			} `json:"detail"`
+		} `json:"data"`
+	}
+	if err := getJSON(ctx, cfg, "/get_invoices_detail?id="+invoiceID, &inv); err != nil {
+		if isBizError(err) {
+			return true, nil
+		}
+		return false, err
+	}
+	status := strings.TrimSpace(string(inv.Data.Detail.Status))
+	if status == "" || strings.EqualFold(status, "Unpaid") {
+		return false, nil
+	}
+	log.Printf("[zjmf] 上游账单 %s 状态 %q 已不可支付", invoiceID, status)
+	return true, nil
+}

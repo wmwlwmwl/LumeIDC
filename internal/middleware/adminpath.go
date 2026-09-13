@@ -46,11 +46,31 @@ func rewriteAdminPath(s, custom string) string {
 	return strings.ReplaceAll(s, "/admin", custom)
 }
 
+// NoRewriteHeader 标记该响应无需做后台路径改写（SPA 外壳由前端按 /session 的
+// admin.path 在运行时决定路径；其 HTML 中的资源名可能含 "admin" 字面量）。
+const NoRewriteHeader = "X-Lume-No-Rewrite"
+
 func isBinaryContentType(ct string) bool {
 	ct = strings.ToLower(strings.TrimSpace(ct))
 	return strings.HasPrefix(ct, "image/") || strings.HasPrefix(ct, "video/") ||
 		strings.HasPrefix(ct, "audio/") || strings.HasPrefix(ct, "font/") ||
 		strings.HasPrefix(ct, "application/octet-stream")
+}
+
+// noRewriteContentType 无需改写的文本类型：JSON/事件流等结构化响应里的
+// "/admin" 子串可能是数据而非路径引用（SPA/JSON API 依赖此行为），必须原样直通。
+func noRewriteContentType(ct string) bool {
+	ct = strings.ToLower(strings.TrimSpace(ct))
+	if ct == "" {
+		return false
+	}
+	if strings.HasPrefix(ct, "application/json") || strings.Contains(ct, "+json") {
+		return true
+	}
+	if strings.HasPrefix(ct, "text/event-stream") || strings.HasPrefix(ct, "application/x-ndjson") {
+		return true
+	}
+	return false
 }
 
 // AdminPathConfig 动态持有当前后台路径；站点设置保存时更新，无需重启。
@@ -91,6 +111,12 @@ func AdminPath(next http.Handler, cfg *AdminPathConfig) http.Handler {
 		p := r.URL.Path
 		if p == "/admin" || strings.HasPrefix(p, "/admin/") {
 			http.NotFound(w, r) // 屏蔽默认入口，不泄漏 custom
+			return
+		}
+		// 静态资源不做改写：其文件名可能含 "admin" 字面量
+		// （如 Vite 产物 /app/admin-<hash>.js），改写会破坏资源地址导致 404。
+		if strings.HasPrefix(p, "/app/") || strings.HasPrefix(p, "/assets/") {
+			next.ServeHTTP(w, r)
 			return
 		}
 		if p == custom || p == custom+"/" {
@@ -138,7 +164,8 @@ func (rw *adminRewriteWriter) WriteHeader(code int) {
 		}
 		return
 	}
-	if isBinaryContentType(rw.Header().Get("Content-Type")) {
+	if isBinaryContentType(rw.Header().Get("Content-Type")) || noRewriteContentType(rw.Header().Get("Content-Type")) ||
+		rw.Header().Get(NoRewriteHeader) != "" {
 		rw.decided = true
 		rw.passthrough = true
 		rw.ResponseWriter.WriteHeader(code)
@@ -150,8 +177,10 @@ func (rw *adminRewriteWriter) WriteHeader(code int) {
 
 func (rw *adminRewriteWriter) Write(p []byte) (int, error) {
 	if !rw.decided {
-		if isBinaryContentType(rw.Header().Get("Content-Type")) ||
-			isBinaryContentType(http.DetectContentType(p)) {
+		ct := rw.Header().Get("Content-Type")
+		if rw.Header().Get(NoRewriteHeader) != "" ||
+			isBinaryContentType(ct) || noRewriteContentType(ct) ||
+			isBinaryContentType(http.DetectContentType(p)) || noRewriteContentType(http.DetectContentType(p)) {
 			rw.passthrough = true
 		}
 		rw.decided = true

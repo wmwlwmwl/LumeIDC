@@ -29,3 +29,10 @@ lumeidc*.err
 # 调试输出通配（ep*.err/out、widget*.err/out 等）
 *.err
 *.out
+
+# 前端构建产物（go:embed 由 .gitkeep 占位保证可编译；构建后自动启用 SPA）
+/internal/handler/webui/dist/*
+!/internal/handler/webui/dist/.gitkeep
+
+# 本地调试启动日志
+.serve.log

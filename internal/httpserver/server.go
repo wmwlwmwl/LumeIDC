@@ -39,7 +39,7 @@ type App struct {
 	Server     *http.Server
 	DB         *sql.DB
 	Cron       *robfigcron.Cron
-	listenAddr string // 当前实际监听地址（启动或热切换后），供同址幂等比较
+	listenAddr string        // 当前实际监听地址（启动或热切换后），供同址幂等比较
 	stopped    chan struct{} // 第一次关闭后关闭，供 SwitchListen 热替换后等待新服务
 	stopOnce   sync.Once
 }
@@ -67,19 +67,19 @@ func (a *App) Stopped() <-chan struct{} { return a.stopped }
 // SwitchListen 热切换监听地址（后台修改端口用）：先绑定新端口，成功后
 // 替换当前 HTTP 服务并优雅关闭旧服务；绑定失败时旧服务不受影响。
 // 目标与当前监听一致时幂等直接成功（后台留空回退 config 端口时避免"自己绑自己"EADDRINUSE）。
+// ponytail: 绑定+替换在锁内串行完成，消除并发切换时"两调用各自读到旧 Server、
+// 先创建的实例成为孤儿（监听泄漏）"的窗口；net.Listen 耗时为微秒级，锁内可接受。
 func (a *App) SwitchListen(addr string) error {
 	a.mu.Lock()
-	cur := a.listenAddr
-	old := a.Server
-	a.mu.Unlock()
-	if sameListen(cur, addr) {
+	defer a.mu.Unlock()
+	if sameListen(a.listenAddr, addr) {
 		return nil
 	}
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("绑定新端口 %s 失败: %w", addr, err)
 	}
-	a.mu.Lock()
+	old := a.Server
 	newSrv := &http.Server{
 		Handler:           old.Handler,
 		ReadHeaderTimeout: old.ReadHeaderTimeout,
@@ -89,7 +89,6 @@ func (a *App) SwitchListen(addr string) error {
 	}
 	a.Server = newSrv
 	a.listenAddr = addr
-	a.mu.Unlock()
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -106,6 +105,10 @@ func (a *App) SwitchListen(addr string) error {
 
 // version 为构建期注入的版本号（main.version），未注入时为 dev。
 func Build(cfg *config.Config, version string) (*App, error) {
+	// 前端构建产物为强制依赖（SPA 已接管前台/后台页面，SSR 仅保留少量流程）。
+	if !handler.WebUIBuilt() {
+		return nil, errors.New("前端构建产物缺失（internal/handler/webui/dist）：请先执行 cd web && npm run build")
+	}
 	database, err := db.Open(cfg.DBDSN)
 	if err != nil {
 		return nil, err
@@ -128,7 +131,8 @@ func Build(cfg *config.Config, version string) (*App, error) {
 	// 实例密码加密器（services.password_crypt），密钥与 session 同源
 	cryptor, cerr := crypto.New(cfg.SecretKey)
 	if cerr != nil {
-		log.Fatalf("初始化密码加密器失败: %v", cerr)
+		database.Close()
+		return nil, fmt.Errorf("初始化密码加密器失败: %w", cerr)
 	}
 
 	// ---- 仓库：每表一个实例，全图共享 ----
@@ -151,6 +155,7 @@ func Build(cfg *config.Config, version string) (*App, error) {
 	identityStore := repo.NewIdentityStore(database)
 	authChallenges := repo.NewAuthChallenges(database)
 	settingsRepo := repo.NewSettings(database)
+	cancelReqs := repo.NewCancelRequests(database)
 
 	deps.Balance = balanceRepo
 	deps.Settings = settingsRepo
@@ -196,22 +201,32 @@ func Build(cfg *config.Config, version string) (*App, error) {
 
 	// ---- 服务层（单例，组合根统一注入） ----
 	servicesRepo := service.NewServicesRepo(database)
-	orders := service.NewOrders(database, products, coupons, identity)
+	upstreamGuard := &service.UpstreamGuard{Servers: serversRepo, Products: products, Providers: providers}
+	orders := service.NewOrders(database, products, coupons, identity, upstreamGuard)
 	console := service.NewConsole(database, serversRepo, products, providers, cryptor)
-	lifecycle := service.NewLifecycle(database, serversRepo, products, providers)
+	lifecycle := service.NewLifecycle(database, serversRepo, products, providers, provisions)
 	paymentSvc := service.NewPayment(database, lifecycle, serversRepo, products, provisions, jobs, balanceRepo, providers, periodGrants, notifier, cryptor)
 	gateways := map[string]gateway.Gateway{
 		"epay":       gateway.Epay{},
 		"alipay_f2f": gateway.AlipayF2F{},
 		"mock":       gateway.Mock{},
 	}
+	// 自动发现支持订单查询的网关（易支付等），用于异步通知丢失时补单。
+	// 新增网关只要实现 gateway.OrderQuerier，无需改动定时任务或组合根。
+	orderQueriers := map[string]gateway.OrderQuerier{}
+	for driver, impl := range gateways {
+		if querier, ok := impl.(gateway.OrderQuerier); ok {
+			orderQueriers[driver] = querier
+		}
+	}
+	challenges := &service.AuthChallengeService{Store: authChallenges, SMS: identity.OTP, EmailSend: notifier.SendMail, SiteName: notifier.SiteName, Key: []byte(cfg.SecretKey)}
 	auth := &handler.Auth{
 		Users:        users,
 		Sessions:     store,
 		Settings:     settingsRepo,
 		Lockout:      loginAttempts,
 		Notifier:     notifier,
-		Challenges:   &service.AuthChallengeService{Store: authChallenges, SMS: identity.OTP, EmailSend: notifier.SendMail, SiteName: notifier.SiteName, Key: []byte(cfg.SecretKey)},
+		Challenges:   challenges,
 		Captcha:      service.NewConfiguredCaptchaProvider(settingsRepo),
 		LocalCaptcha: localCaptcha,
 		Deps:         deps,
@@ -227,6 +242,8 @@ func Build(cfg *config.Config, version string) (*App, error) {
 		Deps:     deps,
 	}
 	adminHandler := &handler.Admin{
+		DB:            database,
+		PrivateFiles:  identityFiles,
 		Admins:        admins,
 		Lockout:       loginAttempts,
 		Announcements: announcements,
@@ -241,6 +258,8 @@ func Build(cfg *config.Config, version string) (*App, error) {
 		Deps:          deps,
 	}
 	pages := &handler.Pages{
+		DB:            database,
+		PrivateFiles:  identityFiles,
 		Products:      products,
 		Svc:           servicesRepo,
 		Orders:        orders,
@@ -252,44 +271,102 @@ func Build(cfg *config.Config, version string) (*App, error) {
 		Announcements: announcements,
 		Settings:      settingsRepo,
 		Invoices:      invoices,
-		Lifecycle:     lifecycle,
 		Payment:       paymentSvc,
+		CancelReqs:    cancelReqs,
 		Deps:          deps,
 	}
 
 	mux := http.NewServeMux()
-	handler.RegisterAssets(mux)
 	auth.Register(mux)
 	pages.Register(mux)
-	verificationHandler := &handler.VerificationHandler{Identity: identity, Users: users, Sessions: store, AdminLog: adminLog, Deps: deps}
+	// 后台「服务实例 → 管理」：把用户侧服务接口镜像到 /admin/services/{id}/...（见 admin_service_proxy.go）
+	pages.RegisterAdminServiceProxy(mux)
+	// SPA 启动端点：返回 CSRF 令牌 / 站点品牌 / 登录态（前端 mount 前调用）。
+	sessionHandler := &handler.Session{Users: users, Deps: deps}
+	sessionHandler.Register(mux)
+	verificationHandler := &handler.VerificationHandler{Identity: identity, Users: users, Sessions: store, AdminLog: adminLog, Challenges: challenges, Deps: deps}
 	verificationHandler.Register(mux)
 	pay.Register(mux)
 	adminHandler.Register(mux)
-	adminVerification := &handler.AdminVerification{Identity: identity, Users: users, AdminLog: adminLog, Deps: deps}
+	registerAdminRoutes(mux,
+		&handler.AdminVerification{Identity: identity, Users: users, AdminLog: adminLog, Deps: deps},
+		&handler.AdminGateway{GwRepo: gatewaysRepo, Gateways: gateways, Deps: deps},
+		&handler.AdminServers{Servers: serversRepo, Providers: providers, Deps: deps},
+		&handler.AdminManage{
+			Products: products, Users: users, Servers: serversRepo,
+			Balance:     balanceRepo,
+			Svc:         servicesRepo,
+			Lifecycle:   lifecycle,
+			Payment:     paymentSvc,
+			Providers:   providers,
+			Settings:    settingsRepo,
+			Identity:    identityStore,
+			IdentitySvc: identity,
+			AdminLog:    adminLog,
+			CancelReqs:  cancelReqs,
+			Notifier:    notifier,
+			Deps:        deps,
+		},
+	)
+	registerHealthRoutes(mux, database)
+	// Vite SPA 静态资源与文档兜底（GET 未命中任意 SSR/API 路由时）。
+	// "GET /{path...}" 比 "/" 更精确，GET 未知路径交给 SPA；其余方法仍走渲染 404。
+	handler.RegisterWebUI(mux)
+	// 全局 404 兜底（未匹配路由统一渲染站点 404 页）
+	mux.HandleFunc("/", pages.NotFound)
+
+	// SPA 接管已迁移路径的「浏览器导航」（返回 SPA 外壳）；API 请求与
+	// 未迁移路径（服务子路径/回调等）透传，SSR 行为不变。
+	// 认证（含手机验证码）与实名（含自动实名插件）页均已迁移到 SPA。
+	root := handler.SPAGate(mux)
+	h := store.Middleware(middleware.CSRF(root))
+	h = middleware.AdminPath(h, adminPathCfg)
+	addr := defaultListen
+	if a := os.Getenv("LISTEN"); a != "" {
+		addr = a // 环境变量覆盖配置，便于本地多实例测试
+	}
+	fulfillment := service.NewFulfillment(jobs, paymentSvc, lifecycle)
+	// 支付成功立即异步执行履约队列（cron 每 15s 轮询仍兜底），开通不再等轮询周期
+	paymentSvc.TriggerFulfillment = func() { go fulfillment.Drain(context.Background(), 3) }
+	cronJobs := &cron.Jobs{DB: database, Fulfillment: fulfillment, Notifier: notifier,
+		Providers: providers, Servers: serversRepo, Products: products, Lifecycle: lifecycle,
+		Gateways: gatewaysRepo, Payment: paymentSvc,
+		OrderQueriers: orderQueriers}
+	cronRef := cronJobs.Start()
+	app := &App{
+		Server: &http.Server{
+			Addr:              addr,
+			Handler:           h,
+			ReadHeaderTimeout: 10 * time.Second,
+			ReadTimeout:       30 * time.Second,
+			WriteTimeout:      60 * time.Second,
+			IdleTimeout:       120 * time.Second,
+		},
+		DB:      database,
+		Cron:    cronRef,
+		stopped: make(chan struct{}),
+	}
+	app.listenAddr = addr
+	adminHandler.ListenSwitcher = app.SwitchListen // 后台修改监听端口后立即生效
+	return app, nil
+}
+
+// registerAdminRoutes 注册后台管理路由：实名审核、支付网关、上游服务器与
+// 用户/分类/产品/服务/停用审核/退款等管理操作。
+func registerAdminRoutes(mux *http.ServeMux, adminVerification *handler.AdminVerification, gwHandler *handler.AdminGateway, srvHandler *handler.AdminServers, mng *handler.AdminManage) {
 	mux.HandleFunc("GET /admin/verifications", adminVerification.List)
 	mux.HandleFunc("GET /admin/verifications/{id}", adminVerification.Detail)
 	mux.HandleFunc("POST /admin/verifications/{id}/approve", adminVerification.Approve)
 	mux.HandleFunc("POST /admin/verifications/{id}/reject", adminVerification.Reject)
 	mux.HandleFunc("GET /admin/verifications/{id}/photo/{side}", adminVerification.Photo)
-	gwHandler := &handler.AdminGateway{GwRepo: gatewaysRepo, Gateways: gateways, Deps: deps}
 	gwHandler.Register(mux)
-	srvHandler := &handler.AdminServers{Servers: serversRepo, Providers: providers, Deps: deps}
 	srvHandler.Register(mux)
-	mng := &handler.AdminManage{
-		Products: products, Users: users, Servers: serversRepo,
-		Balance:     balanceRepo,
-		Svc:         servicesRepo,
-		Lifecycle:   lifecycle,
-		Payment:     paymentSvc,
-		Providers:   providers,
-		Settings:    settingsRepo,
-		Identity:    identityStore,
-		IdentitySvc: identity,
-		AdminLog:    adminLog,
-		Deps:        deps,
-	}
 	mux.HandleFunc("GET /admin/users/{id}/edit", mng.UserEdit)
 	mux.HandleFunc("POST /admin/users/{id}/save", mng.UserSave)
+	mux.HandleFunc("GET /admin/users/{id}/realname", mng.UserRealname)
+	mux.HandleFunc("POST /admin/users/{id}/status", mng.UserSetStatus)
+	mux.HandleFunc("POST /admin/users/{id}/recharge", mng.UserRecharge)
+	mux.HandleFunc("POST /admin/users/{id}/refund", mng.UserRefund)
 	mux.HandleFunc("GET /admin/types", mng.TypesList)
 	mux.HandleFunc("POST /admin/types/save", mng.TypeSave)
 	mux.HandleFunc("POST /admin/types/{id}/delete", mng.TypeDelete)
@@ -304,6 +381,9 @@ func Build(cfg *config.Config, version string) (*App, error) {
 	mux.HandleFunc("GET /admin/services", mng.ServicesList)
 	mux.HandleFunc("GET /admin/services/status", mng.ServicesStatusJSON)
 	mux.HandleFunc("POST /admin/services/{id}/action", mng.ServiceAction)
+	mux.HandleFunc("POST /admin/services/{id}/edit", mng.ServiceEdit)
+	mux.HandleFunc("GET /admin/service-cancel-requests", mng.CancelRequestsList)
+	mux.HandleFunc("POST /admin/service-cancel-requests/{id}/handle", mng.CancelRequestHandle)
 	mux.HandleFunc("POST /admin/orders/{id}/refund", mng.OrderRefund)
 	mux.HandleFunc("GET /admin/servers/{id}/catalog", mng.CatalogPage)
 	mux.HandleFunc("POST /admin/servers/{id}/import", mng.ImportProducts)
@@ -311,8 +391,10 @@ func Build(cfg *config.Config, version string) (*App, error) {
 	mux.HandleFunc("GET /admin/products/upstream-options", mng.UpstreamOptions)
 	mux.HandleFunc("GET /admin/products/upstream-config", mng.UpstreamConfig)
 	mux.HandleFunc("POST /admin/settings/profit", mng.SaveGlobalProfit)
+}
 
-	// 健康检查端点（不经过 CSRF）
+// registerHealthRoutes 注册健康/就绪检查端点（不经过 CSRF）。
+func registerHealthRoutes(mux *http.ServeMux, database *sql.DB) {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"status":"ok"}`))
@@ -326,37 +408,6 @@ func Build(cfg *config.Config, version string) (*App, error) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"status":"ready"}`))
 	})
-	// 全局 404 兜底（未匹配路由统一渲染站点 404 页）
-	mux.HandleFunc("/", pages.NotFound)
-
-	handler := store.Middleware(middleware.CSRF(mux))
-	handler = middleware.AdminPath(handler, adminPathCfg)
-	addr := defaultListen
-	if a := os.Getenv("LISTEN"); a != "" {
-		addr = a // 环境变量覆盖配置，便于本地多实例测试
-	}
-	fulfillment := service.NewFulfillment(jobs, paymentSvc, lifecycle)
-	// 支付成功立即异步执行履约队列（cron 每 15s 轮询仍兜底），开通不再等轮询周期
-	paymentSvc.TriggerFulfillment = func() { go fulfillment.Drain(context.Background(), 3) }
-	cronJobs := &cron.Jobs{DB: database, Fulfillment: fulfillment, Notifier: notifier,
-		Providers: providers, Servers: serversRepo, Products: products, Lifecycle: lifecycle}
-	cronRef := cronJobs.Start()
-	app := &App{
-		Server: &http.Server{
-			Addr:              addr,
-			Handler:           handler,
-			ReadHeaderTimeout: 10 * time.Second,
-			ReadTimeout:       30 * time.Second,
-			WriteTimeout:      60 * time.Second,
-			IdleTimeout:       120 * time.Second,
-		},
-		DB:      database,
-		Cron:    cronRef,
-		stopped: make(chan struct{}),
-	}
-	app.listenAddr = addr
-	adminHandler.ListenSwitcher = app.SwitchListen // 后台修改监听端口后立即生效
-	return app, nil
 }
 
 // sameListen 判断两个监听地址是否同一地址（端口相同且主机语义等价）。

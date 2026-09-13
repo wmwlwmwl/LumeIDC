@@ -17,7 +17,7 @@ import (
 	"lumeidc/internal/repo"
 )
 
-//go:embed templates/*.html
+//go:embed templates/done.html templates/error.html
 var tplFS embed.FS
 
 type Installer struct {
@@ -33,28 +33,20 @@ func (h *Installer) isInstalled() bool {
 }
 
 func (h *Installer) Register(mux *http.ServeMux) {
-	mux.HandleFunc("GET /install", h.form)
+	// 安装页由 SPA 承载（GET /install 由 webui.InstallPage 提供），这里只保留提交接口。
 	mux.HandleFunc("POST /install", h.submit)
 }
 
-func (h *Installer) guard(w http.ResponseWriter) bool {
+func (h *Installer) guard(w http.ResponseWriter, r *http.Request) bool {
 	if h.isInstalled() {
+		if wantsJSON(r) {
+			writeJSON(w, map[string]any{"ok": 0, "msg": "系统已安装，安装向导已锁定"})
+			return false
+		}
 		http.Error(w, "系统已安装，安装向导已锁定", http.StatusForbidden)
 		return false
 	}
 	return true
-}
-
-func (h *Installer) form(w http.ResponseWriter, r *http.Request) {
-	if !h.guard(w) {
-		return
-	}
-	tpl, err := template.ParseFS(tplFS, "templates/install.html")
-	if err != nil {
-		http.Error(w, err.Error(), 500)
-		return
-	}
-	tpl.Execute(w, nil)
 }
 
 type installForm struct {
@@ -63,19 +55,33 @@ type installForm struct {
 }
 
 func (h *Installer) submit(w http.ResponseWriter, r *http.Request) {
-	if !h.guard(w) {
+	if !h.guard(w, r) {
 		return
 	}
-	f := installForm{
-		AdminUser: r.PostFormValue("admin_user"),
-		AdminPass: r.PostFormValue("admin_pass"),
-		Host:      strings.TrimSpace(r.PostFormValue("db_host")),
-		Port:      strings.TrimSpace(r.PostFormValue("db_port")),
-		DBName:    strings.TrimSpace(r.PostFormValue("db_name")),
-		DBUser:    strings.TrimSpace(r.PostFormValue("db_user")),
-		DBPass:    r.PostFormValue("db_pass"),
+	// SPA 用 JSON 提交，SSR 表单用 PostFormValue；两者统一。
+	vals := jsonVals(r)
+	fv := func(k string) string {
+		if vals != nil {
+			return vals[k]
+		}
+		return r.PostFormValue(k)
 	}
-	fail := func(msg string) { renderInstallError(w, msg) }
+	f := installForm{
+		AdminUser: fv("admin_user"),
+		AdminPass: fv("admin_pass"),
+		Host:      strings.TrimSpace(fv("db_host")),
+		Port:      strings.TrimSpace(fv("db_port")),
+		DBName:    strings.TrimSpace(fv("db_name")),
+		DBUser:    strings.TrimSpace(fv("db_user")),
+		DBPass:    fv("db_pass"),
+	}
+	fail := func(msg string) {
+		if wantsJSON(r) {
+			writeJSON(w, map[string]any{"ok": 0, "msg": msg})
+			return
+		}
+		renderInstallError(w, msg)
+	}
 	if f.Host == "" || f.Port == "" || f.DBName == "" || f.DBUser == "" || f.AdminUser == "" || len(f.AdminPass) < 8 {
 		fail("数据库地址/端口/库名/用户、管理员用户名必填，管理员密码至少 8 位")
 		return
@@ -118,10 +124,14 @@ allow_insecure_db: true
 		fail("写入 config.yaml 失败（需要当前目录可写权限）: " + err.Error())
 		return
 	}
-	tpl, _ := template.ParseFS(tplFS, "templates/done.html")
-	tpl.Execute(w, nil)
-	if f, ok := w.(http.Flusher); ok {
-		f.Flush() // 先让浏览器收到成功页，再切换服务
+	if wantsJSON(r) {
+		writeJSON(w, map[string]any{"ok": 1, "msg": "安装完成"})
+	} else {
+		tpl, _ := template.ParseFS(tplFS, "templates/done.html")
+		tpl.Execute(w, nil)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush() // 先让浏览器收到成功页，再切换服务
+		}
 	}
 	if h.OnInstalled != nil {
 		if cfg, err := config.Load(h.ConfigPath); err == nil {

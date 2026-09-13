@@ -14,15 +14,19 @@ import (
 )
 
 type VerificationHandler struct {
-	Identity *service.Identity
-	Users    *repo.Users
-	Sessions *middleware.Store
-	AdminLog *repo.AdminLog
+	Identity   *service.Identity
+	Users      *repo.Users
+	Sessions   *middleware.Store
+	AdminLog   *repo.AdminLog
+	Challenges *service.AuthChallengeService
 	*Deps
 }
 
 func (h *VerificationHandler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /user/profile", h.profile)
+	mux.HandleFunc("POST /user/profile", h.updateProfile)
+	mux.HandleFunc("POST /user/profile/email/send", h.sendEmailChange)
+	mux.HandleFunc("POST /user/profile/email/confirm", h.confirmEmailChange)
 	mux.HandleFunc("POST /user/profile/phone/send", h.sendPhone)
 	mux.HandleFunc("POST /user/profile/phone/confirm", h.confirmPhone)
 	mux.HandleFunc("GET /user/verification", h.verification)
@@ -36,8 +40,13 @@ func (h *VerificationHandler) profile(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if h.Identity == nil || h.Identity.Store == nil {
+	if h.Identity == nil || h.Identity.Store == nil || h.Users == nil {
 		http.Error(w, "实名服务未配置", http.StatusServiceUnavailable)
+		return
+	}
+	profile, err := h.Users.Profile(r.Context(), userID)
+	if err != nil {
+		http.Error(w, "读取账户信息失败", http.StatusInternalServerError)
 		return
 	}
 	phone, verified, err := h.Identity.Store.UserPhone(r.Context(), userID)
@@ -45,12 +54,142 @@ func (h *VerificationHandler) profile(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "读取账户信息失败", http.StatusInternalServerError)
 		return
 	}
-	data := map[string]any{
-		"Phone": phone, "PhoneMasked": service.MaskPhone(phone), "PhoneVerified": verified,
-		"HasPhone": phone != "", "CSRF": csrfOf(h.Sessions, w, r),
-		"Error": r.URL.Query().Get("err"), "OK": r.URL.Query().Get("ok"),
+	writeJSON(w, map[string]any{
+		"ok": 1, "email": profile.Email, "email_verified": profile.Verified, "name": profile.Name,
+		"phone": phone, "phone_masked": service.MaskPhone(phone),
+		"phone_verified": verified, "has_phone": phone != "",
+	})
+}
+
+func (h *VerificationHandler) updateProfile(w http.ResponseWriter, r *http.Request) {
+	userID, ok := middleware.RequireUser(w, r)
+	if !ok || h.Users == nil {
+		return
 	}
-	h.render(w, r, "user_profile.html", data)
+	vals := jsonVals(r)
+	value := func(key string) string {
+		if vals != nil {
+			return vals[key]
+		}
+		return r.PostFormValue(key)
+	}
+	name := strings.TrimSpace(value("name"))
+	email, err := repo.NormalizeEmail(value("email"))
+	if err != nil {
+		jsonStatus(w, r, http.StatusBadRequest, err.Error())
+		return
+	}
+	if len(name) > 80 {
+		jsonStatus(w, r, http.StatusBadRequest, "名称不能超过 80 个字符")
+		return
+	}
+	profile, err := h.Users.Profile(r.Context(), userID)
+	if err != nil {
+		jsonStatus(w, r, 500, "读取账户信息失败")
+		return
+	}
+	if email != profile.Email {
+		jsonStatus(w, r, http.StatusBadRequest, "修改邮箱请先获取并验证新邮箱验证码")
+		return
+	}
+	if err := h.Users.UpdateProfile(r.Context(), userID, name, email); err != nil {
+		jsonStatus(w, r, 500, "保存资料失败")
+		return
+	}
+	if h.AdminLog != nil {
+		h.AdminLog.Record(0, "profile_updated", "user", userID, "email_changed=false", requestIP(r))
+	}
+	writeJSON(w, map[string]any{"ok": 1, "name": name, "email": email, "email_verified": profile.Verified, "msg": "资料已保存"})
+}
+
+func (h *VerificationHandler) sendEmailChange(w http.ResponseWriter, r *http.Request) {
+	userID, ok := middleware.RequireUser(w, r)
+	if !ok || h.Users == nil || h.Challenges == nil {
+		return
+	}
+	vals := jsonVals(r)
+	value := func(key string) string {
+		if vals != nil {
+			return vals[key]
+		}
+		return r.PostFormValue(key)
+	}
+	email, err := repo.NormalizeEmail(value("email"))
+	if err != nil {
+		jsonStatus(w, r, 400, err.Error())
+		return
+	}
+	profile, err := h.Users.Profile(r.Context(), userID)
+	if err != nil {
+		jsonStatus(w, r, 500, "读取账户信息失败")
+		return
+	}
+	if email == profile.Email {
+		jsonStatus(w, r, 400, "新邮箱不能与当前邮箱相同")
+		return
+	}
+	if other, _, findErr := h.Users.ByEmail(r.Context(), email); findErr == nil && other.ID != userID {
+		jsonStatus(w, r, 400, "该邮箱已被使用")
+		return
+	}
+	hash, err := h.Users.PasswordHash(r.Context(), userID)
+	if err != nil || !h.Users.VerifyPassword(hash, value("current_password")) {
+		jsonStatus(w, r, 400, "当前密码错误")
+		return
+	}
+	if err := h.Challenges.Issue(r.Context(), "email", "profile_email", email, requestIP(r)); err != nil {
+		jsonStatus(w, r, 400, err.Error())
+		return
+	}
+	writeJSON(w, map[string]any{"ok": 1, "msg": "验证码已发送，请查收新邮箱"})
+}
+
+func (h *VerificationHandler) confirmEmailChange(w http.ResponseWriter, r *http.Request) {
+	userID, ok := middleware.RequireUser(w, r)
+	if !ok || h.Users == nil || h.Challenges == nil {
+		return
+	}
+	vals := jsonVals(r)
+	value := func(key string) string {
+		if vals != nil {
+			return vals[key]
+		}
+		return r.PostFormValue(key)
+	}
+	email, err := repo.NormalizeEmail(value("email"))
+	if err != nil {
+		jsonStatus(w, r, 400, err.Error())
+		return
+	}
+	if err := h.Challenges.Verify(r.Context(), "email", "profile_email", email, strings.TrimSpace(value("code"))); err != nil {
+		jsonStatus(w, r, 400, "验证码错误或已过期")
+		return
+	}
+	if other, _, findErr := h.Users.ByEmail(r.Context(), email); findErr == nil && other.ID != userID {
+		jsonStatus(w, r, 400, "该邮箱已被使用")
+		return
+	}
+	profile, err := h.Users.Profile(r.Context(), userID)
+	if err != nil {
+		jsonStatus(w, r, 500, "读取账户信息失败")
+		return
+	}
+	name := strings.TrimSpace(value("name"))
+	if name == "" {
+		name = profile.Name
+	}
+	if len(name) > 80 {
+		jsonStatus(w, r, 400, "名称不能超过 80 个字符")
+		return
+	}
+	if err := h.Users.UpdateProfile(r.Context(), userID, name, email); err != nil {
+		jsonStatus(w, r, 500, "保存邮箱失败")
+		return
+	}
+	if h.AdminLog != nil {
+		h.AdminLog.Record(0, "email_changed", "user", userID, "", requestIP(r))
+	}
+	writeJSON(w, map[string]any{"ok": 1, "name": name, "email": email, "email_verified": true, "msg": "邮箱已验证并更新"})
 }
 
 func requestIP(r *http.Request) string {
@@ -66,29 +205,47 @@ func (h *VerificationHandler) sendPhone(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
+	fail := func(status int, msg string) {
+		if wantsJSON(r) {
+			jsonStatus(w, r, status, msg)
+			return
+		}
+		http.Redirect(w, r, "/user/profile?err="+url.QueryEscape(msg), http.StatusSeeOther)
+	}
+	vals := jsonVals(r)
+	fv := func(k string) string {
+		if vals != nil {
+			return vals[k]
+		}
+		return r.PostFormValue(k)
+	}
 	if h.Identity == nil || h.Identity.Store == nil || h.Users == nil {
-		http.Redirect(w, r, "/user/profile?err="+url.QueryEscape("手机号服务未配置"), http.StatusSeeOther)
+		fail(http.StatusServiceUnavailable, "手机号服务未配置")
 		return
 	}
 	phone, _, err := h.Identity.Store.UserPhone(r.Context(), userID)
 	if err != nil {
-		http.Redirect(w, r, "/user/profile?err="+url.QueryEscape("读取账户信息失败"), http.StatusSeeOther)
+		fail(http.StatusInternalServerError, "读取账户信息失败")
 		return
 	}
 	purpose := "bind"
 	if phone != "" {
 		purpose = "change"
 		hash, hashErr := h.Users.PasswordHash(r.Context(), userID)
-		if hashErr != nil || !h.Users.VerifyPassword(hash, r.PostFormValue("current_password")) {
-			http.Redirect(w, r, "/user/profile?err="+url.QueryEscape("当前密码错误"), http.StatusSeeOther)
+		if hashErr != nil || !h.Users.VerifyPassword(hash, fv("current_password")) {
+			fail(http.StatusBadRequest, "当前密码错误")
 			return
 		}
 	}
-	if err := h.Identity.RequestPhoneCode(r.Context(), userID, r.PostFormValue("phone"), purpose, requestIP(r)); err != nil {
-		http.Redirect(w, r, "/user/profile?err="+url.QueryEscape(err.Error()), http.StatusSeeOther)
+	if err := h.Identity.RequestPhoneCode(r.Context(), userID, fv("phone"), purpose, requestIP(r)); err != nil {
+		fail(http.StatusBadRequest, err.Error())
 		return
 	}
 	h.AdminLog.Record(0, "phone_otp_requested", "user", userID, "purpose="+purpose, requestIP(r))
+	if wantsJSON(r) {
+		writeJSON(w, map[string]any{"ok": 1, "msg": "验证码已发送，请查收短信"})
+		return
+	}
 	http.Redirect(w, r, "/user/profile?ok="+url.QueryEscape("验证码已发送，请查收短信"), http.StatusSeeOther)
 }
 
@@ -97,26 +254,44 @@ func (h *VerificationHandler) confirmPhone(w http.ResponseWriter, r *http.Reques
 	if !ok {
 		return
 	}
+	fail := func(status int, msg string) {
+		if wantsJSON(r) {
+			jsonStatus(w, r, status, msg)
+			return
+		}
+		http.Redirect(w, r, "/user/profile?err="+url.QueryEscape(msg), http.StatusSeeOther)
+	}
+	vals := jsonVals(r)
+	fv := func(k string) string {
+		if vals != nil {
+			return vals[k]
+		}
+		return r.PostFormValue(k)
+	}
 	if h.Identity == nil || h.Identity.Store == nil || h.Users == nil {
-		http.Redirect(w, r, "/user/profile?err="+url.QueryEscape("手机号服务未配置"), http.StatusSeeOther)
+		fail(http.StatusServiceUnavailable, "手机号服务未配置")
 		return
 	}
 	phone, _, err := h.Identity.Store.UserPhone(r.Context(), userID)
 	if err != nil {
-		http.Redirect(w, r, "/user/profile?err="+url.QueryEscape("读取账户信息失败"), http.StatusSeeOther)
+		fail(http.StatusInternalServerError, "读取账户信息失败")
 		return
 	}
 	purpose := "bind"
 	if phone != "" {
 		purpose = "change"
 	}
-	if err := h.Identity.ConfirmPhoneCode(r.Context(), userID, purpose, r.PostFormValue("code")); err != nil {
-		http.Redirect(w, r, "/user/profile?err="+url.QueryEscape(err.Error()), http.StatusSeeOther)
+	if err := h.Identity.ConfirmPhoneCode(r.Context(), userID, purpose, fv("code")); err != nil {
+		fail(http.StatusBadRequest, err.Error())
 		return
 	}
 	h.AdminLog.Record(0, "phone_verified", "user", userID, "purpose="+purpose, requestIP(r))
 	if purpose == "change" {
 		h.AdminLog.Record(0, "phone_changed", "user", userID, "", requestIP(r))
+	}
+	if wantsJSON(r) {
+		writeJSON(w, map[string]any{"ok": 1, "msg": "手机号验证成功"})
+		return
 	}
 	http.Redirect(w, r, "/user/profile?ok="+url.QueryEscape("手机号验证成功"), http.StatusSeeOther)
 }
@@ -154,30 +329,35 @@ func (h *VerificationHandler) verification(w http.ResponseWriter, r *http.Reques
 			maskedID = "已提交"
 		}
 	}
-	data := map[string]any{
-		"ManualEnabled": true, "Status": status, "StatusText": service.StatusText(status), "Reason": reason,
-		"MaskedID": maskedID, "CanSubmit": status == "" || status == "rejected",
-		"PluginProvider": "", "AutomaticStatus": "", "AutomaticStatusText": "", "AutomaticID": int64(0), "AutomaticURL": "",
-		"CSRF": csrfOf(h.Sessions, w, r), "Error": r.URL.Query().Get("err"), "OK": r.URL.Query().Get("ok"),
-	}
-	if auto != nil {
-		data["AutomaticProvider"] = auto.ProviderKey
-		data["AutomaticStatus"] = auto.Status
-		data["AutomaticStatusText"] = service.StatusText(auto.Status)
-		data["AutomaticID"] = auto.ID
-		data["AutomaticURL"] = auto.ProviderURL
-	}
+	manualEnabled := true
+	pluginProvider := ""
 	if h.Identity.Settings != nil {
 		if enabled, err := h.Identity.Settings.Get(r.Context(), "manual_identity_enabled"); err == nil && enabled == "0" {
-			data["ManualEnabled"] = false
+			manualEnabled = false
 		}
 		provider, _ := h.Identity.Settings.Get(r.Context(), "verification_provider")
 		provider = strings.ToLower(strings.TrimSpace(provider))
 		if provider != "" && provider != "manual" {
-			data["PluginProvider"] = provider
+			pluginProvider = provider
 		}
 	}
-	h.render(w, r, "user_verification.html", data)
+	out := map[string]any{
+		"ok":              1,
+		"manual_enabled":  manualEnabled,
+		"status":          status,
+		"status_text":     service.StatusText(status),
+		"reason":          reason,
+		"masked_id":       maskedID,
+		"can_submit":      status == "" || status == "rejected",
+		"plugin_provider": pluginProvider,
+	}
+	if auto != nil {
+		out["automatic_id"] = auto.ID
+		out["automatic_status"] = auto.Status
+		out["automatic_status_text"] = service.StatusText(auto.Status)
+		out["automatic_url"] = auto.ProviderURL
+	}
+	writeJSON(w, out)
 }
 
 func (h *VerificationHandler) submitVerification(w http.ResponseWriter, r *http.Request) {
@@ -215,10 +395,18 @@ func (h *VerificationHandler) submitVerification(w http.ResponseWriter, r *http.
 		if errors.Is(err, repo.ErrVerificationBusy) {
 			msg = "已有实名申请正在审核"
 		}
+		if wantsJSON(r) {
+			writeJSON(w, map[string]any{"ok": 0, "msg": msg})
+			return
+		}
 		http.Redirect(w, r, "/user/verification?err="+url.QueryEscape(msg), http.StatusSeeOther)
 		return
 	}
 	h.AdminLog.Record(0, "real_name_submitted", "user", userID, "source=manual", requestIP(r))
+	if wantsJSON(r) {
+		writeJSON(w, map[string]any{"ok": 1, "msg": "实名资料已提交，等待人工审核"})
+		return
+	}
 	http.Redirect(w, r, "/user/verification?ok="+url.QueryEscape("实名资料已提交，等待人工审核"), http.StatusSeeOther)
 }
 
@@ -231,9 +419,16 @@ func (h *VerificationHandler) startPlugin(w http.ResponseWriter, r *http.Request
 		http.Error(w, "实名插件服务未配置", http.StatusServiceUnavailable)
 		return
 	}
-	provider := strings.TrimSpace(r.PostFormValue("provider"))
+	vals := jsonVals(r)
+	fv := func(k string) string {
+		if vals != nil {
+			return vals[k]
+		}
+		return r.PostFormValue(k)
+	}
+	provider := strings.TrimSpace(fv("provider"))
 	callback := siteBaseURL(r.Context(), h.Settings, r) + "/user/verification" // 站点地址优先，否则按请求推断
-	id, urlValue, err := h.Identity.StartProvider(r.Context(), userID, provider, service.RealNameForm{LegalName: r.PostFormValue("legal_name"), IdentityNumber: r.PostFormValue("identity_number")}, callback)
+	id, urlValue, err := h.Identity.StartProvider(r.Context(), userID, provider, service.RealNameForm{LegalName: fv("legal_name"), IdentityNumber: fv("identity_number")}, callback)
 	if err != nil {
 		http.Error(w, "启动实名认证失败", http.StatusBadGateway)
 		return
@@ -246,7 +441,14 @@ func (h *VerificationHandler) pollPlugin(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	id, err := strconv.ParseInt(r.PostFormValue("submission_id"), 10, 64)
+	vals := jsonVals(r)
+	submissionRaw := ""
+	if vals != nil {
+		submissionRaw = vals["submission_id"]
+	} else {
+		submissionRaw = r.PostFormValue("submission_id")
+	}
+	id, err := strconv.ParseInt(submissionRaw, 10, 64)
 	if err != nil || id <= 0 || h.Identity == nil {
 		http.Error(w, "实名任务无效", http.StatusBadRequest)
 		return
@@ -271,8 +473,14 @@ type AdminVerification struct {
 }
 
 func (h *AdminVerification) require(w http.ResponseWriter, r *http.Request) (*middleware.Session, bool) {
-	sess, ok := middleware.RequireAdmin(w, r)
-	if !ok {
+	sess := middleware.FromSession(r.Context())
+	if sess == nil || !sess.IsAdmin {
+		if wantsJSON(r) {
+			w.WriteHeader(http.StatusUnauthorized)
+			writeJSON(w, map[string]any{"ok": 0, "msg": "登录已过期，请重新登录"})
+			return nil, false
+		}
+		http.Redirect(w, r, "/admin/login", http.StatusSeeOther)
 		return nil, false
 	}
 	return sess, true
@@ -304,13 +512,20 @@ func (h *AdminVerification) list(w http.ResponseWriter, r *http.Request) {
 	}
 	rows, err := h.Identity.Store.PendingList(r.Context(), 100)
 	if err != nil {
-		http.Error(w, "查询实名申请失败", http.StatusInternalServerError)
+		jsonStatus(w, r, http.StatusInternalServerError, "查询实名申请失败")
 		return
 	}
 	for i := range rows {
 		rows[i].Phone = service.MaskPhone(rows[i].Phone)
 	}
-	h.renderAdmin(w, "admin_verifications.html", AdminData{Rows: rows, CSRF: h.adminCSRF(w, r), Error: r.URL.Query().Get("err"), Msg: r.URL.Query().Get("ok")})
+	out := make([]map[string]any, 0, len(rows))
+	for _, v := range rows {
+		out = append(out, map[string]any{
+			"id": v.ID, "user_id": v.UserID, "email": v.Email, "phone": v.Phone,
+			"status": v.Status, "submitted_at": v.SubmittedAt.Format("2006-01-02 15:04"),
+		})
+	}
+	writeJSON(w, map[string]any{"ok": 1, "list": out})
 }
 
 func (h *AdminVerification) detail(w http.ResponseWriter, r *http.Request) {
@@ -329,15 +544,18 @@ func (h *AdminVerification) detail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.AdminLog.Record(sess.UserID, "real_name_viewed", "real_name_submission", id, "admin_detail", requestIP(r))
-	data := AdminData{CSRF: h.adminCSRF(w, r), Error: r.URL.Query().Get("err"), Msg: r.URL.Query().Get("ok"), ServersList: map[string]any{
-		"ID": v.ID, "UserID": v.UserID, "Email": v.Email, "Phone": service.MaskPhone(v.Phone),
-		"Status": service.StatusText(v.Status), "RawStatus": v.Status, "Name": name,
-		"IdentityNumber": service.MaskIdentityNumber(identityNumber), "SubmittedAt": v.SubmittedAt.Format("2006-01-02 15:04"),
-		"Reason":   v.RejectionReason,
-		"FrontURL": "/admin/verifications/" + strconv.FormatInt(v.ID, 10) + "/photo/front",
-		"BackURL":  "/admin/verifications/" + strconv.FormatInt(v.ID, 10) + "/photo/back",
-	}}
-	h.renderAdmin(w, "admin_verification_detail.html", data)
+	front := "/admin/verifications/" + strconv.FormatInt(v.ID, 10) + "/photo/front"
+	back := "/admin/verifications/" + strconv.FormatInt(v.ID, 10) + "/photo/back"
+	// 身份证号给管理员看完整的：审核就是要拿它跟证件照、姓名逐位核对，
+	// 脱敏等于没法审（脱敏只用于用户自己看的那一页）。本次查看已在上面记审计日志。
+	writeJSON(w, map[string]any{
+		"ok": 1,
+		"id": v.ID, "user_id": v.UserID, "email": v.Email, "phone": service.MaskPhone(v.Phone),
+		"status": service.StatusText(v.Status), "raw_status": v.Status,
+		"name": name, "identity_number": identityNumber,
+		"submitted_at": v.SubmittedAt.Format("2006-01-02 15:04"), "reason": v.RejectionReason,
+		"front_url": front, "back_url": back,
+	})
 }
 
 func (h *AdminVerification) approve(w http.ResponseWriter, r *http.Request) {
@@ -353,26 +571,40 @@ func (h *AdminVerification) review(w http.ResponseWriter, r *http.Request, appro
 	if !ok {
 		return
 	}
-	if tok := r.PostFormValue("_csrf"); tok == "" || !checkCSRF(r, tok) {
-		middleware.RedirectToLogin(w, r, "页面已过期，请重新登录后重试")
-		return
+	vals := jsonVals(r)
+	fv := func(k string) string {
+		if vals != nil {
+			return vals[k]
+		}
+		return r.PostFormValue(k)
+	}
+	if vals == nil {
+		if tok := fv("_csrf"); tok == "" || !checkCSRF(r, tok) {
+			middleware.RedirectToLogin(w, r, "页面已过期，请重新登录后重试")
+			return
+		}
 	}
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
-	err = h.Identity.Review(r.Context(), id, sess.UserID, approve, strings.TrimSpace(r.PostFormValue("reason")))
+	reason := strings.TrimSpace(fv("reason"))
+	err = h.Identity.Review(r.Context(), id, sess.UserID, approve, reason)
 	if err != nil {
 		msg := err.Error()
 		if errors.Is(err, repo.ErrNotPending) {
 			msg = "该申请已处理，请刷新页面"
 		}
+		if wantsJSON(r) {
+			writeJSON(w, map[string]any{"ok": 0, "msg": msg})
+			return
+		}
 		http.Redirect(w, r, "/admin/verifications/"+strconv.FormatInt(id, 10)+"?err="+url.QueryEscape(msg), http.StatusSeeOther)
 		return
 	}
 	action := "real_name_rejected"
-	detail := "reason=" + strings.TrimSpace(r.PostFormValue("reason"))
+	detail := "reason=" + reason
 	if approve {
 		action = "real_name_approved"
 		detail = ""
@@ -385,6 +617,10 @@ func (h *AdminVerification) review(w http.ResponseWriter, r *http.Request, appro
 	h.AdminLog.Record(sess.UserID, action, "real_name_submission", id, detail, requestIP(r))
 	if target > 0 && !approve {
 		h.AdminLog.Record(sess.UserID, "real_name_rejected_user", "user", target, "submission="+strconv.FormatInt(id, 10), requestIP(r))
+	}
+	if wantsJSON(r) {
+		writeJSON(w, map[string]any{"ok": 1, "msg": "审核结果已保存"})
+		return
 	}
 	http.Redirect(w, r, "/admin/verifications/"+strconv.FormatInt(id, 10)+"?ok="+url.QueryEscape("审核结果已保存"), http.StatusSeeOther)
 }

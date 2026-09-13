@@ -53,12 +53,43 @@ func (f *Fulfillment) ProcessOne(ctx context.Context) (bool, error) {
 			}
 			return true, err
 		}
+		// 等外部条件（上游余额不足）：按该上游配置决定保持重试还是转人工。
+		if server.IsRetryLater(err) {
+			if ferr := f.markRetryLater(ctx, job, err); ferr != nil {
+				return true, fmt.Errorf("记录等待重试状态失败: %w", ferr)
+			}
+			return true, err
+		}
 		if ferr := f.Jobs.Fail(ctx, job.ID, job.Attempts, err); ferr != nil {
 			return true, fmt.Errorf("记录履约失败结果: %w", ferr)
 		}
 		return true, err
 	}
 	return true, f.Jobs.Complete(ctx, job.ID)
+}
+
+// markRetryLater 处理"等外部条件"类失败：按该服务所属上游的配置，
+// 决定保持自动重试（不消耗重试次数）还是立即转人工复核。
+// 策略在 service 层而非 provider：provider 只负责陈述"这个失败等外部条件"（RetryLaterError），
+// 新上游接入时无需感知重试配置，配置自动生效。
+func (f *Fulfillment) markRetryLater(ctx context.Context, job *repo.FulfillmentJob, cause error) error {
+	enabled, minutes := true, repo.DefaultRetryLaterMinutes
+	if f.Lifecycle != nil && f.Lifecycle.Servers != nil {
+		e, m, err := f.Lifecycle.Servers.RetryLaterPolicy(ctx, job.ServiceID)
+		if err != nil {
+			log.Printf("[fulfillment] 读取上游重试策略失败（service %d），按默认值处理: %v", job.ServiceID, err)
+		} else {
+			enabled, minutes = e, m
+		}
+	}
+	// 该上游关掉了自动等待：立即转人工，由管理员充值后手动重试。
+	if !enabled {
+		return f.Jobs.MarkManualReview(ctx, job.ID, cause)
+	}
+	if minutes <= 0 { // 边界防护：间隔被写成 0/负数会变成高频空转
+		minutes = repo.DefaultRetryLaterMinutes
+	}
+	return f.Jobs.RetryLater(ctx, job.ID, cause, time.Duration(minutes)*time.Minute)
 }
 
 func (f *Fulfillment) Drain(ctx context.Context, limit int) {

@@ -17,16 +17,16 @@ func NewServicesRepo(db *sql.DB) *ServicesRepo { return &ServicesRepo{db: db} }
 
 func NewOrders(db *sql.DB, products *repo.Products, coupons *repo.Coupons, identity interface {
 	IsApproved(context.Context, int64) (bool, error)
-}) *Orders {
-	return &Orders{db: db, Products: products, Coupons: coupons, Identity: identity}
+}, upstream *UpstreamGuard) *Orders {
+	return &Orders{db: db, Products: products, Coupons: coupons, Identity: identity, Upstream: upstream}
 }
 
 func NewConsole(db *sql.DB, servers *repo.Servers, products *repo.Products, providers *server.Registry, crypt *crypto.Cryptor) *Console {
 	return &Console{db: db, Servers: servers, Products: products, Providers: providers, Crypt: crypt}
 }
 
-func NewLifecycle(db *sql.DB, servers *repo.Servers, products *repo.Products, providers *server.Registry) *Lifecycle {
-	return &Lifecycle{db: db, Servers: servers, Products: products, Providers: providers}
+func NewLifecycle(db *sql.DB, servers *repo.Servers, products *repo.Products, providers *server.Registry, provisions *repo.ProvisionRepo) *Lifecycle {
+	return &Lifecycle{db: db, Servers: servers, Products: products, Providers: providers, Provisions: provisions}
 }
 
 func NewPayment(db *sql.DB, lifecycle *Lifecycle, servers *repo.Servers, products *repo.Products, provisions *repo.ProvisionRepo, jobs *repo.FulfillmentJobs, balance *repo.Balance, providers *server.Registry, periodGrants *repo.PeriodGrants, notifier *Notifier, crypt *crypto.Cryptor) *Payment {

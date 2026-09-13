@@ -70,6 +70,43 @@ const tslConfigOpts = `{"data":{"config_groups":[{"name":"g","options":[
    {"id":817207,"option_name":"10|增加到10个"}]}
 ]}]}}`
 
+// TestConvertSetupFees 上游初装费（msetupfee/qsetupfee/asetupfee）必须同步：
+// 漏掉它本地成本就低于上游，首购每单亏这笔差价（实测样本：带宽 10M 月付 10 + 初装费 5）。
+func TestConvertSetupFees(t *testing.T) {
+	const raw = `{"data":{"config_groups":[{"name":"g","options":[
+	 {"option_type":10,"option_name":"bw|带宽","sub":[
+	   {"option_name":"10M带宽","pricings":[{"monthly":10.00,"msetupfee":5.00,"qsetupfee":0.00,"asetupfee":0.00}]},
+	   {"option_name":"20M带宽","pricings":[{"monthly":15.00,"msetupfee":0.00,"asetupfee":2.00}]}]},
+	 {"option_type":6,"option_name":"cpu|CPU","sub":[
+	   {"option_name":"2核","pricings":[{"monthly":10.00,"msetupfee":0.00}]}]}
+	]}]}}`
+	opts := parseConfigOptions([]byte(raw))
+	if len(opts) != 2 {
+		t.Fatalf("期望 2 个配置项，得到 %d", len(opts))
+	}
+	bw := opts[0]
+	if got := bw.Subs[0].SetupPrice("monthly"); got != 5 {
+		t.Fatalf("10M 月付初装费应为 5，实得 %v", got)
+	}
+	// 显式 0 的周期键必须保留：否则分不清"该周期不收"与"上游没配"
+	if _, ok := bw.Subs[0].Setup["quarterly"]; !ok {
+		t.Fatal("季付初装费为 0 时也要保留键")
+	}
+	if got := bw.Subs[0].SetupPrice("yearly"); got != 0 {
+		t.Fatalf("10M 年付未配初装费应为 0（不得回落月付），实得 %v", got)
+	}
+	if got := bw.Subs[1].SetupPrice("yearly"); got != 2 {
+		t.Fatalf("20M 年付初装费应为 2，实得 %v", got)
+	}
+	if got := bw.Subs[1].SetupPrice("monthly"); got != 0 {
+		t.Fatalf("20M 月付初装费应为 0，实得 %v", got)
+	}
+	// 全 0 的档位不留空 map（几万个配置档位，别都塞一个 {0,0,0}）
+	if opts[1].Subs[0].Setup != nil {
+		t.Fatalf("无初装费的档位不该有 Setup：%+v", opts[1].Subs[0].Setup)
+	}
+}
+
 // TestParseConfigOptions 目录回填顺带解析配置项（复用 get_product_config 响应，不重复请求）的入口。
 func TestParseConfigOptions(t *testing.T) {
 	got := parseConfigOptions([]byte(tslReal))

@@ -1,19 +1,26 @@
 package handler
 
 import (
+	"database/sql"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"lumeidc/internal/captcha"
 	"lumeidc/internal/middleware"
 	"lumeidc/internal/repo"
 	"lumeidc/internal/service"
+	"lumeidc/internal/storage"
 	"lumeidc/internal/totp"
 	"lumeidc/internal/update"
+
+	qrcode "github.com/skip2/go-qrcode"
 )
 
 type Admin struct {
+	DB            *sql.DB
+	PrivateFiles  *storage.PrivateFiles
 	Admins        *repo.Admins
 	Lockout       *repo.LoginAttempts
 	Announcements *repo.Announcements
@@ -32,13 +39,26 @@ type Admin struct {
 }
 
 func (a *Admin) Register(mux *http.ServeMux) {
-	mux.HandleFunc("GET /admin/login", a.loginForm)
+	// 后台登录页由后台 SPA 承载（/admin/login 导航返回 admin.html），仅保留 JSON 接口。
 	mux.HandleFunc("POST /admin/login", a.loginSubmit)
+	// 退出后台登录（与前台 /logout 分属两个会话通道）
+	mux.HandleFunc("POST /admin/logout", a.logout)
 	mux.HandleFunc("GET /admin", a.dashboard)
+	mux.HandleFunc("GET /admin/notifications", a.adminNotifications)
 	mux.HandleFunc("GET /admin/orders", a.adminOrders)
 	mux.HandleFunc("GET /admin/logs", a.adminLogs)
 	mux.HandleFunc("GET /admin/refunds", a.adminRefunds)
 	mux.HandleFunc("GET /admin/announcements", a.adminAnnouncements)
+	mux.HandleFunc("GET /admin/tickets", a.adminTickets)
+	mux.HandleFunc("GET /admin/tickets/stats", a.adminTicketStats)
+	mux.HandleFunc("GET /admin/tickets/{ticketID}", a.adminTicketDetail)
+	mux.HandleFunc("POST /admin/tickets/{ticketID}/reply", a.adminTicketReply)
+	mux.HandleFunc("POST /admin/tickets/{ticketID}/status", a.adminTicketStatus)
+	mux.HandleFunc("POST /admin/tickets/{ticketID}/assign", a.adminTicketAssign)
+	mux.HandleFunc("POST /admin/tickets/{ticketID}/internal-note", a.adminTicketInternalNote)
+	mux.HandleFunc("POST /admin/tickets/{ticketID}/attachments", a.adminTicketAttachment)
+	mux.HandleFunc("GET /admin/tickets/{ticketID}/attachments/{attachmentID}", a.adminTicketAttachmentDownload)
+	mux.HandleFunc("GET /admin/ticket-assignees", a.adminTicketAssignees)
 	mux.HandleFunc("GET /admin/announcements/edit", a.adminAnnouncementForm)
 	mux.HandleFunc("POST /admin/announcements/save", a.adminAnnouncementSave)
 	mux.HandleFunc("POST /admin/announcements/{id}/delete", a.adminAnnouncementDelete)
@@ -51,18 +71,16 @@ func (a *Admin) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /admin/site", a.adminSiteSave)
 	mux.HandleFunc("GET /admin/totp", a.totpSetup)
 	mux.HandleFunc("POST /admin/totp", a.totpSetupPost)
+	// 两步验证二维码（otpauth:// 的 PNG，便于验证器扫码而非手输密钥）
+	mux.HandleFunc("GET /admin/totp/qr", a.totpQR)
 	mux.HandleFunc("GET /admin/password", a.passwordForm)
 	mux.HandleFunc("POST /admin/password", a.passwordSubmit)
+	// 修改管理员登录名（需当前密码确认）
+	mux.HandleFunc("POST /admin/username", a.usernameSubmit)
 	mux.HandleFunc("GET /admin/update", a.adminUpdatePage)
 	mux.HandleFunc("POST /admin/update/check", a.adminUpdateCheck)
 	mux.HandleFunc("POST /admin/update/apply", a.adminUpdateApply)
 	mux.HandleFunc("POST /admin/update/restart", a.adminUpdateRestart)
-}
-
-func (a *Admin) loginForm(w http.ResponseWriter, r *http.Request) {
-	data := map[string]any{"IsAdmin": true, "CaptchaScene": "admin_login", "CSRF": a.adminCSRF(w, r),
-		"CaptchaAdminLoginEnabled": a.adminCaptchaRequired(r)}
-	a.renderAuth(w, data)
 }
 
 // adminLoginFailKey 管理员登录失败计数的 IP key（独立于账号锁定 key）。
@@ -85,95 +103,210 @@ func (a *Admin) adminCaptchaRequired(r *http.Request) bool {
 	return false
 }
 
-func (a *Admin) captchaCheck(r *http.Request) error {
+// captchaCheck 校验后台登录图形验证码；vals 为 JSON 请求体字段（SPA），为 nil 时回退表单。
+func (a *Admin) captchaCheck(r *http.Request, vals map[string]string) error {
 	if a.LocalCaptcha == nil || !a.adminCaptchaRequired(r) {
 		return nil
 	}
+	fv := func(k string) string {
+		if vals != nil {
+			return vals[k]
+		}
+		return r.PostFormValue(k)
+	}
 	// VerifyForced：失败后强制校验，不因后台开关关闭而跳过。
-	return a.LocalCaptcha.VerifyForced(r.Context(), "admin_login", r.PostFormValue("captcha_id"), r.PostFormValue("captcha_answer"), requestIP(r))
+	return a.LocalCaptcha.VerifyForced(r.Context(), "admin_login", fv("captcha_id"), fv("captcha_answer"), requestIP(r))
 }
 
 func (a *Admin) loginSubmit(w http.ResponseWriter, r *http.Request) {
 	if a.AdminStore == nil {
-		http.Error(w, "服务器内部错误", 500)
+		jsonStatus(w, r, 500, "服务器内部错误")
 		return
 	}
-	if err := a.captchaCheck(r); err != nil {
+	vals := jsonVals(r)
+	fv := func(k string) string {
+		if vals != nil {
+			return vals[k]
+		}
+		return r.PostFormValue(k)
+	}
+	if err := a.captchaCheck(r, vals); err != nil {
 		if a.Lockout != nil {
 			_ = a.Lockout.Fail(r.Context(), adminLoginFailKey(requestIP(r))) // 答错也计数，防看图爆破
 		}
-		w.WriteHeader(http.StatusUnauthorized)
-		a.renderAuth(w, map[string]any{"IsAdmin": true, "CaptchaScene": "admin_login", "CaptchaAdminLoginEnabled": a.adminCaptchaRequired(r), "CSRF": a.adminCSRF(w, r), "Error": "图形验证码错误，请重试"})
+		jsonStatus(w, r, 401, "图形验证码错误，请重试")
 		return
 	}
-	email := r.PostFormValue("email")
+	fail := func(status int, msg string) {
+		jsonStatus(w, r, status, msg)
+	}
+	email := strings.TrimSpace(fv("email"))
 	ip := requestIP(r)
 	// 登录锁定：达阈值后临时拒绝，阻断爆破。
 	if a.Lockout != nil {
 		if locked, lerr := a.Lockout.Locked(r.Context(), email); lerr == nil && locked {
-			w.WriteHeader(http.StatusTooManyRequests)
-			a.renderAuth(w, map[string]any{"IsAdmin": true, "CaptchaScene": "admin_login", "CaptchaAdminLoginEnabled": a.adminCaptchaRequired(r), "CSRF": a.adminCSRF(w, r), "Error": "尝试次数过多，账户已临时锁定，请 15 分钟后再试"})
+			fail(http.StatusTooManyRequests, "尝试次数过多，账户已临时锁定，请 15 分钟后再试")
 			return
 		}
 	}
-	id, err := a.Admins.Verify(r.Context(), email, r.PostFormValue("password"))
+	id, err := a.Admins.Verify(r.Context(), email, fv("password"))
 	if err != nil {
 		if a.Lockout != nil {
 			_ = a.Lockout.Fail(r.Context(), email)
 			_ = a.Lockout.Fail(r.Context(), adminLoginFailKey(ip)) // 失败后强制验证码
 		}
-		w.WriteHeader(http.StatusUnauthorized)
-		a.renderAuth(w, map[string]any{"IsAdmin": true, "CaptchaScene": "admin_login", "CaptchaAdminLoginEnabled": a.adminCaptchaRequired(r), "CSRF": a.adminCSRF(w, r), "Error": "用户名或密码错误"})
+		fail(http.StatusUnauthorized, "用户名或密码错误")
 		return
 	}
-	// 两步验证（若已启用）
-	if a.Admins != nil {
-		if secret, enabled, gerr := a.Admins.GetTOTP(r.Context(), id); gerr == nil && enabled && secret != "" {
-			if !totp.Verify(secret, r.PostFormValue("totp"), time.Now()) {
-				if a.Lockout != nil {
-					_ = a.Lockout.Fail(r.Context(), email)
-					_ = a.Lockout.Fail(r.Context(), adminLoginFailKey(ip))
-				}
+	// 两步验证（若已启用）；a.Admins 在上方 Verify 已解引用，此处无需再判空
+	if secret, enabled, gerr := a.Admins.GetTOTP(r.Context(), id); gerr == nil && enabled && secret != "" {
+		if !totp.Verify(secret, fv("totp"), time.Now()) {
+			if a.Lockout != nil {
+				_ = a.Lockout.Fail(r.Context(), email)
+				_ = a.Lockout.Fail(r.Context(), adminLoginFailKey(ip))
+			}
+			// SPA 明确告知该账户已启用两步验证，前端据此才展示验证码输入框，
+			// 避免对未启用两步验证的账户也显示该字段。
+			if wantsJSON(r) {
 				w.WriteHeader(http.StatusUnauthorized)
-				a.renderAuth(w, map[string]any{"IsAdmin": true, "CaptchaScene": "admin_login", "CaptchaAdminLoginEnabled": a.adminCaptchaRequired(r), "CSRF": a.adminCSRF(w, r), "Error": "两步验证码错误"})
+				writeJSON(w, map[string]any{"ok": 0, "msg": "请输入两步验证码", "totp_required": true})
 				return
 			}
+			fail(http.StatusUnauthorized, "两步验证码错误")
+			return
 		}
 	}
 	if a.Lockout != nil {
 		_ = a.Lockout.Clear(r.Context(), email)
 		_ = a.Lockout.Clear(r.Context(), adminLoginFailKey(ip))
 	}
-	sess := a.AdminStore.Start(r, w)
-	sess.IsAdmin = true
+	sess := a.AdminStore.StartAdmin(r, w)
 	sess.UserID = id
+	if wantsJSON(r) {
+		writeJSON(w, map[string]any{"ok": 1})
+		return
+	}
 	http.Redirect(w, r, "/admin", http.StatusSeeOther)
 }
 
-// passwordForm GET /admin/password — 管理员修改自己密码。
-func (a *Admin) passwordForm(w http.ResponseWriter, r *http.Request) {
-	if _, ok := middleware.RequireAdmin(w, r); !ok {
+// logout POST /admin/logout — 退出后台登录。只清管理员通道会话，
+// 不影响同一浏览器上的普通用户登录。
+func (a *Admin) logout(w http.ResponseWriter, r *http.Request) {
+	if a.AdminStore != nil {
+		a.AdminStore.DestroyAdmin(r, w)
+	}
+	if wantsJSON(r) {
+		writeJSON(w, map[string]any{"ok": 1})
 		return
 	}
-	a.renderAdmin(w, "admin_password.html", AdminData{
-		CSRF:  a.adminCSRF(w, r),
-		Error: r.URL.Query().Get("err"),
-		Msg:   r.URL.Query().Get("ok"),
-	})
+	http.Redirect(w, r, "/admin/login", http.StatusSeeOther)
+}
+
+// passwordForm GET /admin/password — 管理员修改自己密码 / 登录名。
+func (a *Admin) passwordForm(w http.ResponseWriter, r *http.Request) {
+	if !adminRequire(w, r) {
+		return
+	}
+	sess := middleware.FromSession(r.Context())
+	if sess == nil {
+		return
+	}
+	username := ""
+	if a.Admins != nil {
+		if u, err := a.Admins.Username(r.Context(), sess.UserID); err == nil {
+			username = u
+		}
+	}
+	writeJSON(w, map[string]any{"ok": 1, "username": username})
+}
+
+// usernameSubmit POST /admin/username — 修改管理员登录名（需当前密码确认）。
+func (a *Admin) usernameSubmit(w http.ResponseWriter, r *http.Request) {
+	if !adminRequire(w, r) {
+		return
+	}
+	sess := middleware.FromSession(r.Context())
+	if sess == nil {
+		return
+	}
+	vals := jsonVals(r)
+	fv := func(k string) string {
+		if vals != nil {
+			return vals[k]
+		}
+		return r.PostFormValue(k)
+	}
+	fail := func(msg string) {
+		if wantsJSON(r) {
+			writeJSON(w, map[string]any{"ok": 0, "msg": msg})
+			return
+		}
+		http.Redirect(w, r, "/admin/password?err="+url.QueryEscape(msg), http.StatusSeeOther)
+	}
+	if a.Admins == nil {
+		fail("管理员服务未配置")
+		return
+	}
+	oldName, _ := a.Admins.Username(r.Context(), sess.UserID)
+	newName := strings.TrimSpace(fv("username"))
+	if newName == oldName {
+		fail("新用户名与当前相同")
+		return
+	}
+	if err := a.Admins.ChangeUsername(r.Context(), sess.UserID, fv("password"), newName); err != nil {
+		switch {
+		case repo.IsWrongOldPassword(err):
+			fail("密码错误，无法修改用户名")
+		case repo.IsUsernameEmpty(err):
+			fail("用户名不能为空")
+		case repo.IsUsernameTaken(err):
+			fail("用户名已被占用")
+		default:
+			fail("修改失败，请稍后重试")
+		}
+		return
+	}
+	if a.AdminLog != nil {
+		a.AdminLog.Record(sess.UserID, "admin_username_changed", "admin", sess.UserID, "old="+oldName+" new="+newName, requestIP(r))
+	}
+	if wantsJSON(r) {
+		writeJSON(w, map[string]any{"ok": 1, "msg": "用户名已更新，下次登录请使用新用户名"})
+		return
+	}
+	http.Redirect(w, r, "/admin/password?ok="+url.QueryEscape("用户名已更新"), http.StatusSeeOther)
 }
 
 // passwordSubmit POST /admin/password — 验证旧密码后更新。
 func (a *Admin) passwordSubmit(w http.ResponseWriter, r *http.Request) {
-	sess, ok := middleware.RequireAdmin(w, r)
-	if !ok {
+	if !adminRequire(w, r) {
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		http.Redirect(w, r, "/admin/password?err=表单解析失败", http.StatusSeeOther)
+	sess := middleware.FromSession(r.Context())
+	if sess == nil {
 		return
+	}
+	vals := jsonVals(r)
+	if vals == nil {
+		if err := r.ParseForm(); err != nil {
+			http.Redirect(w, r, "/admin/password?err=表单解析失败", http.StatusSeeOther)
+			return
+		}
+	}
+	fv := func(k string) string {
+		if vals != nil {
+			return vals[k]
+		}
+		return r.PostFormValue(k)
+	}
+	fail := func(msg string) {
+		if wantsJSON(r) {
+			writeJSON(w, map[string]any{"ok": 0, "msg": msg})
+			return
+		}
+		http.Redirect(w, r, "/admin/password?err="+url.QueryEscape(msg), http.StatusSeeOther)
 	}
 	err := a.Admins.ChangePassword(r.Context(), sess.UserID,
-		r.PostFormValue("old_password"), r.PostFormValue("new_password"))
+		fv("old_password"), fv("new_password"))
 	if err != nil {
 		msg := "修改失败"
 		switch {
@@ -182,19 +315,26 @@ func (a *Admin) passwordSubmit(w http.ResponseWriter, r *http.Request) {
 		case repo.IsPasswordTooShort(err):
 			msg = "新密码至少8位"
 		}
-		http.Redirect(w, r, "/admin/password?err="+url.QueryEscape(msg), http.StatusSeeOther)
+		fail(msg)
 		return
 	}
 	if a.AdminStore != nil {
 		a.AdminStore.RevokeAdmin(sess.UserID)
+	}
+	if wantsJSON(r) {
+		writeJSON(w, map[string]any{"ok": 1, "msg": "密码已修改，请重新登录"})
+		return
 	}
 	http.Redirect(w, r, "/admin/login?ok="+url.QueryEscape("密码已修改，请重新登录"), http.StatusSeeOther)
 }
 
 // totpSetup GET /admin/totp — 两步验证设置页（生成/展示密钥，确认后启用）。
 func (a *Admin) totpSetup(w http.ResponseWriter, r *http.Request) {
-	sess, ok := middleware.RequireAdmin(w, r)
-	if !ok {
+	if !adminRequire(w, r) {
+		return
+	}
+	sess := middleware.FromSession(r.Context())
+	if sess == nil {
 		return
 	}
 	secret, enabled, _ := a.Admins.GetTOTP(r.Context(), sess.UserID)
@@ -205,35 +345,77 @@ func (a *Admin) totpSetup(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	uri := totp.URI("LumeIDC-Admin", "LumeIDC", secret)
-	a.renderAdmin(w, "admin_totp.html", AdminData{
-		CSRF:          a.adminCSRF(w, r),
-		Secret:        secret,
-		UpstreamBound: enabled,
-		Msg:           r.URL.Query().Get("ok"),
-		Error:         r.URL.Query().Get("err"),
-		ServersList:   map[string]any{"URI": uri},
-	})
+	writeJSON(w, map[string]any{"ok": 1, "secret": secret, "enabled": enabled, "uri": uri})
 }
 
 // totpSetupPost POST /admin/totp — 启用（校验码）或关闭两步验证。
-func (a *Admin) totpSetupPost(w http.ResponseWriter, r *http.Request) {
-	sess, ok := middleware.RequireAdmin(w, r)
-	if !ok {
+// totpQR GET /admin/totp/qr — 两步验证密钥的二维码（PNG）。
+// 便于用验证器扫码，避免手输 32 位密钥出错；密钥本就随 JSON 下发，无新增暴露面。
+func (a *Admin) totpQR(w http.ResponseWriter, r *http.Request) {
+	if !adminRequire(w, r) {
 		return
 	}
-	if r.PostFormValue("action") == "disable" {
-		_ = a.Admins.DisableTOTP(r.Context(), sess.UserID)
+	sess := middleware.FromSession(r.Context())
+	if sess == nil {
+		return
+	}
+	secret, enabled, err := a.Admins.GetTOTP(r.Context(), sess.UserID)
+	if err != nil || enabled || secret == "" {
+		http.NotFound(w, r)
+		return
+	}
+	png, err := qrcode.Encode(totp.URI("LumeIDC-Admin", "LumeIDC", secret), qrcode.Medium, 220)
+	if err != nil {
+		http.Error(w, "生成二维码失败", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "image/png")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Write(png)
+}
+
+func (a *Admin) totpSetupPost(w http.ResponseWriter, r *http.Request) {
+	if !adminRequire(w, r) {
+		return
+	}
+	sess := middleware.FromSession(r.Context())
+	if sess == nil {
+		return
+	}
+	vals := jsonVals(r)
+	fv := func(k string) string {
+		if vals != nil {
+			return vals[k]
+		}
+		return r.PostFormValue(k)
+	}
+	fail := func(msg string) {
+		if wantsJSON(r) {
+			writeJSON(w, map[string]any{"ok": 0, "msg": msg})
+			return
+		}
+		http.Redirect(w, r, "/admin/totp?err="+url.QueryEscape(msg), http.StatusSeeOther)
+	}
+	success := func() {
+		if wantsJSON(r) {
+			writeJSON(w, map[string]any{"ok": 1, "msg": "已保存"})
+			return
+		}
 		http.Redirect(w, r, "/admin/totp?ok=1", http.StatusSeeOther)
+	}
+	if fv("action") == "disable" {
+		_ = a.Admins.DisableTOTP(r.Context(), sess.UserID)
+		success()
 		return
 	}
 	secret, _, _ := a.Admins.GetTOTP(r.Context(), sess.UserID)
-	if !totp.Verify(secret, r.PostFormValue("code"), time.Now()) {
-		http.Redirect(w, r, "/admin/totp?err="+url.QueryEscape("验证码错误"), http.StatusSeeOther)
+	if !totp.Verify(secret, fv("code"), time.Now()) {
+		fail("验证码错误")
 		return
 	}
 	if err := a.Admins.EnableTOTP(r.Context(), sess.UserID); err != nil {
-		http.Redirect(w, r, "/admin/totp?err="+url.QueryEscape(err.Error()), http.StatusSeeOther)
+		fail(err.Error())
 		return
 	}
-	http.Redirect(w, r, "/admin/totp?ok=1", http.StatusSeeOther)
+	success()
 }

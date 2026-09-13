@@ -1,0 +1,184 @@
+import { reactive } from 'vue'
+
+// 全局会话状态：mount 前由 /session 填充，供路由守卫与请求头使用。
+interface SiteInfo {
+  name: string
+  description: string
+  keywords: string
+  email: string
+  phone: string
+  hours: string
+}
+
+interface UserInfo {
+  id: number
+  isAdmin: boolean
+  email?: string
+  name?: string
+  phone?: string
+  balance?: string
+}
+
+/** 认证相关开关：登录/注册页据此决定展示哪些方式（与后端 /session 的 auth 块对应）。 */
+interface AuthFlags {
+  phone_otp_login: boolean
+  email_registration: boolean
+  phone_registration: boolean
+  email_verification_required: boolean
+  phone_verification_required: boolean
+  captcha_register: boolean
+  captcha_login: boolean
+  external_captcha_login: boolean
+  external_captcha_register: boolean
+  external_captcha_phone_login: boolean
+}
+
+export interface SessionLoadOptions {
+  /** 强制绕过前端的节流语义，重新向 Go 获取 Cookie/CSRF。 */
+  force?: boolean
+}
+
+interface SessionState {
+  loaded: boolean
+  csrf: string
+  site: SiteInfo
+  /** 普通用户通道身份（前台入口使用） */
+  user: UserInfo | null
+  adminPath: string
+  /** 管理员通道身份（后台入口使用；与用户通道相互独立，可同时在线） */
+  adminUser: UserInfo | null
+  auth: AuthFlags
+  error: Error | null
+}
+
+const defaultAuth: AuthFlags = {
+  phone_otp_login: false,
+  email_registration: true,
+  phone_registration: false,
+  email_verification_required: false,
+  phone_verification_required: true,
+  captcha_register: false,
+  captcha_login: false,
+  external_captcha_login: false,
+  external_captcha_register: false,
+  external_captcha_phone_login: false,
+}
+
+const state = reactive<SessionState>({
+  loaded: false,
+  csrf: '',
+  site: { name: 'LumeIDC', description: '', keywords: '', email: '', phone: '', hours: '' },
+  user: null,
+  adminPath: '/admin',
+  adminUser: null,
+  auth: { ...defaultAuth },
+  error: null,
+})
+
+// 前台与后台是两个独立入口，但共用本模块：adminApp 由后台入口置位，
+// 决定「当前身份」取哪个通道（见 currentUser）。
+let adminApp = false
+
+/** 标记当前页面为后台入口（须在首次路由守卫前调用）。 */
+export function setAdminApp(v: boolean): void {
+  adminApp = v
+}
+
+/** 当前入口对应的登录身份：后台取管理员通道，前台取普通用户通道。 */
+export function currentUser(): UserInfo | null {
+  return adminApp ? state.adminUser : state.user
+}
+
+/** 清除当前入口对应通道的本地登录态（服务端会话由各自登出接口清理）。 */
+export function clearCurrentUser(): void {
+  if (adminApp) state.adminUser = null
+  else state.user = null
+}
+
+const SESSION_PATH = import.meta.env.DEV ? '/__api/session' : '/session'
+let pendingLoad: Promise<void> | null = null
+let lastFocusRefresh = 0
+const FOCUS_REFRESH_INTERVAL = 30_000
+
+export const useSession = (): SessionState => state
+
+/**
+ * 获取或刷新会话。
+ *
+ * 开发环境必须走 Vite 的 /__api 代理，否则浏览器拿不到 Go 设置的
+ * lume_session Cookie 和 CSRF；生产环境则直接请求同源 /session。
+ */
+export const loadSession = async (_options: SessionLoadOptions = {}): Promise<void> => {
+  // 多个 401 或页面焦点事件可能同时触发恢复，只保留一个请求，避免互相覆盖 Cookie/CSRF。
+  if (pendingLoad) return pendingLoad
+
+  pendingLoad = (async () => {
+    try {
+      const res = await fetch(SESSION_PATH, {
+        credentials: 'same-origin',
+        cache: 'no-store',
+        headers: { Accept: 'application/json' },
+      })
+      const data = (await res.json()) as {
+        csrf?: string
+        site?: Partial<SiteInfo>
+        user?: UserInfo | null
+        admin?: { path?: string; user?: UserInfo | null }
+        auth?: Partial<AuthFlags>
+        msg?: string
+      }
+      if (!res.ok) throw new Error(data?.msg || `会话获取失败（${res.status}）`)
+      state.csrf = data.csrf || ''
+      state.site = { ...state.site, ...(data.site || {}) }
+      // 服务重启后 Go 会用新匿名会话响应，此处必须覆盖旧的前端 user 状态。
+      state.user = data.user || null
+      state.adminPath = data.admin?.path || '/admin'
+      state.adminUser = data.admin?.user || null
+      state.auth = { ...defaultAuth, ...(data.auth || {}) }
+      state.error = null
+    } catch (err) {
+      state.error = err instanceof Error ? err : new Error('会话获取失败')
+      console.error('loadSession failed', err)
+      throw state.error
+    } finally {
+      state.loaded = true
+    }
+  })()
+
+  try {
+    await pendingLoad
+  } finally {
+    pendingLoad = null
+  }
+}
+
+/**
+ * 页面从后台恢复时轻量检查会话，避免 Go 重启后 UI 继续显示旧登录态。
+ * 只做软刷新，不强制整页 reload，避免丢失正在填写的表单内容。
+ */
+export function installSessionRefresh(
+  onRefresh?: (wasAuthenticated: boolean) => void,
+): () => void {
+  const refresh = () => {
+    if (document.hidden) return
+    const now = Date.now()
+    if (now - lastFocusRefresh < FOCUS_REFRESH_INTERVAL) return
+    lastFocusRefresh = now
+    const wasAuthenticated = Boolean(currentUser())
+    void loadSession({ force: true })
+      .then(() => onRefresh?.(wasAuthenticated))
+      .catch(() => undefined)
+  }
+  const onVisibilityChange = () => {
+    if (!document.hidden) refresh()
+  }
+
+  window.addEventListener('focus', refresh)
+  document.addEventListener('visibilitychange', onVisibilityChange)
+  return () => {
+    window.removeEventListener('focus', refresh)
+    document.removeEventListener('visibilitychange', onVisibilityChange)
+  }
+}
+
+export default useSession

@@ -3,6 +3,7 @@ package zjmf
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,6 +19,12 @@ var defaultClient = &http.Client{Timeout: 30 * time.Second}
 type apiErr struct{ Msg string }
 
 func (e apiErr) Error() string { return e.Msg }
+
+// isBizError 判断是否为上游业务码错误（apiErr），用于与网络/HTTP/响应解析故障区分。
+func isBizError(err error) bool {
+	var e apiErr
+	return errors.As(err, &e)
+}
 
 // flexString 兼容上游字段可能是字符串或数字（如 invoiceid 常返回数值 1002939）。
 type flexString string

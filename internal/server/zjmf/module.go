@@ -137,14 +137,8 @@ func (p Provider) ModuleAction(ctx context.Context, cfg server.Config, upstreamH
 		return "", err
 	}
 	f := url.Values{}
-	for k, vs := range form {
-		if k == "_csrf" {
-			continue // 本地 CSRF，不转发到上游
-		}
-		for _, v := range vs {
-			f.Add(k, v)
-		}
-	}
+	copyValues(f, form)
+	f.Del("_csrf") // 本地 CSRF，不转发到上游
 	// id：上游 provision/custom/{hostID} 路径已定位主机；表单 id 是操作对象（如转发条目 id），
 	// 仅当表单未带 id 时才补主机 id（部分旧模块按 id 定位主机）。
 	if f.Get("id") == "" {

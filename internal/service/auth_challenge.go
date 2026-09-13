@@ -20,7 +20,7 @@ type AuthChallengeService struct {
 	Store     *repo.AuthChallenges
 	SMS       PhoneOTPProvider
 	EmailSend func(context.Context, string, string, string) error
-	// SiteName 返回站点名称，用于验证码邮件主题（如「站点名 验证码」）；nil 时回退 LumeIDC。
+	// SiteName 返回站点名称，用于验证码邮件主题与正文签名（如「站点名 验证码」）；nil 时回退 LumeIDC。
 	SiteName func(context.Context) string
 	Key      []byte
 }
@@ -79,12 +79,14 @@ func (s *AuthChallengeService) Issue(ctx context.Context, channel, purpose, dest
 		return errors.New("邮件服务未配置")
 	}
 	subject := "LumeIDC 验证码"
+	body := "你的验证码是：" + code + "，5分钟内有效。"
 	if s.SiteName != nil {
 		if name := strings.TrimSpace(s.SiteName(ctx)); name != "" {
 			subject = name + " 验证码"
+			body += "\r\n\r\n—— " + name
 		}
 	}
-	if err := s.EmailSend(ctx, normalized, subject, "你的验证码是："+code+"，5分钟内有效。"); err != nil {
+	if err := s.EmailSend(ctx, normalized, subject, body); err != nil {
 		_ = s.Store.Invalidate(ctx, id, time.Now())
 		return errors.New("验证码发送失败，请稍后重试")
 	}

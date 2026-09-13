@@ -21,6 +21,8 @@ type Lifecycle struct {
 	Servers   *repo.Servers
 	Products  *repo.Products
 	Providers *server.Registry
+	// Provisions 续费账单检查点存取（复用已建的上游续费单，避免重试重复建单）。
+	Provisions *repo.ProvisionRepo
 }
 
 type serviceRef struct {
@@ -85,6 +87,23 @@ func upstreamConfig(sv *repo.Server) server.Config {
 
 const opTimeout = 60 * time.Second
 
+// renewPendingState 续费待处理（上游涨价等待人工决定 / 上游欠费等待充值）。
+// 复用 transition_state 当锁：钱已收、本地到期时间已延长，不加锁用户会重复下单续费。
+const renewPendingState = "renew_pending"
+
+// renewPriceOkKey 续费价格确认标记（键带订单号）：管理员确认按上游新价续费后写入，
+// 本次续费重试据此跳过续费前比价。续费比价在建账单之前，没有可复用的账单检查点，
+// 只能靠这个标记表达"管理员已确认"。
+func renewPriceOkKey(orderID int64) string {
+	return fmt.Sprintf("renew_price_ok_%d", orderID)
+}
+
+// renewDoneCkKey 续费终态检查点键：成功写时间戳，管理员退款取消写 refunded。
+// 后台退款后不能只改服务状态——排队中的续费任务还会再跑一遍，把已退款的服务续到上游。
+func renewDoneCkKey(orderID int64) string {
+	return fmt.Sprintf("renew_order_%d", orderID)
+}
+
 // Renew 向上游续费。
 // 使用 checkpoint 记录续费结果，避免重试时重复创建续费单。
 func (lc *Lifecycle) Renew(ctx context.Context, serviceID int64, cycle string, orderID int64) error {
@@ -99,25 +118,134 @@ func (lc *Lifecycle) Renew(ctx context.Context, serviceID int64, cycle string, o
 	if err != nil {
 		return err
 	}
-	checkpointKey := fmt.Sprintf("renew_order_%d", orderID)
 	if orderID <= 0 {
 		return fmt.Errorf("续费任务缺少订单号")
 	}
-	if existing, ok, _ := lc.getCheckpoint(ctx, serviceID, checkpointKey); ok && existing != "" {
+	checkpointKey := renewDoneCkKey(orderID)
+	if existing, ok, err := lc.getCheckpoint(ctx, serviceID, checkpointKey); err != nil {
+		// 读取失败不能视为"未处理过"：重试会重复创建续费单
+		return fmt.Errorf("读取续费 checkpoint 失败: %w", err)
+	} else if ok && existing != "" {
 		log.Printf("[lifecycle] service %d 已有续费 checkpoint，跳过: %s", serviceID, existing)
+		lc.clearRenewPending(ctx, serviceID) // 上次成功后清理失败时补一次
 		return nil
 	}
 	cctx, cancel := context.WithTimeout(ctx, opTimeout)
 	defer cancel()
-	if err := prov.Renew(cctx, cfg, s.UpstreamHost, cycle); err != nil {
+	// 上游偷偷改价核对：续费账单由上游按当前价出，高于下单时的成本额就说明上游涨了价，
+	// 而用户已按旧价付过钱，继续会让平台吃差价。在建账单之前拦下，上游不留未付账单。
+	if perr := lc.checkRenewPrice(cctx, prov, cfg, s, cycle, orderID); perr != nil {
+		lc.markRenewPending(ctx, serviceID, perr)
+		return perr
+	}
+	// 续费账单检查点由 Provider 读写：重试时复用同一张上游账单，不会重复建单。
+	var ck server.CheckpointStore
+	if lc.Provisions != nil {
+		ck = &serviceCheckpoint{repo: lc.Provisions, serviceID: serviceID, ctx: cctx}
+	}
+	if err := prov.Renew(cctx, cfg, s.UpstreamHost, cycle, ck); err != nil {
 		log.Printf("[lifecycle] service %d 上游续费失败: %v", serviceID, err)
-		return fmt.Errorf("上游续费失败: %w", err)
+		// 需要人工或等外部条件的失败（上游涨价 / 账单被删 / 欠费）：标记待处理，
+		// 由管理员在后台二选一（重试=按上游新价续费 / 退款给用户）。
+		if server.IsManualReview(err) || server.IsRetryLater(err) {
+			lc.markRenewPending(ctx, serviceID, err)
+		}
+		return fmt.Errorf("续费失败: %w", err)
 	}
 	// 续费成功，写入 checkpoint
 	if err := lc.setCheckpoint(ctx, serviceID, checkpointKey, time.Now().UTC().Format(time.RFC3339)); err != nil {
 		log.Printf("[lifecycle] service %d 写入续费 checkpoint 失败: %v", serviceID, err)
 	}
+	lc.clearRenewPending(ctx, serviceID)
 	return nil
+}
+
+// markRenewPending 记录续费待处理原因（展示在后台服务列表「失败原因」列）并锁住服务，
+// 避免待处理期间用户重复下单续费。已在其它过渡态（如升级中）时不覆盖，以免破坏那个流程的锁。
+func (lc *Lifecycle) markRenewPending(ctx context.Context, serviceID int64, cause error) {
+	msg := "续费失败：需要人工处理"
+	if cause != nil {
+		msg = "续费失败：" + cause.Error()
+	}
+	if len(msg) > 500 {
+		msg = msg[:500]
+	}
+	if _, err := lc.db.ExecContext(ctx,
+		`UPDATE services SET transition_state=$2, provision_error=$3
+		  WHERE id=$1 AND coalesce(transition_state,'') IN ('',$2)`,
+		serviceID, renewPendingState, msg); err != nil {
+		log.Printf("[lifecycle] service %d 记录续费待处理原因失败: %v", serviceID, err)
+	}
+}
+
+// clearRenewPending 解除续费待处理状态（续费成功或管理员退款后调用）。
+// 只清自己设的锁，不误动升级/停机的过渡态。
+func (lc *Lifecycle) clearRenewPending(ctx context.Context, serviceID int64) {
+	if _, err := lc.db.ExecContext(ctx,
+		`UPDATE services SET transition_state='', provision_error=''
+		  WHERE id=$1 AND coalesce(transition_state,'')=$2`, serviceID, renewPendingState); err != nil {
+		log.Printf("[lifecycle] service %d 清除续费待处理状态失败: %v", serviceID, err)
+	}
+}
+
+// checkRenewPrice 续费前核对上游当前价是否已高于下单时的成本额。
+// 只拦涨价（上游降价我们赚更多，不该拦）；供应商不支持单商品快照、或订单无成本快照时跳过。
+// 返回 PriceChangedError 时任务进人工复核，由管理员决定按此价续费还是退款给用户。
+func (lc *Lifecycle) checkRenewPrice(ctx context.Context, prov server.Provider, cfg server.Config, s *serviceRef, cycle string, orderID int64) error {
+	// 管理员已确认按上游新价续费（后台点「重试续费」写入）：跳过比价，本次重试即强制续费。
+	if v, ok, _ := lc.getCheckpoint(ctx, s.ID, renewPriceOkKey(orderID)); ok && v != "" {
+		log.Printf("[lifecycle] service %d 续费订单 %d 已确认价格，跳过续费前比价", s.ID, orderID)
+		return nil
+	}
+	fetcher, ok := prov.(server.ProductSnapshotFetcher)
+	if !ok {
+		return nil
+	}
+	localCost, selection := lc.orderCostBaseline(ctx, orderID)
+	if localCost <= 0 {
+		return nil // 无成本快照（老数据），无从比对
+	}
+	snap, err := fetcher.FetchProductSnapshot(ctx, cfg, s.UpstreamPID)
+	if err != nil {
+		// 拿不到上游当前价就无法判断是否被改价，按防亏优先转人工，不盲目续费。
+		return &server.ManualReviewError{
+			Msg: fmt.Sprintf("读取上游当前价失败，无法核对续费价格: %v", err),
+		}
+	}
+	upQuote, qerr := CalculateQuote(snap.ConfigOptions, cycleAmount(snap.Monthly, snap.Quarterly, snap.Yearly, cycle), cycle, selection)
+	if qerr != nil {
+		return &server.ManualReviewError{
+			Msg: fmt.Sprintf("按上游当前配置无法计价，无法核对续费价格: %v", qerr),
+		}
+	}
+	if upQuote.Total-localCost > server.PriceTolerance {
+		return &server.PriceChangedError{
+			UpstreamAmount: upQuote.Total,
+			ExpectAmount:   localCost,
+			UpstreamPID:    s.UpstreamPID,
+		}
+	}
+	return nil
+}
+
+// orderCostBaseline 读取订单下单时的成本额与配置选择（config_snapshot）。
+// 与 payment.orderCostAmount 同源，这里额外要 selection 才能按上游当前配置项复算成本。
+func (lc *Lifecycle) orderCostBaseline(ctx context.Context, orderID int64) (float64, map[string]string) {
+	var raw []byte
+	if err := lc.db.QueryRowContext(ctx,
+		`SELECT config_snapshot FROM orders WHERE id=$1`, orderID).Scan(&raw); err != nil {
+		return 0, nil
+	}
+	var snap struct {
+		Quote struct {
+			Total float64 `json:"total"`
+		} `json:"quote"`
+		Selection map[string]string `json:"selection"`
+	}
+	if json.Unmarshal(raw, &snap) != nil {
+		return 0, nil
+	}
+	return snap.Quote.Total, snap.Selection
 }
 
 // getCheckpoint 从 services.provision_data 读取 checkpoint。
@@ -140,9 +268,13 @@ func (lc *Lifecycle) getCheckpoint(ctx context.Context, serviceID int64, key str
 
 // setCheckpoint 写入 checkpoint 到 services.provision_data。
 func (lc *Lifecycle) setCheckpoint(ctx context.Context, serviceID int64, key, val string) error {
-	_, err := lc.db.ExecContext(ctx,
+	payload, err := json.Marshal(map[string]string{key: val})
+	if err != nil {
+		return err
+	}
+	_, err = lc.db.ExecContext(ctx,
 		`UPDATE services SET provision_data = coalesce(provision_data,'{}')::jsonb || $2::jsonb WHERE id=$1`,
-		serviceID, fmt.Sprintf(`{"%s":"%s"}`, key, val))
+		serviceID, payload)
 	return err
 }
 
@@ -230,8 +362,18 @@ func (lc *Lifecycle) Terminate(ctx context.Context, serviceID int64) error {
 		})
 }
 
-// RetryProvision 手动重试开通（pending 状态的服务）。
-// 通过入队 fulfillment job 实现，不允许与同服务已有 running job 并行。
+// TerminateLocal 仅本地删除：置 status=3（含清除过渡状态），不调用上游。
+// 用于后台「本地删除」——保留上游实例，便于找回或避免误删。
+func (lc *Lifecycle) TerminateLocal(ctx context.Context, serviceID int64) error {
+	if _, err := lc.db.ExecContext(ctx,
+		`UPDATE services SET status=3, desired_status=NULL, transition_state='' WHERE id=$1 AND status<3`,
+		serviceID); err != nil {
+		return err
+	}
+	return nil
+}
+
+// RetryProvision 手动重试开通（pending 状态的服务）。// 通过入队 fulfillment job 实现，不允许与同服务已有 running job 并行。
 func (p *Payment) RetryProvision(ctx context.Context, serviceID int64) error {
 	var cycle sql.NullString
 	err := p.db.QueryRowContext(ctx,
@@ -256,7 +398,229 @@ func (p *Payment) RetryProvision(ctx context.Context, serviceID int64) error {
 	if running {
 		return fmt.Errorf("该服务已有正在执行的任务，请等待完成后再试")
 	}
-	return p.Jobs.EnqueueRetry(ctx, serviceID, "provision", cycle.String)
+	if err := p.Jobs.EnqueueRetry(ctx, serviceID, 0, "provision", cycle.String); err != nil {
+		return err
+	}
+	p.triggerFulfillment()
+	return nil
+}
+
+// pendingRenewOrder 定位该服务待处理的续费订单（订单号 + 周期）。
+// 以队列里尚未完成的续费任务为准（用户历史续费订单很多，只有这条是当前卡住的）：
+// 涨价等人工复核时任务在 manual_review，欠费等待充值时时任务在 retry，两种都要能处置。
+func (p *Payment) pendingRenewOrder(ctx context.Context, serviceID int64) (int64, string, error) {
+	var orderID int64
+	var cycle string
+	err := p.db.QueryRowContext(ctx,
+		`SELECT j.order_id, j.cycle FROM fulfillment_jobs j
+		  WHERE j.service_id=$1 AND j.kind='renew' AND j.order_id IS NOT NULL AND j.status <> 'succeeded'
+		  ORDER BY j.id DESC LIMIT 1`, serviceID).Scan(&orderID, &cycle)
+	if err != nil {
+		return 0, "", fmt.Errorf("没有待处理的续费任务")
+	}
+	// 已终结的续费（成功或已退款）不能再处置：任务停留在人工复核不会自己消失，
+	// 重复点退款会把到期时间多撤回一个周期。
+	if p.Provisions != nil {
+		v, ok, cerr := p.Provisions.GetCheckpoint(ctx, serviceID, renewDoneCkKey(orderID))
+		if cerr != nil {
+			return 0, "", fmt.Errorf("读取续费状态失败: %w", cerr)
+		}
+		if ok && v != "" {
+			if v == "refunded" {
+				return 0, "", fmt.Errorf("该续费已取消并退款，无需重复操作")
+			}
+			return 0, "", fmt.Errorf("该续费已完成，无需重复操作")
+		}
+	}
+	return orderID, cycle, nil
+}
+
+// RetryRenew 手动重试待处理的续费。先写本次订单的价格确认标记（跳过续费前比价），
+// 再带订单号重新入队——重试即"管理员确认按上游新价续费"，与开通/升级的重试语义一致。
+func (p *Payment) RetryRenew(ctx context.Context, serviceID int64) error {
+	orderID, cycle, err := p.pendingRenewOrder(ctx, serviceID)
+	if err != nil {
+		return err
+	}
+	if p.Jobs == nil {
+		return fmt.Errorf("履约队列未启用，无法重试续费")
+	}
+	running, err := p.Jobs.HasRunningJob(ctx, serviceID)
+	if err != nil {
+		return fmt.Errorf("检查任务状态失败: %w", err)
+	}
+	if running {
+		return fmt.Errorf("该服务已有正在执行的任务，请等待完成后再试")
+	}
+	if p.Provisions != nil {
+		if err := p.Provisions.SetCheckpoint(ctx, serviceID, renewPriceOkKey(orderID), "1"); err != nil {
+			return fmt.Errorf("记录本次续费已确认价格失败: %w", err)
+		}
+	}
+	// 清掉失败提示：列表上的操作按钮据此消失，避免管理员重复点击。
+	// 保留 transition_state='renew_pending' —— 续费还没成功，服务仍需锁着直到任务跑完。
+	if _, err := p.db.ExecContext(ctx, `UPDATE services SET provision_error='' WHERE id=$1`, serviceID); err != nil {
+		return fmt.Errorf("清除续费失败原因失败: %w", err)
+	}
+	if err := p.Jobs.EnqueueRetry(ctx, serviceID, orderID, "renew", cycle); err != nil {
+		return err
+	}
+	p.triggerFulfillment()
+	return nil
+}
+
+// RefundRenew 取消待处理的续费并退款：退续费订单实付 → 订单作废 → 回退本地已延长的到期时间 →
+// 解除"续费待处理"。用于上游涨价/账单不可恢复时，管理员选择不给用户继续续费。
+// 可重入：以 refunds 表是否已有 done 记录判定退款；先退款后改状态，顺序反了会在退款失败时
+// 让服务丢掉续费记录（钱收着、上游也没续上）。
+func (p *Payment) RefundRenew(ctx context.Context, adminID, serviceID int64, reason string) error {
+	orderID, cycle, err := p.pendingRenewOrder(ctx, serviceID)
+	if err != nil {
+		return err
+	}
+	var amount string
+	if err := p.db.QueryRowContext(ctx, `SELECT amount::text FROM orders WHERE id=$1`, orderID).Scan(&amount); err != nil {
+		return fmt.Errorf("读取续费订单失败: %w", err)
+	}
+	var refunded bool
+	if err := p.db.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM refunds WHERE order_id=$1 AND status='done')`, orderID).Scan(&refunded); err != nil {
+		return err
+	}
+	if !refunded {
+		if err := p.Refund(ctx, adminID, orderID, amount, reason, "balance"); err != nil {
+			return err
+		}
+	}
+	interval, ierr := CycleInterval(cycle)
+	if ierr != nil {
+		// 周期异常（老数据）不能猜着改到期时间：退款照退，到期时间交人工核对。
+		log.Printf("[renew] service %d 续费周期 %q 无效，未回退到期时间: %v", serviceID, cycle, ierr)
+	}
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `UPDATE orders SET status=2 WHERE id=$1`, orderID); err != nil {
+		return err
+	}
+	// 到期时间回退：续费支付时已把 expires_at 延长一个周期，退款必须减回去，否则用户白得一期。
+	// ponytail: 按周期整体加减；若中途管理员手工改过到期时间，回退结果会偏离，需人工核对。
+	if ierr == nil {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE services SET expires_at = expires_at - $2::interval WHERE id=$1`, serviceID, interval); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE services SET transition_state='', provision_error=''
+		  WHERE id=$1 AND coalesce(transition_state,'')=$2`, serviceID, renewPendingState); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	// 写终态检查点 + 清掉本次续费的中间检查点：排队中的续费任务再跑时会据此短路，
+	// 否则已退款的服务会被续到上游（平台白付一期）。上游账单号是服务级键（不带订单号），
+	// 必须一并清除，否则用户下次续费会误复用这张属于已退款订单的账单。
+	if p.Provisions != nil {
+		if err := p.Provisions.SetCheckpoint(ctx, serviceID, renewDoneCkKey(orderID), "refunded"); err != nil {
+			log.Printf("[renew] service %d 写入续费退款 checkpoint 失败: %v", serviceID, err)
+		}
+		for _, k := range []string{renewPriceOkKey(orderID), server.CheckpointRenewInvoice} {
+			if err := p.Provisions.DeleteCheckpoint(ctx, serviceID, k); err != nil {
+				log.Printf("[renew] service %d 清除检查点 %s 失败: %v", serviceID, k, err)
+			}
+		}
+	}
+	return nil
+}
+
+// RetryUpgrade 手动重试失败的升级（服务处于"升级中"）。重新入队该升级订单的履约任务：
+// 上游账单已记在检查点里，重试会复用同一张账单直接付款（= 管理员确认按上游新价强制开通）。
+func (p *Payment) RetryUpgrade(ctx context.Context, serviceID int64) error {
+	var orderID int64
+	var cycle string
+	if err := p.db.QueryRowContext(ctx,
+		`SELECT o.id, coalesce(o.cycle,'')
+		   FROM services sv JOIN orders o ON o.service_id=sv.id
+		  WHERE sv.id=$1 AND coalesce(sv.transition_state,'')='upgrading' AND o.kind='upgrade' AND o.status=1
+		  ORDER BY o.id DESC LIMIT 1`, serviceID).Scan(&orderID, &cycle); err != nil {
+		return fmt.Errorf("服务不存在或没有待处理的升级")
+	}
+	if p.Jobs == nil {
+		return fmt.Errorf("履约队列未启用，无法重试升级")
+	}
+	running, err := p.Jobs.HasRunningJob(ctx, serviceID)
+	if err != nil {
+		return fmt.Errorf("检查任务状态失败: %w", err)
+	}
+	if running {
+		return fmt.Errorf("该服务已有正在执行的任务，请等待完成后再试")
+	}
+	if _, err := p.db.ExecContext(ctx, `UPDATE services SET provision_error='' WHERE id=$1`, serviceID); err != nil {
+		return fmt.Errorf("清除升级失败原因失败: %w", err)
+	}
+	if err := p.Jobs.EnqueueRetry(ctx, serviceID, orderID, "upgrade", cycle); err != nil {
+		return err
+	}
+	p.triggerFulfillment()
+	return nil
+}
+
+// RefundUpgrade 取消待处理的升级并退款：全额退回升级订单实付（差价）→ 订单作废 →
+// 清除"升级中"状态与上游账单检查点，服务保持原产品继续可用。
+// 用于上游涨价后管理员选择不给用户按新价开通。
+// 可重入：以 refunds 表是否已有 done 记录判定，退款成功但关单失败时重试只补齐关单。
+func (p *Payment) RefundUpgrade(ctx context.Context, adminID, serviceID int64, reason string) error {
+	var orderID int64
+	var amount string
+	if err := p.db.QueryRowContext(ctx,
+		`SELECT o.id, o.amount::text
+		   FROM services sv JOIN orders o ON o.service_id=sv.id
+		  WHERE sv.id=$1 AND coalesce(sv.transition_state,'')='upgrading' AND o.kind='upgrade' AND o.status=1
+		  ORDER BY o.id DESC LIMIT 1`, serviceID).Scan(&orderID, &amount); err != nil {
+		return fmt.Errorf("服务不存在或没有待处理的升级")
+	}
+	var refunded bool
+	if err := p.db.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM refunds WHERE order_id=$1 AND status='done')`, orderID).Scan(&refunded); err != nil {
+		return err
+	}
+	if !refunded {
+		if err := p.Refund(ctx, adminID, orderID, amount, reason, "balance"); err != nil {
+			return err
+		}
+	}
+	// 先退款后改状态：顺序反了会在退款失败时让服务失去升级记录（钱收着、升级也没了）。
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `UPDATE orders SET status=2 WHERE id=$1`, orderID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE services SET transition_state='', provision_error=''
+		  WHERE id=$1 AND coalesce(transition_state,'')='upgrading'`, serviceID); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	// 标记该升级订单已终局（重试任务据此短路，不重复退款），并清掉其上游账单检查点避免误复用。
+	if p.Provisions != nil {
+		if err := p.Provisions.SetCheckpoint(ctx, serviceID, upgradeDoneCkKey(orderID), "refunded"); err != nil {
+			log.Printf("[upgrade] service %d 写入升级退款 checkpoint 失败: %v", serviceID, err)
+		}
+		key := server.CheckpointUpgradeInvoicePrefix + strconv.FormatInt(orderID, 10)
+		if err := p.Provisions.DeleteCheckpoint(ctx, serviceID, key); err != nil {
+			log.Printf("[upgrade] service %d 清除上游升级账单检查点失败: %v", serviceID, err)
+		}
+	}
+	return nil
 }
 
 // SyncUpstreamStatus 将本地服务状态同步为上游真实状态（按上游）。
@@ -264,14 +628,31 @@ func (p *Payment) RetryProvision(ctx context.Context, serviceID int64) error {
 // 跳过过渡中（transition_state!=”）和已终止（status=3）的服务，避免复活或干扰进行中的操作。
 // 使用 LIMIT 分页避免一次加载过多服务；未知上游状态只记录不覆盖本地。
 func (lc *Lifecycle) SyncUpstreamStatus(ctx context.Context) {
-	// 同步租约：防止并发同步
+	// 同步租约：防止并发同步。
+	// ponytail: 会话级 advisory lock 必须绑定专用连接——连接池上执行时加锁/解锁会落到
+	// 不同连接，解锁无效且锁泄漏后 try_lock 永远失败，同步静默停摆；
+	// 沿用 upstream_lock.go 的 db.Conn 模式。
 	leaseKey := "sync_upstream_status"
-	var gotLease bool
-	if err := lc.db.QueryRowContext(ctx,
-		`SELECT pg_try_advisory_lock(hashtext($1))`, leaseKey).Scan(&gotLease); err != nil || !gotLease {
+	conn, err := lc.db.Conn(ctx)
+	if err != nil {
+		log.Printf("[sync] 获取连接失败: %v", err)
 		return
 	}
-	defer lc.db.ExecContext(ctx, `SELECT pg_advisory_unlock(hashtext($1))`, leaseKey)
+	var gotLease bool
+	if err := conn.QueryRowContext(ctx,
+		`SELECT pg_try_advisory_lock(hashtext($1))`, leaseKey).Scan(&gotLease); err != nil {
+		log.Printf("[sync] 尝试获取同步租约失败: %v", err)
+		_ = conn.Close()
+		return
+	}
+	if !gotLease {
+		_ = conn.Close()
+		return
+	}
+	defer func() {
+		_, _ = conn.ExecContext(context.Background(), `SELECT pg_advisory_unlock(hashtext($1))`, leaseKey)
+		_ = conn.Close()
+	}()
 
 	const pageSize = 100
 	offset := 0
@@ -287,7 +668,6 @@ func (lc *Lifecycle) SyncUpstreamStatus(ctx context.Context) {
 			log.Printf("[sync] 查询上游服务失败: %v", err)
 			return
 		}
-		defer rows.Close()
 		type row struct {
 			id       int64
 			cfg      server.Config
@@ -303,7 +683,12 @@ func (lc *Lifecycle) SyncUpstreamStatus(ctx context.Context) {
 			}
 			list = append(list, r)
 		}
-		if err := rows.Err(); err != nil {
+		// 每页读完立即释放连接，不 defer 到函数返回（分页循环会堆积 rows）
+		err = rows.Err()
+		if cerr := rows.Close(); err == nil {
+			err = cerr
+		}
+		if err != nil {
 			log.Printf("[sync] 遍历服务失败: %v", err)
 			return
 		}
@@ -356,18 +741,25 @@ func mapUpstreamStatus(u string) (int16, bool) {
 	return 0, false
 }
 
+// upgradeDoneCkKey 升级终态检查点键（done/refunded）：同一升级订单只处理一次，重试不重复退款。
+func upgradeDoneCkKey(orderID int64) string {
+	return fmt.Sprintf("upgrade_%d", orderID)
+}
+
 // Upgrade 上游升降级执行（支付成功后调用）。
-// - 实现了 HostUpgradeProvider 的上游（zjmf）：真正调上游升级（换 host 商品），上游成功后才
-//   本地同步换产品/周期/快照；上游失败回滚本地（退回收取的差价或扣回已退差额），使用户不因
-//   失败受损。
-// - 未实现该接口的上游（easypanel 本地定价模式）：跳过上游，仅本地换产品。
+//   - 实现了 HostUpgradeProvider 的上游（zjmf）：真正调上游升级（换 host 商品），上游成功后才
+//     本地同步换产品/周期/快照；上游失败回滚本地（退回收取的差价或扣回已退差额），使用户不因
+//     失败受损。
+//   - 未实现该接口的上游（easypanel 本地定价模式）：跳过上游，仅本地换产品。
+//
 // checkpoint（upgrade_{orderID}）防重复处理：成功写 done，失败退款后写 refunded，重试不重复退款。
+// 上游账单检查点（upgrade_invoice_{orderID}）由 Provider 读写：重试复用同一张升级账单。
 func (lc *Lifecycle) Upgrade(ctx context.Context, serviceID int64, cycle string, orderID int64) error {
 	if orderID <= 0 {
 		return fmt.Errorf("升级任务缺少订单号")
 	}
-	ck := fmt.Sprintf("upgrade_%d", orderID)
-	if v, ok, _ := lc.getCheckpoint(ctx, serviceID, ck); ok && v != "" {
+	doneKey := upgradeDoneCkKey(orderID)
+	if v, ok, _ := lc.getCheckpoint(ctx, serviceID, doneKey); ok && v != "" {
 		log.Printf("[lifecycle] service %d 升级订单 %d 已处理（checkpoint=%s），跳过", serviceID, orderID, v)
 		return nil
 	}
@@ -399,34 +791,63 @@ func (lc *Lifecycle) Upgrade(ctx context.Context, serviceID int64, cycle string,
 	}
 	if hp, ok := prov.(server.HostUpgradeProvider); ok {
 		if targetUpstreamPID <= 0 {
-			lc.rollbackUpgrade(ctx, userID, diffAmount, orderID, "目标产品未绑定上游商品")
+			log.Printf("[lifecycle] service %d 升级目标产品未绑定上游商品，退款回滚（订单 %d）", serviceID, orderID)
+			lc.rollbackUpgrade(ctx, userID, diffAmount, orderID)
 			lc.clearUpgradeState(ctx, serviceID)
-			lc.setCheckpoint(ctx, serviceID, ck, "refunded")
-			return fmt.Errorf("目标产品未绑定上游商品，已退款回滚")
+			lc.setCheckpoint(ctx, serviceID, doneKey, "refunded")
+			return fmt.Errorf("目标产品暂不可用，已退款回滚")
 		}
 		cctx, cancel := context.WithTimeout(ctx, opTimeout)
 		defer cancel()
+		var ck server.CheckpointStore
+		if lc.Provisions != nil {
+			ck = &serviceCheckpoint{repo: lc.Provisions, serviceID: serviceID, ctx: cctx}
+		}
 		perr := hp.Upgrade(cctx, cfg, s.UpstreamHost, server.UpgradeRequest{
-			TargetPID: targetUpstreamPID, Cycle: cycle, DiffAmount: diffAmount,
-		})
+			OrderID: orderID, TargetPID: targetUpstreamPID, Cycle: cycle, DiffAmount: diffAmount,
+		}, ck)
 		if perr != nil {
 			log.Printf("[lifecycle] service %d 上游升降级失败: %v", serviceID, perr)
-			lc.rollbackUpgrade(ctx, userID, diffAmount, orderID, perr.Error())
+			// 需要人工或等外部条件的失败（上游涨价 / 账单被删 / 余额不足）：保留上游账单
+			// 与"升级中"状态、不退款，由管理员在后台二选一（重试=按上游新价开通 / 退款给用户）。
+			// 一退款这两个出口就都不成立了（钱退了没法"强制开通"）。
+			if server.IsManualReview(perr) || server.IsRetryLater(perr) {
+				lc.markUpgradePending(ctx, serviceID, perr)
+				return perr
+			}
+			// 其它错误无法判断上游是否已生效：回滚退款，保证用户不受损。
+			lc.rollbackUpgrade(ctx, userID, diffAmount, orderID)
 			lc.clearUpgradeState(ctx, serviceID)
-			if serr := lc.setCheckpoint(ctx, serviceID, ck, "refunded"); serr != nil {
+			if serr := lc.setCheckpoint(ctx, serviceID, doneKey, "refunded"); serr != nil {
 				log.Printf("[lifecycle] service %d 写入升级回滚 checkpoint 失败: %v", serviceID, serr)
 			}
-			return fmt.Errorf("上游升降级失败，金额已退回: %w", perr)
+			return fmt.Errorf("升降级失败，金额已退回: %w", perr)
 		}
 	}
 	// 上游成功（或无上游能力）：本地换产品/周期/快照并解除升级中状态
 	if err := lc.localUpgradeApply(ctx, serviceID, targetProductID, cycle, snapshot); err != nil {
 		return err
 	}
-	if err := lc.setCheckpoint(ctx, serviceID, ck, "done"); err != nil {
+	if err := lc.setCheckpoint(ctx, serviceID, doneKey, "done"); err != nil {
 		log.Printf("[lifecycle] service %d 写入升级 checkpoint 失败: %v", serviceID, err)
 	}
 	return nil
+}
+
+// markUpgradePending 记录升级待处理原因（展示在后台服务列表「失败原因」列），
+// 服务保持 transition_state='upgrading' 直到管理员决定按新价开通或退款。
+func (lc *Lifecycle) markUpgradePending(ctx context.Context, serviceID int64, cause error) {
+	msg := "升级失败：需要人工处理"
+	if cause != nil {
+		msg = "升级失败：" + cause.Error()
+	}
+	if len(msg) > 500 {
+		msg = msg[:500]
+	}
+	if _, err := lc.db.ExecContext(ctx,
+		`UPDATE services SET provision_error=$2 WHERE id=$1`, serviceID, msg); err != nil {
+		log.Printf("[lifecycle] service %d 记录升级待处理原因失败: %v", serviceID, err)
+	}
 }
 
 // clearUpgradeState 解除服务"升级中"过渡状态（失败回滚后调用，避免服务被永久锁定）。
@@ -438,9 +859,12 @@ func (lc *Lifecycle) clearUpgradeState(ctx context.Context, serviceID int64) {
 }
 
 // localUpgradeApply 本地应用升级：换产品/周期/配置快照并解除"升级中"过渡状态。
+// 同时清空下单时冻结的固定续费价——换了产品/周期后该价已失效，续费回退到按新产品当前价重算
+// （对齐魔方财务「改周期按当前定价重算」）。
 func (lc *Lifecycle) localUpgradeApply(ctx context.Context, serviceID, targetProductID int64, cycle string, snapshot []byte) error {
 	if _, err := lc.db.ExecContext(ctx,
-		`UPDATE services SET product_id=$2, cycle=$3, config_snapshot=$4, transition_state=''
+		`UPDATE services SET product_id=$2, cycle=$3, config_snapshot=$4, transition_state='',
+		        renew_monthly=NULL, renew_quarterly=NULL, renew_yearly=NULL, provision_error=''
 		 WHERE id=$1 AND coalesce(transition_state,'')='upgrading'`,
 		serviceID, targetProductID, cycle, snapshot); err != nil {
 		return fmt.Errorf("本地应用升级失败: %w", err)
@@ -450,7 +874,8 @@ func (lc *Lifecycle) localUpgradeApply(ctx context.Context, serviceID, targetPro
 
 // rollbackUpgrade 升级失败回滚资金：使用户保持"未升级且无资金损失"。
 // diff>0 升级场景：支付时已收差价 → 退回余额；diff<0 降级场景：支付时已退差 → 扣回。
-func (lc *Lifecycle) rollbackUpgrade(ctx context.Context, userID int64, diffAmount float64, orderID int64, reason string) {
+// 注意：这里写的是用户可见的余额流水，只写中性原因；技术细节（上游报错原文）由调用方记服务端日志。
+func (lc *Lifecycle) rollbackUpgrade(ctx context.Context, userID int64, diffAmount float64, orderID int64) {
 	tx, err := lc.db.BeginTx(ctx, nil)
 	if err != nil {
 		log.Printf("[lifecycle] 升级回滚事务启动失败（订单 %d）: %v", orderID, err)
@@ -466,7 +891,7 @@ func (lc *Lifecycle) rollbackUpgrade(ctx context.Context, userID int64, diffAmou
 			return
 		}
 		signed, typ = "+"+amountStr, "refund"
-		note = "升级失败退款 订单#" + strconv.FormatInt(orderID, 10) + "（" + reason + "）"
+		note = "升级失败退款 订单#" + strconv.FormatInt(orderID, 10)
 	} else if diffAmount < 0 {
 		// 已退差额需扣回；余额不足时（用户已花掉）跳过扣款并告警，由人工核销
 		res, err := tx.ExecContext(ctx,
@@ -479,7 +904,7 @@ func (lc *Lifecycle) rollbackUpgrade(ctx context.Context, userID int64, diffAmou
 			log.Printf("[lifecycle] 升级回滚：订单 %d 用户余额不足，未扣回 %s 元，需人工核销", orderID, amountStr)
 		}
 		signed, typ = "-"+amountStr, "consume"
-		note = "升级失败扣回降级退款 订单#" + strconv.FormatInt(orderID, 10) + "（" + reason + "）"
+		note = "升级失败扣回降级退款 订单#" + strconv.FormatInt(orderID, 10)
 	} else {
 		return
 	}

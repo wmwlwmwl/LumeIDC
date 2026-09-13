@@ -111,51 +111,6 @@ func (g *Gateways) Delete(ctx context.Context, code string) error {
 	return nil
 }
 
-func (g *Gateways) BindAttempt(ctx context.Context, invoiceID int64, code, amount string, fee ...string) (int64, error) {
-	tx, err := g.db.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, err
-	}
-	defer tx.Rollback()
-	var id int64
-	var status int16
-	if err := tx.QueryRowContext(ctx, `SELECT id,status FROM invoices WHERE id=$1 FOR UPDATE`, invoiceID).Scan(&id, &status); err != nil {
-		return 0, err
-	}
-	if status != 0 {
-		return 0, errors.New("账单不可支付")
-	}
-	var pending bool
-	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM payment_attempts WHERE invoice_id=$1 AND status=0)`, invoiceID).Scan(&pending); err != nil {
-		return 0, err
-	}
-	if pending {
-		return 0, errors.New("账单已有支付进行中")
-	}
-	feePercent, feeAmount := "0.00", "0.00"
-	if len(fee) > 0 && fee[0] != "" {
-		feePercent = fee[0]
-	}
-	if len(fee) > 1 && fee[1] != "" {
-		feeAmount = fee[1]
-	}
-	if err := tx.QueryRowContext(ctx,
-		`INSERT INTO payment_attempts(invoice_id,gateway_code,amount,fee_percent,fee_amount) VALUES($1,$2,$3,$4,$5) RETURNING id`, invoiceID, code, amount, feePercent, feeAmount).Scan(&id); err != nil {
-		return 0, err
-	}
-	res, err := tx.ExecContext(ctx, `UPDATE invoices SET gateway=$2 WHERE id=$1 AND status=0`, invoiceID, code)
-	if err != nil {
-		return 0, err
-	}
-	if n, err := res.RowsAffected(); err != nil || n != 1 {
-		return 0, errors.New("账单状态已变更")
-	}
-	if err := tx.Commit(); err != nil {
-		return 0, err
-	}
-	return id, nil
-}
-
 // PaymentAttempt is the immutable amount snapshot for one gateway attempt.
 type PaymentAttempt struct {
 	ID          int64
@@ -165,6 +120,41 @@ type PaymentAttempt struct {
 	FeePercent  string
 	FeeAmount   string
 	Status      int16
+}
+
+type PendingPaymentAttempt struct {
+	ID, InvoiceID int64
+	InvoiceNo     string
+	GatewayCode   string
+	Driver        string
+	Config        map[string]string
+	Amount        string
+}
+
+func (g *Gateways) PendingPaymentAttempts(ctx context.Context) ([]PendingPaymentAttempt, error) {
+	rows, err := g.db.QueryContext(ctx, `
+		SELECT p.id,p.invoice_id,i.no,p.gateway_code,g.driver,g.config,p.amount::text
+		FROM payment_attempts p
+		JOIN invoices i ON i.id=p.invoice_id
+		JOIN gateways g ON g.code=p.gateway_code
+		WHERE p.status=0 AND i.status=0 AND g.enabled
+		  AND (i.due_at IS NULL OR i.due_at > now())
+		ORDER BY p.id DESC LIMIT 200`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []PendingPaymentAttempt
+	for rows.Next() {
+		var v PendingPaymentAttempt
+		var raw []byte
+		if err := rows.Scan(&v.ID, &v.InvoiceID, &v.InvoiceNo, &v.GatewayCode, &v.Driver, &raw, &v.Amount); err != nil {
+			return nil, err
+		}
+		v.Config = decodeJSONStrings(raw)
+		out = append(out, v)
+	}
+	return out, rows.Err()
 }
 
 // LatestAttempt returns the latest attempt for an invoice and gateway. Pending
@@ -183,9 +173,17 @@ func (g *Gateways) LatestAttempt(ctx context.Context, invoiceNo, code string, pe
 	return p, err
 }
 
-func (g *Gateways) MarkAttemptFailedByID(ctx context.Context, id int64) error {
-	_, err := g.db.ExecContext(ctx, `UPDATE payment_attempts SET status=2 WHERE id=$1 AND status=0`, id)
-	return err
+// AttemptByInvoiceGateway 返回账单在指定网关下的最近一次尝试（不限状态、
+// 不要求账单当前仍绑定该网关）。用于识别“切换网关后到达的迟到回调”。
+func (g *Gateways) AttemptByInvoiceGateway(ctx context.Context, invoiceNo, code string) (PaymentAttempt, error) {
+	var p PaymentAttempt
+	err := g.db.QueryRowContext(ctx,
+		`SELECT p.id,p.invoice_id,p.gateway_code,p.amount::text,p.fee_percent::text,p.fee_amount::text,p.status
+		 FROM payment_attempts p JOIN invoices i ON i.id=p.invoice_id
+		 WHERE i.no=$1 AND p.gateway_code=$2
+		 ORDER BY p.id DESC LIMIT 1`, invoiceNo, code).
+		Scan(&p.ID, &p.InvoiceID, &p.GatewayCode, &p.Amount, &p.FeePercent, &p.FeeAmount, &p.Status)
+	return p, err
 }
 
 func (g *Gateways) InvoiceGateway(ctx context.Context, invoiceNo string) (string, error) {

@@ -80,13 +80,7 @@ func (r *Registry) Get(code string) (Provider, error) {
 	defer r.mu.RUnlock()
 	p, ok := r.providers[code]
 	if !ok {
-		return nil, fmt.Errorf("不支持的上游供应商: %s", code)
+		return nil, fmt.Errorf("不支持的供应商: %s", code)
 	}
 	return p, nil
-}
-
-// Default 返回默认供应商（zjmf）。
-func (r *Registry) Default() Provider {
-	p, _ := r.Get("zjmf")
-	return p
 }

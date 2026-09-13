@@ -52,6 +52,10 @@ type upstreamConfigOption struct {
 			Monthly   float64 `json:"monthly"`
 			Quarterly float64 `json:"quarterly"`
 			Annually  float64 `json:"annually"`
+			// 初装费（一次性）：魔方财务把 setupfee 与周期价平铺在同一层
+			MSetupFee float64 `json:"msetupfee"`
+			QSetupFee float64 `json:"qsetupfee"`
+			ASetupFee float64 `json:"asetupfee"`
 		} `json:"pricing"`
 	} `json:"sub"`
 }
@@ -119,7 +123,9 @@ func convertUpstreamConfigOption(item upstreamConfigOption) repo.ConfigOption {
 		if sm.Pricing.Annually > 0 {
 			pricing["yearly"] = sm.Pricing.Annually
 		}
-		cv := repo.ConfigValue{Name: sm.Name, Value: sm.Value, Pricing: pricing}
+		// 初装费（一次性，仅首购收取；全 0 时为 nil）
+		setup := setupFeesFromValues(sm.Pricing.MSetupFee, sm.Pricing.QSetupFee, sm.Pricing.ASetupFee)
+		cv := repo.ConfigValue{Name: sm.Name, Value: sm.Value, Pricing: pricing, Setup: setup}
 		if sm.Min > 0 || sm.Max > 0 {
 			cv.Min, cv.Max = sm.Min, sm.Max
 		}
@@ -174,6 +180,7 @@ func convertConfigOptions(items []map[string]any) []repo.ConfigOption {
 					Name:    firstNonEmpty(label, name),
 					Value:   val,
 					Pricing: pricing,
+					Setup:   setupFeesOf(sm),
 				}
 				// 阶梯区间（数量范围型子项）
 				if mn, mx := num(sm["qty_minimum"]), num(sm["qty_maximum"]); mn > 0 || mx > 0 {
@@ -185,6 +192,7 @@ func convertConfigOptions(items []map[string]any) []repo.ConfigOption {
 				opt.Subs = append(opt.Subs, repo.ConfigValue{
 					Name: name, Min: opt.Min, Max: opt.Max,
 					Pricing: optionPricing(item),
+					Setup:   setupFeesOf(item),
 				})
 			}
 		default: // 单选
@@ -197,6 +205,7 @@ func convertConfigOptions(items []map[string]any) []repo.ConfigOption {
 				opt.Subs = append(opt.Subs, repo.ConfigValue{
 					Name: label, Value: val,
 					Pricing: extractPricings(sm),
+					Setup:   setupFeesOf(sm),
 				})
 			}
 		}
@@ -270,6 +279,41 @@ func optionPricing(item map[string]any) map[string]float64 {
 		}
 	}
 	return p
+}
+
+// setupFeesFromValues 三周期初装费 → map；全 0（或负值 = 上游未开启）返回 nil。
+// 与周期价不同，这里的 0 也要保留：0 = 该周期明确不收初装费，丢掉就分不清
+// "不收"与"上游没配"（后者会凭空按其它周期收）。
+func setupFeesFromValues(monthly, quarterly, yearly float64) map[string]float64 {
+	keys := [...]string{"monthly", "quarterly", "yearly"}
+	out := make(map[string]float64, len(keys))
+	anyFee := false
+	for i, v := range [...]float64{monthly, quarterly, yearly} {
+		if v < 0 {
+			v = 0
+		}
+		out[keys[i]] = v
+		if v > 0 {
+			anyFee = true
+		}
+	}
+	if !anyFee {
+		return nil
+	}
+	return out
+}
+
+// setupFeesOf 从价格对象（sub 或 option 的 pricings[0]）提取三周期初装费，全 0 返回 nil。
+func setupFeesOf(container map[string]any) map[string]float64 {
+	arr, _ := container["pricings"].([]any)
+	if len(arr) == 0 {
+		return nil
+	}
+	m, _ := arr[0].(map[string]any)
+	if m == nil {
+		return nil
+	}
+	return setupFeesFromValues(num(m["msetupfee"]), num(m["qsetupfee"]), num(m["asetupfee"]))
 }
 
 func asMaps(arr []any) []map[string]any {

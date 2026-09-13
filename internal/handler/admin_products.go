@@ -17,15 +17,6 @@ import (
 	"lumeidc/internal/service"
 )
 
-type adminProductRow struct {
-	ID               int64
-	A, B, C          string // 名称 / 分类 / 月付价
-	D                string // 显示状态
-	ServerName       string
-	UpstreamPID      int64
-	RequiresIdentity bool
-}
-
 func (m *AdminManage) ProductsList(w http.ResponseWriter, r *http.Request) {
 	if !m.require(w, r) {
 		return
@@ -37,27 +28,22 @@ func (m *AdminManage) ProductsList(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "查询失败", 500)
 		return
 	}
-	rows := make([]adminProductRow, 0, len(list))
+	out := make([]map[string]any, 0, len(list))
 	for _, p := range list {
-		mn := "-"
+		mn, first := "-", "-"
 		if p.Monthly != "" {
-			mn = fmt.Sprintf("%.2f", service.DisplayPrice(priceVal(p.Monthly), p.Options, p.ProfitType, p.ProfitValue))
+			base := priceVal(p.Monthly)
+			mn = fmt.Sprintf("%.2f", service.DisplayPrice(base, p.Options, p.ProfitType, p.ProfitValue))
+			// 首期 = 月价 + 最低配置档的一次性初装费（无初装费时与月价相同）
+			first = fmt.Sprintf("%.2f", service.DisplayStartPrice(base, p.Options, p.ProfitType, p.ProfitValue, "monthly"))
 		}
-		h := "显示"
-		if p.Hidden {
-			h = "隐藏"
-		}
-		rows = append(rows, adminProductRow{
-			ID: p.ID, A: p.Name, B: p.TypeName, C: mn, D: h,
-			ServerName: p.ServerName, UpstreamPID: p.UpstreamPID, RequiresIdentity: p.RequiresIdentity,
+		out = append(out, map[string]any{
+			"id": p.ID, "name": p.Name, "type": p.TypeName, "monthly": mn, "first": first,
+			"visible": !p.Hidden, "hidden": p.Hidden, "server": p.ServerName, "upstream_pid": p.UpstreamPID,
+			"requires_identity": p.RequiresIdentity, "upstream_offline_reason": p.UpstreamOfflineReason,
 		})
 	}
-	m.renderAdmin(w, "admin_products.html", AdminData{
-		Rows: rows, CSRF: m.adminCSRF(w, r), Error: r.URL.Query().Get("err"),
-		Msg:               r.URL.Query().Get("msg"),
-		GlobalProfitType:  loadGlobalProfitType(r.Context(), m.Settings),
-		GlobalProfitValue: loadGlobalProfitValue(r.Context(), m.Settings),
-	})
+	writeJSON(w, map[string]any{"ok": 1, "list": out})
 }
 
 func (m *AdminManage) ProductForm(w http.ResponseWriter, r *http.Request) {
@@ -65,7 +51,7 @@ func (m *AdminManage) ProductForm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	types, _ := m.Products.ListTypes(r.Context())
-	data := AdminData{Types: types, CSRF: m.adminCSRF(w, r)}
+	data := AdminData{Types: types}
 	if pid := r.PathValue("id"); pid != "" {
 		id, _ := strconv.ParseInt(pid, 10, 64)
 		p, err := m.Products.Get(r.Context(), id)
@@ -98,31 +84,57 @@ func (m *AdminManage) ProductForm(w http.ResponseWriter, r *http.Request) {
 	if b, err := json.Marshal(m.Providers.ProductFormHintsSets()); err == nil {
 		data.ProductHintsJSON = template.JS(b)
 	}
-	// 各供应商产品表单独立区块（插槽注入，同详情页 DetailWidget 模式）
-	var wf strings.Builder
+	// 各供应商产品表单区块（结构化声明：OptionsURL/SyncName/PullConfig/ConfigByValue）
+	// —— 后台 SPA 渲染控件并执行联动，供应商无需再提供 HTML+脚本（见 docs/provider.md）。
+	specByProvider := map[string][]server.ProductFormField{}
 	for _, pi := range m.Providers.List() {
-		prov, err := m.Providers.Get(pi.Code)
-		if err != nil {
-			continue
+		if prov, err := m.Providers.Get(pi.Code); err == nil {
+			if fields := server.ProductFormSpecFor(prov); len(fields) > 0 {
+				specByProvider[pi.Code] = fields
+			}
 		}
-		wp, ok := prov.(server.ProductFormWidgetProvider)
-		if !ok {
-			continue
-		}
-		html, err := wp.ProductFormWidget()
-		if err != nil {
-			log.Printf("[admin] %s 产品表单区块渲染失败: %v", pi.Code, err)
-			continue
-		}
-		wf.WriteString(`<div class="provform" data-provider="` + pi.Code + `" style="display:none">`)
-		wf.Write([]byte(html))
-		wf.WriteString(`</div>`)
 	}
-	data.ProviderWidgets = template.HTML(wf.String())
 	if p, ok := data.Product.(*repo.Product); ok {
 		data.UpstreamBound = p.ServerID.Valid && p.UpstreamPID > 0
 	}
-	m.renderAdmin(w, "admin_product_form.html", data)
+	typesJSON := make([]map[string]any, 0, len(types))
+	for _, t := range types {
+		typesJSON = append(typesJSON, map[string]any{"id": t.ID, "name": t.Name, "parent_id": t.ParentID, "hidden": t.Hidden})
+	}
+	servers := make([]map[string]any, 0, len(serversList))
+	for _, sv := range serversList {
+		servers = append(servers, map[string]any{"id": sv.ID, "name": sv.Name, "provider": sv.Provider})
+	}
+	// 各供应商的结构化表单声明（前端按所选服务器类型渲染）
+	formSpec := map[string]any{}
+	for code, fields := range specByProvider {
+		formSpec[code] = fields
+	}
+	out := map[string]any{
+		"ok": 1, "types": typesJSON, "servers": servers, "form_spec": formSpec,
+		"prices": map[string]string{
+			"monthly": data.Monthly, "quarterly": data.Quarterly, "yearly": data.Yearly,
+		},
+		"config_json":    data.ConfigJSON,
+		"hints":          json.RawMessage(data.ProductHintsJSON),
+		"upstream_bound": data.UpstreamBound,
+	}
+	if p, ok := data.Product.(*repo.Product); ok && p != nil {
+		var typeID, serverID int64
+		if p.TypeID.Valid {
+			typeID = p.TypeID.Int64
+		}
+		if p.ServerID.Valid {
+			serverID = p.ServerID.Int64
+		}
+		out["product"] = map[string]any{
+			"id": p.ID, "name": p.Name, "description": p.Description,
+			"type_id": typeID, "server_id": serverID, "upstream_pid": p.UpstreamPID,
+			"stock": p.Stock, "hidden": p.Hidden, "requires_identity": p.RequiresIdentity,
+			"profit_type": p.ProfitType, "profit_value": p.ProfitValue,
+		}
+	}
+	writeJSON(w, out)
 }
 
 // PullConfig POST /admin/products/{id}/pull-config — 从上游拉配置项写入本地。
@@ -182,61 +194,86 @@ func (m *AdminManage) ProductSave(w http.ResponseWriter, r *http.Request) {
 	if !m.require(w, r) {
 		return
 	}
-	if !m.requireCSRF(w, r) {
-		return
+	// SPA 走 JSON（Accept: application/json），SSR 走表单；JSON 下 CSRF 由中间件按
+	// X-CSRF-Token 校验，无需再读表单里的 _csrf。
+	vals := jsonVals(r)
+	if vals == nil {
+		if !m.requireCSRF(w, r) {
+			return
+		}
 	}
-	name := strings.TrimSpace(r.PostFormValue("name"))
+	fv := func(k string) string {
+		if vals != nil {
+			return vals[k]
+		}
+		return r.PostFormValue(k)
+	}
+	fail := func(msg string) {
+		if wantsJSON(r) {
+			writeJSON(w, map[string]any{"ok": 0, "msg": msg})
+			return
+		}
+		http.Redirect(w, r, "/admin/products?err="+url.QueryEscape(msg), http.StatusSeeOther)
+	}
+	success := func() {
+		if wantsJSON(r) {
+			writeJSON(w, map[string]any{"ok": 1, "msg": "已保存"})
+			return
+		}
+		http.Redirect(w, r, "/admin/products", http.StatusSeeOther)
+	}
+	name := strings.TrimSpace(fv("name"))
 	if name == "" {
-		http.Redirect(w, r, "/admin/products?err=名称必填", http.StatusSeeOther)
+		fail("名称必填")
 		return
 	}
-	desc := strings.TrimSpace(r.PostFormValue("description"))
-	stock, _ := strconv.Atoi(r.PostFormValue("stock"))
-	hidden := r.PostFormValue("hidden") == "1"
-	requiresIdentity := r.PostFormValue("requires_identity") == "1"
+	desc := strings.TrimSpace(fv("description"))
+	stock, _ := strconv.Atoi(fv("stock"))
+	hidden := fv("hidden") == "1"
+	requiresIdentity := fv("requires_identity") == "1"
 	var typeID sql.NullInt64
-	if v := r.PostFormValue("type_id"); v != "" {
+	if v := fv("type_id"); v != "" {
 		id, _ := strconv.ParseInt(v, 10, 64)
 		typeID = sql.NullInt64{Int64: id, Valid: true}
 	}
 	if !typeID.Valid {
-		http.Redirect(w, r, "/admin/products?err="+url.QueryEscape("请选择二级分类"), http.StatusSeeOther)
+		fail("请选择二级分类")
 		return
 	}
 	types, terr := m.Products.ListTypes(r.Context())
 	if terr != nil {
-		http.Redirect(w, r, "/admin/products?err="+url.QueryEscape("分类查询失败"), http.StatusSeeOther)
+		fail("分类查询失败")
 		return
 	}
 	if t, ok := repo.FindType(types, typeID.Int64); !ok || t.ParentID == 0 {
-		http.Redirect(w, r, "/admin/products?err="+url.QueryEscape("商品只能挂在二级分类下"), http.StatusSeeOther)
+		fail("商品只能挂在二级分类下")
 		return
 	}
 	psID, _ := m.Products.DefaultPricesetID(r.Context())
-	monthly := normalizeAmount(r.PostFormValue("monthly"))
-	quarterly := normalizeAmount(r.PostFormValue("quarterly"))
-	yearly := normalizeAmount(r.PostFormValue("yearly"))
-	configJSON := strings.TrimSpace(r.PostFormValue("configoption"))
+	monthly := normalizeAmount(fv("monthly"))
+	quarterly := normalizeAmount(fv("quarterly"))
+	yearly := normalizeAmount(fv("yearly"))
+	configJSON := strings.TrimSpace(fv("configoption"))
 	if configJSON != "" {
 		var validate []repo.ConfigOption
 		if err := json.Unmarshal([]byte(configJSON), &validate); err != nil {
-			http.Redirect(w, r, "/admin/products?err=配置项 JSON 格式错误: "+err.Error(), http.StatusSeeOther)
+			fail("配置项 JSON 格式错误: " + err.Error())
 			return
 		}
 	}
 	// 上游绑定
 	var bindServer sql.NullInt64
-	if v := r.PostFormValue("server_id"); v != "" {
+	if v := fv("server_id"); v != "" {
 		id, _ := strconv.ParseInt(v, 10, 64)
 		bindServer = sql.NullInt64{Int64: id, Valid: true}
 	}
-	upstreamPID, _ := strconv.ParseInt(r.PostFormValue("upstream_pid"), 10, 64)
+	upstreamPID, _ := strconv.ParseInt(fv("upstream_pid"), 10, 64)
 	// 利润（对齐 ZJMF 上游利润）：0百分比 1固定金额
-	profitType, _ := strconv.ParseInt(r.PostFormValue("profit_type"), 10, 64)
+	profitType, _ := strconv.ParseInt(fv("profit_type"), 10, 64)
 	if profitType != 1 {
 		profitType = 0
 	}
-	profitValue, _ := strconv.ParseFloat(r.PostFormValue("profit_value"), 64)
+	profitValue, _ := strconv.ParseFloat(fv("profit_value"), 64)
 	if profitValue < 0 {
 		profitValue = 0
 	}
@@ -253,7 +290,12 @@ func (m *AdminManage) ProductSave(w http.ResponseWriter, r *http.Request) {
 	savePrice := func(pid int64) error {
 		return m.Products.UpsertPrice(r.Context(), pid, psID, monthly, quarterly, yearly)
 	}
-	if idStr := r.PostFormValue("id"); idStr == "" {
+	// id：编辑走路由 /admin/products/{id}/save，兼容表单隐藏域（SSR）。
+	idStr := r.PathValue("id")
+	if idStr == "" {
+		idStr = fv("id")
+	}
+	if idStr == "" {
 		pid, err := m.Products.Create(r.Context(), typeID, name, desc, stock)
 		if err == nil && configJSON != "" {
 			err = m.Products.SaveConfigOptions(r.Context(), pid, mustOpts(configJSON))
@@ -271,7 +313,7 @@ func (m *AdminManage) ProductSave(w http.ResponseWriter, r *http.Request) {
 			err = m.Products.SetRequiresIdentity(r.Context(), pid, requiresIdentity)
 		}
 		if err != nil {
-			http.Redirect(w, r, "/admin/products?err="+err.Error(), http.StatusSeeOther)
+			fail(err.Error())
 			return
 		}
 		m.audit(r, "product_create", "product", pid, name)
@@ -294,24 +336,36 @@ func (m *AdminManage) ProductSave(w http.ResponseWriter, r *http.Request) {
 			err = m.Products.SetRequiresIdentity(r.Context(), id, requiresIdentity)
 		}
 		if err != nil {
-			http.Redirect(w, r, "/admin/products?err="+err.Error(), http.StatusSeeOther)
+			fail(err.Error())
 			return
 		}
 		m.audit(r, "product_update", "product", id, name)
 	}
-	http.Redirect(w, r, "/admin/products", http.StatusSeeOther)
+	success()
 }
 
 func (m *AdminManage) ProductDelete(w http.ResponseWriter, r *http.Request) {
 	if !m.require(w, r) {
 		return
 	}
-	if !m.requireCSRF(w, r) {
+	if jsonVals(r) == nil && !m.requireCSRF(w, r) {
 		return
 	}
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	m.Products.Delete(r.Context(), id)
+	if err := m.Products.Delete(r.Context(), id); err != nil {
+		// 此前错误被丢弃，删除失败也会跳回列表（看起来像成功）
+		if wantsJSON(r) {
+			writeJSON(w, map[string]any{"ok": 0, "msg": err.Error()})
+			return
+		}
+		http.Redirect(w, r, "/admin/products?err="+url.QueryEscape(err.Error()), http.StatusSeeOther)
+		return
+	}
 	m.audit(r, "product_delete", "product", id, "")
+	if wantsJSON(r) {
+		writeJSON(w, map[string]any{"ok": 1, "msg": "已删除"})
+		return
+	}
 	http.Redirect(w, r, "/admin/products", http.StatusSeeOther)
 }
 

@@ -3,56 +3,57 @@ package handler
 import (
 	"net/http"
 	"strconv"
-
-	"lumeidc/internal/middleware"
 )
 
 func (a *Admin) dashboard(w http.ResponseWriter, r *http.Request) {
-	sess := middleware.FromSession(r.Context())
-	if sess == nil || !sess.IsAdmin {
-		http.Redirect(w, r, "/admin/login", http.StatusSeeOther)
+	if !adminRequire(w, r) {
 		return
 	}
 	c, _ := a.Stats.Counts(r.Context())
-	rows := []adminRow{
-		{ID: 1, A: "用户数", B: itoa(c.Users)},
-		{ID: 2, A: "已支付订单", B: itoa(c.Orders)},
-		{ID: 3, A: "激活服务", B: itoa(c.Services)},
+	trends, _ := a.Stats.Trends(r.Context(), 7)
+	points := make([]map[string]any, 0, len(trends))
+	for _, p := range trends {
+		points = append(points, map[string]any{
+			"date": p.Date, "users": p.Users, "orders": p.Orders, "revenue": p.Revenue,
+		})
 	}
-	a.renderAdmin(w, "admin_dashboard.html", AdminData{Rows: rows})
+	writeJSON(w, map[string]any{
+		"ok": 1,
+		"counts": map[string]any{
+			"users": c.Users, "orders": c.Orders, "services": c.Services,
+		},
+		"trends": points,
+	})
 }
 
 func (a *Admin) adminOrders(w http.ResponseWriter, r *http.Request) {
 	if !a.require(w, r) {
 		return
 	}
+	// 服务端分页查询（模板与 JSON 共用）
 	const per = 25
 	page := pageParam(r)
 	q := r.URL.Query().Get("q")
-	list, total, err := a.Stats.AdminOrdersPage(r.Context(), q, per, (page-1)*per)
+	list, total, err := a.Stats.AdminOrdersPage(r.Context(), q, r.URL.Query().Get("sort"), r.URL.Query().Get("order"), per, (page-1)*per)
 	if err != nil {
-		http.Error(w, "查询失败", 500)
+		jsonStatus(w, r, 500, "查询失败")
 		return
 	}
-	var out []adminRow
+	items := make([]map[string]any, 0, len(list))
 	var profit float64
 	for _, o := range list {
-		rw := adminRow{ID: o.ID, A: o.Email, B: o.Amount, C: o.Cycle, D: o.Status, E: o.Profit}
+		paid := ""
 		if o.Paid != "0" && o.Paid != "0.00" {
-			rw.F = o.Paid + "（手续费 " + o.Fee + "）"
+			paid = o.Paid + "（手续费 " + o.Fee + "）"
 		}
 		if pf, perr := strconv.ParseFloat(o.Profit, 64); perr == nil {
 			profit += pf
 		}
-		out = append(out, rw)
+		items = append(items, map[string]any{
+			"id": o.ID, "email": o.Email, "amount": o.Amount, "cycle": o.Cycle,
+			"status": o.Status, "profit": o.Profit, "paid": paid,
+			"service_name": o.ServiceName, "service_host": o.ServiceHost, "service_status": o.ServiceStatus,
+		})
 	}
-	pager := pagerFor(r, "/admin/orders", per, total)
-	pager.Q = q
-	a.renderAdmin(w, "admin_orders.html", AdminData{
-		Rows:        out,
-		CSRF:        a.adminCSRF(w, r),
-		Error:       r.URL.Query().Get("err"),
-		TotalProfit: strconv.FormatFloat(profit, 'f', 2, 64),
-		Pager:       &pager,
-	})
+	writeJSON(w, map[string]any{"ok": 1, "list": items, "total": total, "page": page, "profit": strconv.FormatFloat(profit, 'f', 2, 64)})
 }

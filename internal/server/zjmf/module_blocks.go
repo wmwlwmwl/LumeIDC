@@ -21,6 +21,13 @@ var blockFuncs = map[string]bool{
 	"mountIso": true, "setBootOrder": true,
 }
 
+// hostTargetFuncs “新建”类操作：上游按表单 id 定位主机（部分旧模块）。
+// 表单 id 必须强制为本机 hostID，防止用户注入他人 host id 越权创建；
+// 前端对这三个操作本就不发送 id，覆盖无副作用。
+var hostTargetFuncs = map[string]bool{
+	"addNatAcl": true, "addNatWeb": true, "createSecurityGroup": true,
+}
+
 // NatList 实现 server.ModuleBlocksProvider：解析 nat_acl 方块 HTML 表格。
 func (p Provider) NatList(ctx context.Context, cfg server.Config, upstreamHostID int64) ([]server.NatRule, error) {
 	content, err := p.ModulePage(ctx, cfg, upstreamHostID, "nat_acl")
@@ -159,17 +166,20 @@ func (p Provider) SettingData(ctx context.Context, cfg server.Config, upstreamHo
 }
 
 // BlockAction 实现 server.ModuleBlocksProvider：白名单 + ModuleAction 通道。
+// ponytail: 对象定位类操作（del*/linkSecurityGroup/createSecurityRule/mountIso/setBootOrder）
+// 的表单 id 是上游对象 id，参数名受上游接口约束无法本地改名，
+// 对象归属校验依赖上游按路径 host 圈定范围。
 func (p Provider) BlockAction(ctx context.Context, cfg server.Config, upstreamHostID int64, fn string, form url.Values) (string, error) {
 	if !blockFuncs[fn] {
 		return "", fmt.Errorf("不支持的方块操作: %s", fn)
 	}
 	f := url.Values{}
-	for k, vs := range form {
-		for _, v := range vs {
-			f.Add(k, v)
-		}
-	}
+	copyValues(f, form)
 	f.Set("func", fn)
+	if hostTargetFuncs[fn] {
+		// 主机定位只信任路径 hostID：新建类操作不允许表单注入他人 host id 越权
+		f.Set("id", strconv.FormatInt(upstreamHostID, 10))
+	}
 	return p.ModuleAction(ctx, cfg, upstreamHostID, f)
 }
 

@@ -13,6 +13,42 @@ type Gateway interface {
 	VerifyNotify(params map[string]string, cfg map[string]string) (NotifyResult, error)
 }
 
+// LocalCheckoutPath is the in-app route that serves the local checkout page
+// (typically a QR code) for gateways implementing LocalCheckout.
+const LocalCheckoutPath = "/pay/qr"
+
+// LocalCheckout is an optional gateway capability for gateways that render an
+// in-app checkout page instead of redirecting the browser to an external
+// payment page. The generic handler serves the page; the gateway owns the QR.
+type LocalCheckout interface {
+	// CheckoutPath returns the in-app path of the local checkout page.
+	CheckoutPath() string
+}
+
+// OrderQuerier is an optional gateway capability used to recover payments
+// when an asynchronous notification cannot reach the application.
+type OrderQuerier interface {
+	QueryOrder(ctx context.Context, req QueryOrderRequest) (QueryOrderResult, error)
+}
+
+// ConfigValidator is an optional gateway capability that checks provider
+// specific configuration before an instance is saved.
+type ConfigValidator interface {
+	ValidateConfig(cfg map[string]string) error
+}
+
+type QueryOrderRequest struct {
+	InvoiceNo string
+	Config    map[string]string
+}
+
+type QueryOrderResult struct {
+	TradeNo    string
+	OutTradeNo string
+	Amount     string
+	Paid       bool
+}
+
 type NotifyResult struct {
 	InvoiceNo  string
 	TradeNo    string

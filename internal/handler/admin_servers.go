@@ -2,10 +2,9 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
-	"html/template"
 	"log"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -43,28 +42,26 @@ func (s *AdminServers) List(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "查询失败", 500)
 		return
 	}
-	var rows []adminRow
+	out := make([]map[string]any, 0, len(list))
 	for _, sv := range list {
-		d := "启用"
+		status := "启用"
 		if sv.Disabled {
-			d = "停用"
+			status = "停用"
 		}
-		rows = append(rows, adminRow{
-			ID: sv.ID, A: sv.Name, B: sv.Provider,
-			C: sv.APIURL, D: d,
+		out = append(out, map[string]any{
+			"id": sv.ID, "name": sv.Name, "provider": sv.Provider, "api_url": sv.APIURL,
+			"status": status, "disabled": sv.Disabled,
 		})
 	}
-	s.renderAdmin(w, "admin_servers.html", AdminData{
-		Rows: rows, CSRF: s.adminCSRF(w, r), Error: r.URL.Query().Get("err"),
-	})
+	writeJSON(w, map[string]any{"ok": 1, "list": out})
 }
 
 func (s *AdminServers) Form(w http.ResponseWriter, r *http.Request) {
 	if !s.require(w, r) {
 		return
 	}
-	data := AdminData{CSRF: s.adminCSRF(w, r), Providers: s.Providers.List()}
-	// 凭据字段按 provider 动态渲染：{"fields": {code: [字段...]}, "values": {列: 当前值}}
+	var serverRow *repo.Server
+	// 凭据字段按 provider 返回：{"fields": {code: [字段...]}, "values": {列: 当前值}}
 	payload := map[string]any{
 		"fields": s.Providers.CredentialFieldSets(),
 		"values": map[string]string{},
@@ -76,31 +73,66 @@ func (s *AdminServers) Form(w http.ResponseWriter, r *http.Request) {
 			http.NotFound(w, r)
 			return
 		}
-		data.Product = sv
+		serverRow = sv
 		payload["values"] = map[string]string{
 			"api_url": sv.APIURL, "api_username": sv.APIUsername, "api_key": sv.APIKey,
 		}
 	}
-	if b, err := json.Marshal(payload); err == nil {
-		data.ProviderFieldsJSON = template.JS(b)
+	provs := make([]map[string]any, 0)
+	for _, p := range s.Providers.List() {
+		provs = append(provs, map[string]any{"code": p.Code, "name": p.Name})
 	}
-	s.renderAdmin(w, "admin_server_form.html", data)
+	out := map[string]any{
+		"ok": 1, "providers": provs,
+		"credential_fields": payload["fields"],
+		"values":            payload["values"],
+	}
+	if serverRow != nil {
+		out["server"] = map[string]any{
+			"id": serverRow.ID, "name": serverRow.Name, "provider": serverRow.Provider,
+			"api_url": serverRow.APIURL, "api_username": serverRow.APIUsername,
+			"disabled": serverRow.Disabled, "profit_type": serverRow.ProfitType, "profit_value": serverRow.ProfitValue,
+			"retry_later_enabled": serverRow.RetryLaterEnabled, "retry_later_minutes": serverRow.RetryLaterMinutes,
+		}
+	}
+	writeJSON(w, out)
 }
 
 func (s *AdminServers) Save(w http.ResponseWriter, r *http.Request) {
 	if !s.require(w, r) {
 		return
 	}
-	name := strings.TrimSpace(r.PostFormValue("name"))
-	apiURL := strings.TrimSpace(r.PostFormValue("api_url"))
+	vals := jsonVals(r)
+	fv := func(k string) string {
+		if vals != nil {
+			return vals[k]
+		}
+		return r.PostFormValue(k)
+	}
+	fail := func(msg string) {
+		if wantsJSON(r) {
+			writeJSON(w, map[string]any{"ok": 0, "msg": msg})
+			return
+		}
+		http.Redirect(w, r, "/admin/servers?err="+url.QueryEscape(msg), http.StatusSeeOther)
+	}
+	success := func() {
+		if wantsJSON(r) {
+			writeJSON(w, map[string]any{"ok": 1, "msg": "已保存"})
+			return
+		}
+		http.Redirect(w, r, "/admin/servers", http.StatusSeeOther)
+	}
+	name := strings.TrimSpace(fv("name"))
+	apiURL := strings.TrimSpace(fv("api_url"))
 	if name == "" || apiURL == "" {
-		http.Redirect(w, r, "/admin/servers?err=名称与 API 地址必填", http.StatusSeeOther)
+		fail("名称与 API 地址必填")
 		return
 	}
 	// provider 取表单值并按注册表白名单校验；编辑未提交 provider 时保留原值，防止误覆盖。
 	// id 取自路由 /admin/servers/{id}/save；新增走 /admin/servers/save 时为空。
 	idStr := r.PathValue("id")
-	provider := strings.TrimSpace(r.PostFormValue("provider"))
+	provider := strings.TrimSpace(fv("provider"))
 	if provider == "" {
 		if idStr != "" {
 			if id, err := strconv.ParseInt(idStr, 10, 64); err == nil {
@@ -121,36 +153,48 @@ func (s *AdminServers) Save(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if !valid {
-		http.Redirect(w, r, "/admin/servers?err=不支持的上游类型: "+provider, http.StatusSeeOther)
+		fail("不支持的上游类型: " + provider)
 		return
 	}
 	sv := &repo.Server{
 		Name: name, Provider: provider,
 		APIURL:      apiURL,
-		APIUsername: strings.TrimSpace(r.PostFormValue("api_username")),
-		APIKey:      strings.TrimSpace(r.PostFormValue("api_key")),
-		Disabled:    r.PostFormValue("disabled") == "1",
+		APIUsername: strings.TrimSpace(fv("api_username")),
+		APIKey:      strings.TrimSpace(fv("api_key")),
+		Disabled:    fv("disabled") == "1",
 	}
-	if pt, _ := strconv.ParseInt(r.PostFormValue("profit_type"), 10, 64); pt == 1 {
+	if pt, _ := strconv.ParseInt(fv("profit_type"), 10, 64); pt == 1 {
 		sv.ProfitType = 1
 	}
-	sv.ProfitValue, _ = strconv.ParseFloat(r.PostFormValue("profit_value"), 64)
+	sv.ProfitValue, _ = strconv.ParseFloat(fv("profit_value"), 64)
 	if sv.ProfitValue < 0 {
 		sv.ProfitValue = 0
 	}
+	// 只有显式传 "0" 才关闭自动重试；字段缺失按启用处理（与库中默认值一致）。
+	sv.RetryLaterEnabled = fv("retry_later_enabled") != "0"
+	if raw := strings.TrimSpace(fv("retry_later_minutes")); raw == "" {
+		sv.RetryLaterMinutes = repo.DefaultRetryLaterMinutes
+	} else {
+		m, aerr := strconv.Atoi(raw)
+		if aerr != nil || m < 1 || m > 1440 {
+			fail("重试间隔需在 1~1440 分钟之间")
+			return
+		}
+		sv.RetryLaterMinutes = m
+	}
 	if idStr == "" {
 		if _, err := s.Servers.Create(r.Context(), sv); err != nil {
-			http.Redirect(w, r, "/admin/servers?err="+err.Error(), http.StatusSeeOther)
+			fail(err.Error())
 			return
 		}
 	} else {
 		sv.ID, _ = strconv.ParseInt(idStr, 10, 64)
 		if err := s.Servers.Update(r.Context(), sv); err != nil {
-			http.Redirect(w, r, "/admin/servers?err="+err.Error(), http.StatusSeeOther)
+			fail(err.Error())
 			return
 		}
 	}
-	http.Redirect(w, r, "/admin/servers", http.StatusSeeOther)
+	success()
 }
 
 func (s *AdminServers) Delete(w http.ResponseWriter, r *http.Request) {
@@ -159,7 +203,15 @@ func (s *AdminServers) Delete(w http.ResponseWriter, r *http.Request) {
 	}
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err := s.Servers.Delete(r.Context(), id); err != nil {
+		if wantsJSON(r) {
+			writeJSON(w, map[string]any{"ok": 0, "msg": err.Error()})
+			return
+		}
 		http.Redirect(w, r, "/admin/servers?err="+err.Error(), http.StatusSeeOther)
+		return
+	}
+	if wantsJSON(r) {
+		writeJSON(w, map[string]any{"ok": 1, "msg": "已删除"})
 		return
 	}
 	http.Redirect(w, r, "/admin/servers", http.StatusSeeOther)
@@ -173,19 +225,19 @@ func (s *AdminServers) TestConn(w http.ResponseWriter, r *http.Request) {
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	sv, err := s.Servers.Get(r.Context(), id)
 	if err != nil {
-		writeJSON(w, map[string]string{"ok": "0", "msg": "服务器不存在"})
+		jsonFail(w, "服务器不存在")
 		return
 	}
 	prov, err := s.Providers.Get(sv.Provider)
 	if err != nil {
-		writeJSON(w, map[string]string{"ok": "0", "msg": err.Error()})
+		jsonFail(w, err.Error())
 		return
 	}
 	cfg := server.Config{APIURL: sv.APIURL, APIUsername: sv.APIUsername, APIKey: sv.APIKey, CredentialRevision: sv.CredentialRevision}
 	ctx, cancel := context.WithTimeout(r.Context(), requestTimeout)
 	defer cancel()
 	if err := prov.TestConnection(ctx, cfg); err != nil {
-		writeJSON(w, map[string]string{"ok": "0", "msg": err.Error()})
+		jsonFail(w, err.Error())
 		return
 	}
 	msg := "连接成功"
@@ -194,5 +246,5 @@ func (s *AdminServers) TestConn(w http.ResponseWriter, r *http.Request) {
 			msg = "连接成功 · 余额: " + balance
 		}
 	}
-	writeJSON(w, map[string]string{"ok": "1", "msg": msg})
+	writeJSON(w, map[string]any{"ok": 1, "msg": msg})
 }

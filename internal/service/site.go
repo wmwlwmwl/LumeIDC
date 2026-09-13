@@ -9,15 +9,16 @@ import (
 
 // 站点信息设置键（settings 表）。
 const (
-	KeySiteName        = "site_name"
-	KeySiteDescription = "site_description"
-	KeySiteKeywords    = "site_keywords"
-	KeyServiceEmail    = "service_email"
-	KeyServicePhone    = "service_phone"
-	KeyServiceHours    = "service_hours"
-	KeySiteURL         = "site_url"    // 站点对外地址（含协议），留空则按用户访问的请求自动推断
-	KeyListenPort      = "listen_port" // 监听端口，留空使用 config.yaml 的 listen
-	KeyAdminPath       = "admin_path"  // 自定义后台访问路径（启动时读取，改后重启生效）
+	KeySiteName         = "site_name"
+	KeySiteDescription  = "site_description"
+	KeySiteKeywords     = "site_keywords"
+	KeyServiceEmail     = "service_email"
+	KeyServicePhone     = "service_phone"
+	KeyServiceHours     = "service_hours"
+	KeySiteURL          = "site_url"          // 站点对外地址（含协议），留空则按用户访问的请求自动推断
+	KeyListenPort       = "listen_port"       // 监听端口，留空使用 config.yaml 的 listen
+	KeyAdminPath        = "admin_path"        // 自定义后台访问路径（启动时读取，改后重启生效）
+	KeyUpstreamTimezone = "upstream_timezone" // 上游面板时区（IANA 名，如 Asia/Shanghai），留空按本机时区解释上游无时区时间
 
 	DefaultSiteName = "LumeIDC"
 )

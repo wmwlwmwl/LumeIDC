@@ -31,6 +31,25 @@ type ConfigValue struct {
 	Min     float64            `json:"min"`               // range 阶梯区间下界
 	Max     float64            `json:"max"`               // range 阶梯区间上界
 	Pricing map[string]float64 `json:"pricing,omitempty"` // monthly/quarterly/yearly 加价
+	// Setup 各周期初装费（上游 setupfee，一次性）：只在首次购买收取，续费不收。
+	// 上游对季/年付有独立的 qsetupfee/asetupfee，同步时三周期键都写（含 0）。
+	Setup map[string]float64 `json:"setup,omitempty"`
+}
+
+// SetupPrice 取该子项在指定周期的初装费。
+// 与 Price 不同，这里**不做跨周期回落**：上游按周期分别配置初装费，
+// 缺失就是该周期不收，回落会把月付的初装费加到季/年付上（凭空多收）。
+func (v ConfigValue) SetupPrice(cycle string) float64 {
+	if v.Setup == nil {
+		return 0
+	}
+	if cycle == "yearly" {
+		if p, ok := v.Setup["yearly"]; ok {
+			return p
+		}
+		return v.Setup["annually"]
+	}
+	return v.Setup[cycle]
 }
 
 // Price returns the surcharge for a billing cycle. Legacy "annually" data is
@@ -74,6 +93,37 @@ func (p *Products) GetConfigOptions(ctx context.Context, productID int64) ([]Con
 	return out, nil
 }
 
+// ConfigOptionsByProducts 批量读取产品配置选项 JSON（列表页批量计价用）。
+// 缺失或解析失败的产品不在结果中，调用方按空选项处理（与逐条 GetConfigOptions 出错语义一致）。
+func (p *Products) ConfigOptionsByProducts(ctx context.Context, ids []int64) map[int64][]ConfigOption {
+	out := make(map[int64][]ConfigOption, len(ids))
+	if len(ids) == 0 {
+		return out
+	}
+	rows, err := p.db.QueryContext(ctx,
+		`SELECT id, configoption FROM products WHERE id = ANY($1)`, ids)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		var raw []byte
+		if err := rows.Scan(&id, &raw); err != nil {
+			continue
+		}
+		if len(raw) == 0 {
+			out[id] = []ConfigOption{}
+			continue
+		}
+		var opts []ConfigOption
+		if json.Unmarshal(raw, &opts) == nil {
+			out[id] = opts
+		}
+	}
+	return out
+}
+
 // SaveConfigOptions writes product configoption JSON.
 func (p *Products) SaveConfigOptions(ctx context.Context, productID int64, opts []ConfigOption) error {
 	for _, opt := range opts {
@@ -87,6 +137,11 @@ func (p *Products) SaveConfigOptions(ctx context.Context, productID int64, opts 
 			for _, v := range sub.Pricing {
 				if !moneypkg.FiniteNonNegative(v) {
 					return errors.New("配置价格无效")
+				}
+			}
+			for _, v := range sub.Setup {
+				if !moneypkg.FiniteNonNegative(v) {
+					return errors.New("配置初装费无效")
 				}
 			}
 		}

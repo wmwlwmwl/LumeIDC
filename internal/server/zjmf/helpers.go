@@ -2,6 +2,7 @@ package zjmf
 
 import (
 	"encoding/json"
+	"net/url"
 	"strconv"
 )
 
@@ -90,18 +91,13 @@ func rawNum(raw json.RawMessage) any {
 	return nil
 }
 
-func asArray(v any) []map[string]any {
-	arr, ok := v.([]any)
-	if !ok {
-		return nil
-	}
-	out := make([]map[string]any, 0, len(arr))
-	for _, el := range arr {
-		if m, ok := el.(map[string]any); ok {
-			out = append(out, m)
+// copyValues 把 src 表单字段全部复制进 dst。
+func copyValues(dst, src url.Values) {
+	for k, vs := range src {
+		for _, v := range vs {
+			dst.Add(k, v)
 		}
 	}
-	return out
 }
 
 func asString(v any) string {

@@ -23,8 +23,10 @@ func CSRF(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		s := FromSession(r.Context())
-		if s == nil {
+		// 令牌可来自当前通道或另一通道：后台登录前管理员通道尚未建立，
+		// 此时页面会话（用户通道）下发的表单令牌仍需通过校验。
+		cur, other := FromSession(r.Context()), fromOtherSession(r.Context())
+		if cur == nil && other == nil {
 			// 会话缺失/失效（如服务重启导致内存会话丢失）：友好跳转登录页而非裸报错。
 			RedirectToLogin(w, r, "会话已过期，请重新登录")
 			return
@@ -37,13 +39,18 @@ func CSRF(next http.Handler) http.Handler {
 		if tok == "" {
 			tok = r.PostFormValue("_csrf")
 		}
-		if tok == "" || !hmac.Equal([]byte(tok), []byte(s.CSRFToken())) {
+		if !csrfMatches(tok, cur) && !csrfMatches(tok, other) {
 			// 令牌与当前会话不匹配（旧页面/会话轮换）：跳转登录页刷新会话与令牌。
 			RedirectToLogin(w, r, "页面已过期，请重新登录后重试")
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// csrfMatches 常量时间比较令牌；会话为空或令牌为空视为不匹配。
+func csrfMatches(tok string, s *Session) bool {
+	return s != nil && tok != "" && hmac.Equal([]byte(tok), []byte(s.CSRFToken()))
 }
 
 // RedirectToLogin 会话/CSRF 失效时友好跳转登录页（供中间件与各 handler 复用）。

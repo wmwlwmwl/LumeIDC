@@ -210,7 +210,9 @@ func (c *Client) downloadTo(ctx context.Context, w io.Writer, url string) error 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("下载安装包失败: 下载源返回 http %d", resp.StatusCode)
 	}
-	if _, err := io.Copy(w, resp.Body); err != nil {
+	// ponytail: 限制单包 512 MB——发布包远小于此，防下载源被劫持成超大文件写满磁盘；
+	// 未来安装包超限再调大。
+	if _, err := io.Copy(w, io.LimitReader(resp.Body, 512<<20)); err != nil {
 		return fmt.Errorf("下载安装包失败: %w", err)
 	}
 	return nil

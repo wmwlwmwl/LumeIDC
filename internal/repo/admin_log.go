@@ -11,14 +11,16 @@ import (
 type AdminLog struct{ db *sql.DB }
 
 type AdminLogRow struct {
-	ID         int64
-	AdminID    int64
-	Action     string
-	TargetType string
-	TargetID   int64
-	Detail     string
-	IP         string
-	CreatedAt  time.Time
+	ID          int64
+	AdminID     int64
+	AdminName   string // 管理员用户名（join admin_users）
+	Action      string
+	TargetType  string
+	TargetID    int64
+	TargetEmail string // target_type=user 时的用户邮箱（join users）
+	Detail      string
+	IP          string
+	CreatedAt   time.Time
 }
 
 func (l *AdminLog) Add(ctx context.Context, adminID int64, action, targetType string, targetID int64, detail, ip string) error {
@@ -34,8 +36,13 @@ func (l *AdminLog) List(ctx context.Context, limit int) ([]AdminLogRow, error) {
 		limit = 100
 	}
 	rows, err := l.db.QueryContext(ctx,
-		`SELECT id,admin_id,action,target_type,target_id,detail,ip,created_at
-		 FROM admin_logs ORDER BY id DESC LIMIT $1`, limit)
+		`SELECT l.id,l.admin_id,coalesce(au.username,''),l.action,l.target_type,l.target_id,
+		        CASE WHEN l.target_type='user' THEN coalesce(u.email,'') ELSE '' END,
+		        l.detail,l.ip,l.created_at
+		 FROM admin_logs l
+		 LEFT JOIN admin_users au ON au.id=l.admin_id
+		 LEFT JOIN users u ON l.target_type='user' AND u.id=l.target_id
+		 ORDER BY l.id DESC LIMIT $1`, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -43,7 +50,7 @@ func (l *AdminLog) List(ctx context.Context, limit int) ([]AdminLogRow, error) {
 	var out []AdminLogRow
 	for rows.Next() {
 		var r AdminLogRow
-		if err := rows.Scan(&r.ID, &r.AdminID, &r.Action, &r.TargetType, &r.TargetID, &r.Detail, &r.IP, &r.CreatedAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.AdminID, &r.AdminName, &r.Action, &r.TargetType, &r.TargetID, &r.TargetEmail, &r.Detail, &r.IP, &r.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
@@ -58,8 +65,13 @@ func (l *AdminLog) ListByTarget(ctx context.Context, targetType string, targetID
 		limit = 20
 	}
 	rows, err := l.db.QueryContext(ctx,
-		`SELECT id,admin_id,action,target_type,target_id,detail,ip,created_at
-		 FROM admin_logs WHERE target_type=$1 AND target_id=$2 ORDER BY id DESC LIMIT $3`,
+		`SELECT l.id,l.admin_id,coalesce(au.username,''),l.action,l.target_type,l.target_id,
+		        CASE WHEN l.target_type='user' THEN coalesce(u.email,'') ELSE '' END,
+		        l.detail,l.ip,l.created_at
+		 FROM admin_logs l
+		 LEFT JOIN admin_users au ON au.id=l.admin_id
+		 LEFT JOIN users u ON l.target_type='user' AND u.id=l.target_id
+		 WHERE l.target_type=$1 AND l.target_id=$2 ORDER BY l.id DESC LIMIT $3`,
 		targetType, targetID, limit)
 	if err != nil {
 		return nil, err
@@ -68,7 +80,7 @@ func (l *AdminLog) ListByTarget(ctx context.Context, targetType string, targetID
 	var out []AdminLogRow
 	for rows.Next() {
 		var r AdminLogRow
-		if err := rows.Scan(&r.ID, &r.AdminID, &r.Action, &r.TargetType, &r.TargetID, &r.Detail, &r.IP, &r.CreatedAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.AdminID, &r.AdminName, &r.Action, &r.TargetType, &r.TargetID, &r.TargetEmail, &r.Detail, &r.IP, &r.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, r)

@@ -60,9 +60,23 @@ func (m *AdminManage) TypesList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	counts, _ := m.Products.TypeProductCounts(r.Context())
-	m.renderAdmin(w, "admin_types.html", AdminData{
-		Rows: buildTypeRows(list, counts), CSRF: m.adminCSRF(w, r), Error: r.URL.Query().Get("err"),
-	})
+	rows := buildTypeRows(list, counts)
+	out := make([]map[string]any, 0, len(rows))
+	for _, first := range rows {
+		children := make([]map[string]any, 0, len(first.Children))
+		for _, c := range first.Children {
+			children = append(children, map[string]any{
+				"id": c.ID, "name": c.Name, "description": c.Description,
+				"sort": c.Sort, "hidden": c.Hidden, "product_count": c.ProductCount,
+			})
+		}
+		out = append(out, map[string]any{
+			"id": first.ID, "name": first.Name, "description": first.Description,
+			"sort": first.Sort, "hidden": first.Hidden, "product_count": first.ProductCount,
+			"children": children,
+		})
+	}
+	writeJSON(w, map[string]any{"ok": 1, "list": out})
 }
 
 // typeRedirect 分类错误跳转（err 统一转义，防中文消息破链接）。
@@ -75,40 +89,56 @@ func (m *AdminManage) TypeSave(w http.ResponseWriter, r *http.Request) {
 	if !m.require(w, r) {
 		return
 	}
-	if !m.requireCSRF(w, r) {
-		return
+	vals := jsonVals(r)
+	if vals == nil {
+		if !m.requireCSRF(w, r) {
+			return
+		}
 	}
-	name := strings.TrimSpace(r.PostFormValue("name"))
+	fv := func(k string) string {
+		if vals != nil {
+			return vals[k]
+		}
+		return r.PostFormValue(k)
+	}
+	fail := func(msg string) {
+		if wantsJSON(r) {
+			writeJSON(w, map[string]any{"ok": 0, "msg": msg})
+			return
+		}
+		typeRedirect(w, r, errors.New(msg))
+	}
+	name := strings.TrimSpace(fv("name"))
 	if name == "" {
-		typeRedirect(w, r, errors.New("名称必填"))
+		fail("名称必填")
 		return
 	}
-	desc := strings.TrimSpace(r.PostFormValue("description"))
-	sort, _ := strconv.Atoi(r.PostFormValue("sort"))
-	parentID, _ := strconv.ParseInt(r.PostFormValue("parent_id"), 10, 64)
-	hidden := r.PostFormValue("hidden") != ""
+	desc := strings.TrimSpace(fv("description"))
+	sort, _ := strconv.Atoi(fv("sort"))
+	parentID, _ := strconv.ParseInt(fv("parent_id"), 10, 64)
+	hidden := fv("hidden") != "" && fv("hidden") != "0"
 	var id int64
-	if idStr := r.PostFormValue("id"); idStr != "" {
+	if idStr := fv("id"); idStr != "" {
 		id, _ = strconv.ParseInt(idStr, 10, 64)
 	}
 	// 父分类校验：必须存在且为一级，且不能是自己（防自环）
 	if parentID != 0 {
 		types, err := m.Products.ListTypes(r.Context())
 		if err != nil {
-			typeRedirect(w, r, errors.New("查询失败"))
+			fail("查询失败")
 			return
 		}
 		parent, found := repo.FindType(types, parentID)
 		if !found {
-			typeRedirect(w, r, repo.ErrTypeNotFound)
+			fail(repo.ErrTypeNotFound.Error())
 			return
 		}
 		if parent.ParentID != 0 {
-			typeRedirect(w, r, errors.New("仅支持两级分类，父分类必须为一级分类"))
+			fail("仅支持两级分类，父分类必须为一级分类")
 			return
 		}
 		if parentID == id {
-			typeRedirect(w, r, errors.New("不能将自己设为父分类"))
+			fail("不能将自己设为父分类")
 			return
 		}
 	}
@@ -119,13 +149,17 @@ func (m *AdminManage) TypeSave(w http.ResponseWriter, r *http.Request) {
 		err = m.Products.UpdateType(r.Context(), id, name, desc, sort, parentID, hidden)
 	}
 	if err != nil {
-		typeRedirect(w, r, err)
+		fail(err.Error())
 		return
 	}
 	if id == 0 {
 		m.audit(r, "type_create", "type", parentID, name)
 	} else {
 		m.audit(r, "type_update", "type", id, name)
+	}
+	if wantsJSON(r) {
+		writeJSON(w, map[string]any{"ok": 1, "msg": "已保存"})
+		return
 	}
 	http.Redirect(w, r, "/admin/types", http.StatusSeeOther)
 }
@@ -136,30 +170,50 @@ func (m *AdminManage) TypeMoveProducts(w http.ResponseWriter, r *http.Request) {
 	if !m.require(w, r) {
 		return
 	}
-	if !m.requireCSRF(w, r) {
-		return
+	vals := jsonVals(r)
+	if vals == nil {
+		if !m.requireCSRF(w, r) {
+			return
+		}
+	}
+	fv := func(k string) string {
+		if vals != nil {
+			return vals[k]
+		}
+		return r.PostFormValue(k)
+	}
+	fail := func(msg string) {
+		if wantsJSON(r) {
+			writeJSON(w, map[string]any{"ok": 0, "msg": msg})
+			return
+		}
+		typeRedirect(w, r, errors.New(msg))
 	}
 	from, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	to, _ := strconv.ParseInt(r.PostFormValue("target_id"), 10, 64)
+	to, _ := strconv.ParseInt(fv("target_id"), 10, 64)
 	types, err := m.Products.ListTypes(r.Context())
 	if err != nil {
-		typeRedirect(w, r, errors.New("查询失败"))
+		fail("查询失败")
 		return
 	}
 	if _, ok := repo.FindType(types, from); !ok {
-		typeRedirect(w, r, repo.ErrTypeNotFound)
+		fail(repo.ErrTypeNotFound.Error())
 		return
 	}
 	if target, ok := repo.FindType(types, to); !ok || target.ParentID == 0 || from == to {
-		typeRedirect(w, r, errors.New("目标分类无效"))
+		fail("目标分类无效")
 		return
 	}
 	n, err := m.Products.MoveTypeProducts(r.Context(), from, to)
 	if err != nil {
-		typeRedirect(w, r, err)
+		fail(err.Error())
 		return
 	}
 	m.audit(r, "type_move_products", "type", from, fmt.Sprintf("移动 %d 个产品到分类 %d", n, to))
+	if wantsJSON(r) {
+		writeJSON(w, map[string]any{"ok": 1, "moved": n, "msg": fmt.Sprintf("已移动 %d 个产品", n)})
+		return
+	}
 	http.Redirect(w, r, "/admin/types?msg="+url.QueryEscape(fmt.Sprintf("已移动 %d 个产品", n)), http.StatusSeeOther)
 }
 
@@ -167,14 +221,22 @@ func (m *AdminManage) TypeDelete(w http.ResponseWriter, r *http.Request) {
 	if !m.require(w, r) {
 		return
 	}
-	if !m.requireCSRF(w, r) {
+	if jsonVals(r) == nil && !m.requireCSRF(w, r) {
 		return
 	}
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err := m.Products.DeleteType(r.Context(), id); err != nil {
+		if wantsJSON(r) {
+			writeJSON(w, map[string]any{"ok": 0, "msg": err.Error()})
+			return
+		}
 		typeRedirect(w, r, err)
 		return
 	}
 	m.audit(r, "type_delete", "type", id, "")
+	if wantsJSON(r) {
+		writeJSON(w, map[string]any{"ok": 1, "msg": "已删除"})
+		return
+	}
 	http.Redirect(w, r, "/admin/types", http.StatusSeeOther)
 }

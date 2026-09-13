@@ -123,17 +123,17 @@ func TestAdminPathInvalidCustomIsPassthrough(t *testing.T) {
 
 // 保存改路径后，重定向 Location 应指向新路径（flush 时读取当前 cfg）。
 func TestAdminPathRedirectUsesNewPath(t *testing.T) {
-	cfg := NewAdminPathConfig("/wma1")
+	cfg := NewAdminPathConfig("/lumeidc1")
 	admin := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		cfg.Set("/wma") // 模拟站点设置保存 admin_path=/wma
+		cfg.Set("/lumeidc") // 模拟站点设置保存 admin_path=/lumeidc
 		http.Redirect(w, r, "/admin/site?ok=1", http.StatusFound)
 	})
 	h := AdminPath(admin, cfg)
-	req := httptest.NewRequest(http.MethodGet, "/wma1/site", nil)
+	req := httptest.NewRequest(http.MethodGet, "/lumeidc1/site", nil)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
-	if got := w.Header().Get("Location"); got != "/wma/site?ok=1" {
-		t.Fatalf("Location=%q，期望 /wma/site?ok=1", got)
+	if got := w.Header().Get("Location"); got != "/lumeidc/site?ok=1" {
+		t.Fatalf("Location=%q，期望 /lumeidc/site?ok=1", got)
 	}
 }
 
@@ -172,5 +172,49 @@ func TestAdminPathDynamicUpdate(t *testing.T) {
 	h.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("清空后 /admin 应恢复，实际 %d", w.Code)
+	}
+}
+
+// TestAdminPathSkipsStaticAndMarkedResponses 后台路径改写不得破坏静态资源与
+// SPA 外壳：Vite 产物名可能含 "admin" 字面量（/app/admin-<hash>.js），
+// 一旦被改写成自定义路径，资源地址即 404。
+func TestAdminPathSkipsStaticAndMarkedResponses(t *testing.T) {
+	cfg := NewAdminPathConfig("/lumeidc")
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/app/"):
+			w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+			w.Write([]byte(`var u="/app/admin-Bftth_t-.js"`))
+		case strings.HasPrefix(r.URL.Path, "/admin/panel"):
+			// 模拟 SPA 外壳：带免改写标记，内容含 /app/admin-*.js
+			w.Header().Set(NoRewriteHeader, "1")
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Write([]byte(`<script src="/app/admin-Bftth_t-.js"></script>`))
+		default:
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Write([]byte(`<a href="/admin/orders">订单</a>`))
+		}
+	})
+	h := AdminPath(next, cfg)
+
+	// 1) 静态资源直通：/app/admin-*.js 不被改写
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/app/admin-Bftth_t-.js", nil))
+	if !strings.Contains(w.Body.String(), "/app/admin-Bftth_t-.js") {
+		t.Fatalf("静态资源被改写: %q", w.Body.String())
+	}
+
+	// 2) 带免改写标记的 SPA 外壳直通
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/lumeidc/panel", nil))
+	if !strings.Contains(w.Body.String(), "/app/admin-Bftth_t-.js") {
+		t.Fatalf("SPA 外壳被改写: %q", w.Body.String())
+	}
+
+	// 3) 普通后台 HTML 仍应改写（保持既有能力）
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/lumeidc/orders", nil))
+	if !strings.Contains(w.Body.String(), "/lumeidc/orders") {
+		t.Fatalf("普通后台响应未被改写: %q", w.Body.String())
 	}
 }

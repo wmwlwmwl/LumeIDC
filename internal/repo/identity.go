@@ -5,6 +5,8 @@ import (
 	"crypto/hmac"
 	"database/sql"
 	"errors"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -164,7 +166,9 @@ func (s *IdentityStore) ConsumePhoneChallenge(ctx context.Context, userID int64,
 	}
 	if attempts >= 5 || !expires.After(now) {
 		_, _ = tx.ExecContext(ctx, `UPDATE phone_verification_challenges SET invalidated_at=$2 WHERE id=$1`, id, now)
-		_ = tx.Commit()
+		if err := tx.Commit(); err != nil {
+			return "", err
+		}
 		return "", ErrChallengeInvalid
 	}
 	if !hmac.Equal([]byte(saved), []byte(codeHMAC)) {
@@ -218,7 +222,9 @@ func (s *IdentityStore) ConsumeLoginPhoneChallenge(ctx context.Context, userID i
 	}
 	if attempts >= 5 || !expires.After(now) {
 		_, _ = tx.ExecContext(ctx, `UPDATE phone_verification_challenges SET invalidated_at=$2 WHERE id=$1`, id, now)
-		_ = tx.Commit()
+		if err := tx.Commit(); err != nil {
+			return err
+		}
 		return ErrChallengeInvalid
 	}
 	if !hmac.Equal([]byte(saved), []byte(codeHMAC)) {
@@ -377,6 +383,42 @@ func (s *IdentityStore) CreatePluginSubmission(ctx context.Context, userID int64
 		return 0, err
 	}
 	return id, tx.Commit()
+}
+
+// RealnameStatuses 批量返回用户实名状态：approved / pending / none。
+// 人工与自动实名任一通过即 approved；否则任一待审即 pending。
+func (s *IdentityStore) RealnameStatuses(ctx context.Context, ids []int64) (map[int64]string, error) {
+	out := make(map[int64]string, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	ph := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		ph[i] = "$" + strconv.Itoa(i+1)
+		args[i] = id
+	}
+	q := `SELECT u.id, COALESCE(
+			(SELECT 'approved' FROM manual_identity_submissions m WHERE m.user_id=u.id AND m.status='approved' LIMIT 1),
+			(SELECT 'approved' FROM automatic_identity_attempts a WHERE a.user_id=u.id AND a.status='approved' LIMIT 1),
+			(SELECT 'pending' FROM manual_identity_submissions m WHERE m.user_id=u.id AND m.status='pending' LIMIT 1),
+			(SELECT 'pending' FROM automatic_identity_attempts a WHERE a.user_id=u.id AND a.status IN ('initiated','pending') LIMIT 1),
+			'none')
+		FROM users u WHERE u.id IN (` + strings.Join(ph, ",") + `)`
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		var st string
+		if err := rows.Scan(&id, &st); err != nil {
+			return nil, err
+		}
+		out[id] = st
+	}
+	return out, rows.Err()
 }
 
 func (s *IdentityStore) HasApproved(ctx context.Context, userID int64) (bool, error) {

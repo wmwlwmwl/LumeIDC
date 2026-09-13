@@ -4,9 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"html/template"
 	"os"
-	"strings"
 	"testing"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -83,59 +81,6 @@ func TestFindType(t *testing.T) {
 	}
 }
 
-// TestTemplatesParse 组合解析全部后台/前台模板，捕获语法与 end 失配错误。
-func TestTemplatesParse(t *testing.T) {
-	entries, err := adminFS.ReadDir("templates")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, e := range entries {
-		name := e.Name()
-		if !strings.HasPrefix(name, "admin_") || !strings.HasSuffix(name, ".html") {
-			continue
-		}
-		if _, err := template.ParseFS(adminFS, "templates/admin.html", "templates/"+name); err != nil {
-			t.Errorf("解析 %s: %v", name, err)
-		}
-	}
-	if _, err := template.New("site").Funcs(template.FuncMap{"safeDescriptionHTML": safeDescriptionHTML}).ParseFS(siteFS, "templates/site.html", "templates/products.html"); err != nil {
-		t.Errorf("解析 products.html: %v", err)
-	}
-	// 带数据执行：捕获运行期字段缺失（如 typeRow 漏 ParentID 会让页面渲染中断）
-	tpl, err := template.ParseFS(adminFS, "templates/admin.html", "templates/admin_types.html")
-	if err != nil {
-		t.Fatal(err)
-	}
-	data := AdminData{Rows: []typeRow{{
-		ID: 1, Name: "云", Sort: 1, ProductCount: 2,
-		Children: []typeRow{{ID: 2, ParentID: 1, Name: "国内", Sort: 1, ProductCount: 3, Hidden: true}},
-	}}}
-	var b strings.Builder
-	if err := tpl.ExecuteTemplate(&b, "admin", data); err != nil {
-		t.Fatalf("执行 admin_types.html: %v", err)
-	}
-	for _, want := range []string{"新增分类", "移动产品", "删除"} {
-		if !strings.Contains(b.String(), want) {
-			t.Errorf("渲染结果缺少关键内容: %s", want)
-		}
-	}
-	// 导入页：分类下拉（一级清单）
-	tpl2, err := template.ParseFS(adminFS, "templates/admin.html", "templates/admin_catalog.html")
-	if err != nil {
-		t.Fatal(err)
-	}
-	data2 := AdminData{Types: []repo.ProductType{{ID: 1, Name: "云产品"}}, Rows: []catalogRow{{PID: 1, A: "测试商品"}}}
-	b.Reset()
-	if err := tpl2.ExecuteTemplate(&b, "admin", data2); err != nil {
-		t.Fatalf("执行 admin_catalog.html: %v", err)
-	}
-	for _, want := range []string{"parent_id", "请选择目标一级分类", "建为「云产品」下的二级分类"} {
-		if !strings.Contains(b.String(), want) {
-			t.Errorf("导入页渲染缺少: %s", want)
-		}
-	}
-}
-
 // TestEnsureTypeHierarchy 需要真实 PG：上游导入分组名两级展开与幂等匹配。
 func TestEnsureTypeHierarchy(t *testing.T) {
 	dsn := os.Getenv("TEST_DATABASE_DSN")
@@ -151,7 +96,7 @@ func TestEnsureTypeHierarchy(t *testing.T) {
 	m := &AdminManage{Products: repo.NewProducts(d)}
 
 	// 两级分组名（parentID=0）→ 建一级+二级，产品挂二级
-	cid, err := m.ensureType(ctx, "测试云/测试国内", 0)
+	cid, err := m.ensureType(ctx, "测试云/测试国内", 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,38 +123,54 @@ func TestEnsureTypeHierarchy(t *testing.T) {
 		d.ExecContext(ctx, `DELETE FROM products WHERE type_id IN ($1,$2)`, otherFid, otherCid)
 		d.ExecContext(ctx, `DELETE FROM product_types WHERE id IN ($1,$2)`, otherFid, otherCid)
 	}()
-	if got, _ := m.ensureType(ctx, "测试云/测试国内", 0); got != cid {
+	if got, _ := m.ensureType(ctx, "测试云/测试国内", 0, ""); got != cid {
 		t.Fatalf("两级匹配应命中原二级 %d, 实际 %d", cid, got)
 	}
 
-	// 指定父分类（导入页选择一级）：单层上游分组名建为其下二级，幂等命中
-	pid2, _ := m.ensureType(ctx, "国内高防加速CDN", otherFid)
-	if got, _ := m.ensureType(ctx, "国内高防加速CDN", otherFid); got != pid2 {
+	// 指定父分类（导入页选择一级）：单层上游分组名建为其下二级，幂等命中；
+	// 导入时填的分类描述写入该二级分类，再次导入填新的会覆盖，填空则不动。
+	pid2, _ := m.ensureType(ctx, "国内高防加速CDN", otherFid, "国内高防 · 三网直连")
+	types, _ = m.Products.ListTypes(ctx)
+	if n, ok := repo.FindType(types, pid2); !ok || n.Description != "国内高防 · 三网直连" {
+		t.Fatalf("分类描述应写入: %+v", n)
+	}
+	if got, _ := m.ensureType(ctx, "国内高防加速CDN", otherFid, ""); got != pid2 {
 		t.Fatalf("指定父分类应幂等命中 %d, 实际 %d", pid2, got)
 	}
-	pid3, _ := m.ensureType(ctx, "全新上游分组", otherFid)
+	types, _ = m.Products.ListTypes(ctx)
+	if n, ok := repo.FindType(types, pid2); !ok || n.Description != "国内高防 · 三网直连" {
+		t.Fatalf("留空不应覆盖已有分类描述: %+v", n)
+	}
+	if got, _ := m.ensureType(ctx, "国内高防加速CDN", otherFid, "换一段说明"); got != pid2 {
+		t.Fatalf("覆盖描述不应新建分类: %d != %d", got, pid2)
+	}
+	types, _ = m.Products.ListTypes(ctx)
+	if n, ok := repo.FindType(types, pid2); !ok || n.Description != "换一段说明" {
+		t.Fatalf("填了应覆盖分类描述: %+v", n)
+	}
+	pid3, _ := m.ensureType(ctx, "全新上游分组", otherFid, "")
 	types, _ = m.Products.ListTypes(ctx)
 	if n, ok := repo.FindType(types, pid3); !ok || n.ParentID != otherFid || n.Name != "全新上游分组" {
 		t.Fatalf("指定父分类应建二级: %+v", n)
 	}
 	// 嵌套分组名 + 指定父分类：取末段建二级
-	pid4, _ := m.ensureType(ctx, "忽略这段/末段分组", otherFid)
+	pid4, _ := m.ensureType(ctx, "忽略这段/末段分组", otherFid, "")
 	types, _ = m.Products.ListTypes(ctx)
 	if n, ok := repo.FindType(types, pid4); !ok || n.ParentID != otherFid || n.Name != "末段分组" {
 		t.Fatalf("嵌套名应取末段建二级: %+v", n)
 	}
 
-	// 单名（parentID=0）→ 一级
-	fid, err := m.ensureType(ctx, "测试单级分组", 0)
+	// 单名（parentID=0）→ 一级，描述写在它上面
+	fid, err := m.ensureType(ctx, "测试单级分组", 0, "单级分组说明")
 	if err != nil {
 		t.Fatal(err)
 	}
 	types, _ = m.Products.ListTypes(ctx)
-	if f, ok := repo.FindType(types, fid); !ok || f.ParentID != 0 || f.Name != "测试单级分组" {
-		t.Fatalf("单名应建一级: %+v", f)
+	if f, ok := repo.FindType(types, fid); !ok || f.ParentID != 0 || f.Name != "测试单级分组" || f.Description != "单级分组说明" {
+		t.Fatalf("单名应建一级并写入描述: %+v", f)
 	}
 	// 幂等：再次取同名返回同一 id
-	if got, _ := m.ensureType(ctx, "测试单级分组", 0); got != fid {
+	if got, _ := m.ensureType(ctx, "测试单级分组", 0, ""); got != fid {
 		t.Fatalf("单名幂等失败: %d != %d", got, fid)
 	}
 	d.ExecContext(ctx, `DELETE FROM products WHERE type_id=$1`, fid)

@@ -25,6 +25,85 @@ func TestCalculateQuoteSelect(t *testing.T) {
 	}
 }
 
+// 首购要把上游一次性初装费汇总进报价：select 与 range 两种模式都要进 Quote.Setup，
+// 续费只用 Total（Setup 不计），所以两者必须分开存。
+func TestCalculateQuoteSetupFee(t *testing.T) {
+	opts := []repo.ConfigOption{
+		{Field: "cpu", Name: "CPU", Mode: "select", Required: true, Subs: []repo.ConfigValue{
+			{Name: "2核", Pricing: map[string]float64{"monthly": 10}, Setup: map[string]float64{"monthly": 0, "quarterly": 0, "yearly": 0}},
+		}},
+		{Field: "bw", Name: "带宽", Mode: "range", Min: 1, Max: 100, Step: 1, Unit: "M",
+			Subs: []repo.ConfigValue{
+				{Name: "10M带宽", Value: "10", Min: 10, Max: 10, Pricing: map[string]float64{"monthly": 10},
+					Setup: map[string]float64{"monthly": 5, "quarterly": 0, "yearly": 0}},
+			}},
+	}
+	q, err := CalculateQuote(opts, 3, "monthly", map[string]string{"cpu": "2核", "bw": "10"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if q.Total != 23 { // 3 基础 + 10 CPU + 10 带宽
+		t.Fatalf("周期费应为 23，实得 %v", q.Total)
+	}
+	if q.Setup != 5 {
+		t.Fatalf("初装费应为 5，实得 %v", q.Setup)
+	}
+	if q.PayableOnce() != 28 {
+		t.Fatalf("首购基数（周期费+初装费）应为 28，实得 %v", q.PayableOnce())
+	}
+	// 季付该档位显式 0：不得回落月付的 5，否则凭空多收
+	q2, err := CalculateQuote(opts, 3, "quarterly", map[string]string{"cpu": "2核", "bw": "10"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if q2.Setup != 0 {
+		t.Fatalf("季付初装费显式为 0 时不得回落，实得 %v", q2.Setup)
+	}
+}
+
+// 门店起步价要含一次性初装费：对齐魔方财务列表口径，否则列表 28、开通页 33 自相矛盾。
+// 用上游 348 的真实形状（基础价 3 + CPU 10 + 内存 5 + 带宽 10 + 带宽初装费 5 = 33）。
+func TestDisplayStartPriceIncludesSetup(t *testing.T) {
+	opts := []repo.ConfigOption{
+		{Field: "cpu", Name: "CPU", Mode: "select", Subs: []repo.ConfigValue{
+			{Name: "2核", Pricing: map[string]float64{"monthly": 10}},
+			{Name: "4核", Pricing: map[string]float64{"monthly": 20}},
+		}},
+		{Field: "memory", Name: "内存", Mode: "select", Subs: []repo.ConfigValue{
+			{Name: "1G", Pricing: map[string]float64{"monthly": 5}},
+			{Name: "2G", Pricing: map[string]float64{"monthly": 10}},
+		}},
+		{Field: "bw", Name: "带宽", Mode: "select", Subs: []repo.ConfigValue{
+			{Name: "10M带宽", Pricing: map[string]float64{"monthly": 10},
+				Setup: map[string]float64{"monthly": 5, "quarterly": 0, "yearly": 0}},
+			{Name: "20M带宽", Pricing: map[string]float64{"monthly": 15}},
+		}},
+	}
+	if got := DisplayPrice(3, opts, 0, 0); got != 28 {
+		t.Fatalf("周期价口径（后台月价/0元判定）应为 28，实得 %v", got)
+	}
+	if got := DisplayStartPrice(3, opts, 0, 0, "monthly"); got != 33 {
+		t.Fatalf("门店起步价应含初装费 5，期望 33，实得 %v", got)
+	}
+	// 季付初装费显式 0：不得回落月付的 5（与 SetupPrice 同口径）
+	if got := DisplayStartPrice(3, opts, 0, 0, "quarterly"); got != 28 {
+		t.Fatalf("季付无初装费时期望 28，实得 %v", got)
+	}
+	// 利润按“周期价+初装费”整体加成，与 CreateOrder 口径一致
+	if got := DisplayStartPrice(3, opts, 0, 10, "monthly"); got != 36.3 {
+		t.Fatalf("加价 10%% 期望 36.3，实得 %v", got)
+	}
+	// 最低档 0 元周期价 + 有初装费：起步价仍要体现该初装费
+	free := []repo.ConfigOption{
+		{Field: "cpu", Name: "CPU", Mode: "select", Subs: []repo.ConfigValue{
+			{Name: "共享核", Setup: map[string]float64{"monthly": 5}},
+		}},
+	}
+	if got := DisplayStartPrice(0, free, 0, 0, "monthly"); got != 5 {
+		t.Fatalf("0 元周期价仍应收初装费 5，实得 %v", got)
+	}
+}
+
 func TestCalculateQuoteRange(t *testing.T) {
 	opts := []repo.ConfigOption{
 		{Field: "bw", Name: "带宽", Mode: "range", Min: 1, Max: 100, Step: 1, Unit: "Mbps",

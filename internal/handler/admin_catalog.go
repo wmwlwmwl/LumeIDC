@@ -91,28 +91,41 @@ func (m *AdminManage) CatalogPage(w http.ResponseWriter, r *http.Request) {
 	}
 	// 一级分类清单：供导入时选择“上游分组建为某分类下的二级”
 	var firstTypes []repo.ProductType
-	if types, terr := m.Products.ListTypes(r.Context()); terr == nil {
-		for _, t := range types {
-			if t.ParentID == 0 {
-				firstTypes = append(firstTypes, t)
-			}
+	types, terr := m.Products.ListTypes(r.Context())
+	if terr != nil {
+		// 查询失败会导致下拉为空，管理员会误以为没建一级分类，必须留痕
+		log.Printf("[catalog] 查询一级分类失败: %v", terr)
+	}
+	for _, t := range types {
+		if t.ParentID == 0 {
+			firstTypes = append(firstTypes, t)
 		}
 	}
-	m.renderAdmin(w, "admin_catalog.html", AdminData{
-		CSRF: m.adminCSRF(w, r),
-		// 目录拉取错误优先；否则回显导入跳转携带的错误
-		Error: func() string {
+	crows := toCatalogRows(list, linked)
+	rowsJSON := make([]map[string]any, 0, len(crows))
+	for _, c := range crows {
+		rowsJSON = append(rowsJSON, map[string]any{
+			"pid": c.PID, "name": c.A, "group": c.B, "monthly": c.C,
+			"stock": c.Stock, "linked": c.Linked,
+		})
+	}
+	typesJSON := make([]map[string]any, 0, len(firstTypes))
+	for _, t := range firstTypes {
+		typesJSON = append(typesJSON, map[string]any{"id": t.ID, "name": t.Name})
+	}
+	out := map[string]any{
+		"ok":     1,
+		"server": map[string]any{"id": sv.ID, "name": sv.Name},
+		"rows":   rowsJSON,
+		"types":  typesJSON,
+		"error": func() string {
 			if e := catalogErr(err); e != "" {
 				return e
 			}
 			return r.URL.Query().Get("err")
 		}(),
-		ServersList: sv,
-		Rows:        toCatalogRows(list, linked),
-		Types:       firstTypes,
-		// 目录导入利润独立于服务器默认利润，默认 0/0，不自动带入服务器配置。
-		ServerProfitType: 0, ServerProfitValue: 0,
-	})
+	}
+	writeJSON(w, out)
 }
 
 func catalogErr(err error) string {
@@ -265,57 +278,81 @@ func (m *AdminManage) ImportProducts(w http.ResponseWriter, r *http.Request) {
 	if !m.require(w, r) {
 		return
 	}
-	if !m.requireCSRF(w, r) {
+	serverID, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	fail := func(msg string) {
+		if wantsJSON(r) {
+			writeJSON(w, map[string]any{"ok": 0, "msg": msg})
+			return
+		}
+		http.Redirect(w, r, fmt.Sprintf("/admin/servers/%d/catalog?err=%s", serverID,
+			url.QueryEscape(msg)), http.StatusSeeOther)
+	}
+	// 勾选列表是多值字段（import[]），JSON 数组与表单多值都要支持。
+	// CSRF 由全局 middleware.CSRF 统一校验（X-CSRF-Token/_csrf），此处无需重复检查。
+	multi, err := bodyValuesMulti(r)
+	if err != nil {
+		fail("请求解析失败")
 		return
 	}
-	serverID, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if len(multi["import"]) == 0 {
+		fail("请勾选要导入的商品")
+		return
+	}
+	fv := func(k string) string {
+		if vs := multi[k]; len(vs) > 0 {
+			return vs[0]
+		}
+		return ""
+	}
 	sv, err := m.Servers.Get(r.Context(), serverID)
 	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
-	r.ParseForm()
-	// 导入利润：表单未填时回退服务器默认利润
-	// 目录导入默认 0/0；只使用本次表单提交值，不回退服务器利润配置。
-	profitType, _ := strconv.ParseInt(r.PostFormValue("profit_type"), 10, 64)
+	// 导入利润：只使用本次表单提交值，不回退服务器利润配置；未填按 0 处理（新建产品不加价）
+	profitType, _ := strconv.ParseInt(fv("profit_type"), 10, 64)
 	if profitType != 1 {
 		profitType = 0
 	}
-	profitValue, _ := strconv.ParseFloat(r.PostFormValue("profit_value"), 64)
+	profitValue, _ := strconv.ParseFloat(fv("profit_value"), 64)
 	if profitValue < 0 {
 		profitValue = 0
 	}
-	// 导入目标父分类：0=按上游分组自动建；>0=上游分组建为该一级分类下的二级
-	parentID, _ := strconv.ParseInt(r.PostFormValue("parent_id"), 10, 64)
+	// 购买是否需要实名认证（复选框，应用于本次导入的所有产品）
+	requiresIdentity := fv("requires_identity") == "1"
+	// 本次导入填写的分类描述（选填）：写入上游分组对应的本地分类（前台分类页展示）。
+	desc := strings.TrimSpace(fv("desc"))
+	// 导入目标父分类：必须为已存在的一级分类，上游分组名建为其下的二级分类
+	parentID, _ := strconv.ParseInt(fv("parent_id"), 10, 64)
 	if parentID <= 0 {
-		http.Redirect(w, r, fmt.Sprintf("/admin/servers/%d/catalog?err=%s", serverID,
-			url.QueryEscape("请选择导入目标一级分类")), http.StatusSeeOther)
+		fail("请选择导入目标一级分类")
 		return
 	}
-	if parentID != 0 {
-		types, terr := m.Products.ListTypes(r.Context())
-		t, ok := repo.FindType(types, parentID)
-		if terr != nil || !ok || t.ParentID != 0 {
-			http.Redirect(w, r, fmt.Sprintf("/admin/servers/%d/catalog?err=%s", serverID,
-				url.QueryEscape("导入目标分类无效（需为一级分类）")), http.StatusSeeOther)
-			return
-		}
+	types, terr := m.Products.ListTypes(r.Context())
+	t, ok := repo.FindType(types, parentID)
+	if terr != nil || !ok || t.ParentID != 0 {
+		fail("导入目标分类无效（需为一级分类）")
+		return
 	}
 	// 只拉一次目录（内含全部商品的名称/分组/价格/库存/描述），
 	// 建 PID→商品 映射供各导入项复用，避免每导一个商品就全量拉一次目录——
 	// 旧逻辑 N×M 次上游请求易触发限流/拉黑。
-	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	// 超时统一覆盖目录拉取与逐项导入（每项至多 1 次上游配置项请求）：
+	// 60s + 每项 10s，项数封顶 60，防止伪造超大勾选列表拖死请求。
+	n := len(multi["import"])
+	if n > 60 {
+		n = 60
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second+time.Duration(n)*10*time.Second)
 	defer cancel()
 	prov, err := m.Providers.Get(sv.Provider)
 	if err != nil {
-		http.Redirect(w, r, fmt.Sprintf("/admin/servers/%d/catalog?err=%s", serverID,
-			url.QueryEscape("供应商错误")), http.StatusSeeOther)
+		fail("供应商错误")
 		return
 	}
 	list, err := m.providerCatalog(ctx, serverID, sv, prov, false)
 	if err != nil {
-		http.Redirect(w, r, fmt.Sprintf("/admin/servers/%d/catalog?err=%s", serverID,
-			url.QueryEscape("拉取目录失败: "+err.Error())), http.StatusSeeOther)
+		fail("拉取目录失败: " + err.Error())
 		return
 	}
 	byPID := make(map[int]*server.UpstreamProduct, len(list))
@@ -323,18 +360,29 @@ func (m *AdminManage) ImportProducts(w http.ResponseWriter, r *http.Request) {
 		byPID[list[i].PID] = &list[i]
 	}
 	imported := 0
-	for _, pidStr := range r.PostForm["import"] {
+	requested := 0 // 有效勾选数（目录中已不存在的项也计入，按未成功反馈）
+	for _, pidStr := range multi["import"] {
 		pid, err := strconv.Atoi(pidStr)
 		if err != nil || pid <= 0 {
 			continue
 		}
+		requested++
 		up := byPID[pid]
 		if up == nil {
 			continue
 		}
-		if m.importUpstreamProduct(r.Context(), sv, serverID, up, int16(profitType), profitValue, parentID) {
+		if m.importUpstreamProduct(ctx, sv, serverID, up, int16(profitType), profitValue, parentID, requiresIdentity, desc) {
 			imported++
 		}
+	}
+	if wantsJSON(r) {
+		// 部分失败必须明示，否则管理员无从知道哪些没导成（失败原因见 [import] 日志）
+		msg := fmt.Sprintf("已处理 %d 个产品（已对接的会更新价格/配置项，未对接的新建）", imported)
+		if failed := requested - imported; failed > 0 {
+			msg = fmt.Sprintf("成功导入 %d 个，%d 个未成功（可能已下架或写入失败，详见服务端日志）", imported, failed)
+		}
+		writeJSON(w, map[string]any{"ok": 1, "imported": imported, "msg": msg})
+		return
 	}
 	http.Redirect(w, r,
 		fmt.Sprintf("/admin/servers/%d/catalog?done=%d", serverID, imported), http.StatusSeeOther)
@@ -343,52 +391,67 @@ func (m *AdminManage) ImportProducts(w http.ResponseWriter, r *http.Request) {
 // importUpstreamProduct 幂等导入：已按 (server_id, upstream_pid) 对接则更新价格/绑定/配置项，
 // 否则新建分类+产品+价格+绑定+配置项。profitType/profitValue 仅对新建产品生效（不覆盖已有产品利润）。
 // parentID：新建产品的分类归属（0=上游分组建一级；>0=建为该一级下的二级）。
+// desc：本次导入填写的「分类描述」，写入上游分组对应的本地分类（前台分类页展示）；为空则新建分类留空、已有分类不动。
 // up 由调用方一次性拉取目录后传入（本函数不再全量拉目录，避免导入 N 项触发 N×M 次上游请求）。
 
-func (m *AdminManage) importUpstreamProduct(ctx context.Context, sv *repo.Server, serverID int64, up *server.UpstreamProduct, profitType int16, profitValue float64, parentID int64) bool {
+func (m *AdminManage) importUpstreamProduct(ctx context.Context, sv *repo.Server, serverID int64, up *server.UpstreamProduct, profitType int16, profitValue float64, parentID int64, requiresIdentity bool, desc string) bool {
 	prov, err := m.Providers.Get(sv.Provider)
 	if err != nil {
 		return false
 	}
 	cfg := serverConfig(sv)
 	pid := up.PID
-	psID, _ := m.Products.DefaultPricesetID(ctx)
+	psID, perr := m.Products.DefaultPricesetID(ctx)
+	if perr != nil {
+		// 价格集查询失败时 psID=0 会把价格写到不存在的价格集，计为导入失败
+		log.Printf("[import] 查询默认价格集失败 pid=%d: %v", pid, perr)
+		return false
+	}
 	// 幂等：已对接则更新，未对接则新建
 	existingID, _ := m.Products.FindByUpstreamPID(ctx, serverID, int64(pid))
 	var productID int64
+	// 产品描述：搬上游的（清洗成安全文本）；上游没有就留空，不再编默认文案。
+	pdesc := cleanDesc(up.Description)
+	// 分类（上游分组 → 本地二级分类）：描述是前台分类页的说明，导入时填了就覆盖它，
+	// 已有产品同样适用（分组描述与本次导入的商品无关，只跟分组有关）。
+	typeID, terr := m.ensureType(ctx, up.GroupName, parentID, desc)
+	if terr != nil {
+		return false
+	}
 	if existingID > 0 {
 		productID = existingID
-		// 幂等更新：同步上游描述（价格/绑定/配置项下方统一刷新）
-		desc := cleanDesc(up.Description)
-		if desc == "" {
-			desc = fmt.Sprintf("导入自 %s（上游 PID %d）", sv.Name, pid)
-		}
-		if derr := m.Products.SetDescription(ctx, productID, desc); derr != nil {
-			log.Printf("[import] 更新描述失败 pid=%d: %v", pid, derr)
+		// 幂等更新：上游有描述才覆盖（没有就保持原描述，别清空）。价格/绑定/配置项下方统一刷新。
+		if pdesc != "" {
+			if derr := m.Products.SetDescription(ctx, productID, pdesc); derr != nil {
+				log.Printf("[import] 更新描述失败 pid=%d: %v", pid, derr)
+			}
 		}
 	} else {
-		typeID, terr := m.ensureType(ctx, up.GroupName, parentID)
-		if terr != nil {
-			return false
-		}
-		desc := cleanDesc(up.Description)
-		if desc == "" {
-			desc = fmt.Sprintf("导入自 %s（上游 PID %d）", sv.Name, pid)
-		}
-		productID, err = m.Products.Create(ctx, sqlNull(typeID), up.Name, desc, up.Stock)
+		productID, err = m.Products.Create(ctx, sqlNull(typeID), up.Name, pdesc, up.Stock)
 		if err != nil {
 			return false
 		}
 		// 新建产品设置导入利润
 		if profitValue > 0 {
-			m.Products.SetProfit(ctx, productID, profitType, profitValue)
+			if serr := m.Products.SetProfit(ctx, productID, profitType, profitValue); serr != nil {
+				log.Printf("[import] 设置导入利润失败 pid=%d: %v", pid, serr)
+			}
 		}
 	}
 	// 价格始终刷新（新建或更新均覆盖月/季/年）
 	if err := m.Products.UpsertPrice(ctx, productID, psID, money(up.Monthly), money(up.Quarterly), money(up.Yearly)); err != nil {
 		return false
 	}
-	m.Products.SetBinding(ctx, productID, sqlNull(serverID), int64(pid))
+	// 购买实名要求：按本次导入的复选框统一设置（新建/更新均生效）
+	if err := m.Products.SetRequiresIdentity(ctx, productID, requiresIdentity); err != nil {
+		log.Printf("[import] 设置购买实名要求失败 pid=%d: %v", pid, err)
+	}
+	// 绑定失败必须计为导入失败：绑定（server_id/upstream_pid）是幂等导入与
+	// 上游同步的依据，静默失败会导致下次导入重复建品、价格同步失效。
+	if err := m.Products.SetBinding(ctx, productID, sqlNull(serverID), int64(pid)); err != nil {
+		log.Printf("[import] 绑定上游失败 pid=%d: %v", pid, err)
+		return false
+	}
 	// 配置项优先复用目录回填已拉取的（同一次 get_product_config，避免重复请求）；
 	// 目录未带配置（如非 zjmf 供应商）时回退单独拉取。
 	opts := up.ConfigOptions
@@ -400,7 +463,9 @@ func (m *AdminManage) importUpstreamProduct(ctx context.Context, sv *repo.Server
 		}
 	}
 	if len(opts) > 0 {
-		m.Products.SaveConfigOptions(ctx, productID, opts)
+		if serr := m.Products.SaveConfigOptions(ctx, productID, opts); serr != nil {
+			log.Printf("[import] 保存配置项失败 pid=%d: %v", pid, serr)
+		}
 	}
 	return true
 }
@@ -416,7 +481,7 @@ func cleanDesc(s string) string {
 // parentID>0：管理员指定的一级分类，上游分组名（取末段）作为其下二级分类——
 // 对齐 ZJMF 代理上游商品"必选本地分组"的模式（上游 /cart/all 多为单层分组）。
 
-func (m *AdminManage) ensureType(ctx context.Context, groupName string, parentID int64) (int64, error) {
+func (m *AdminManage) ensureType(ctx context.Context, groupName string, parentID int64, desc string) (int64, error) {
 	first, second := groupName, ""
 	if parts := strings.SplitN(groupName, "/", 2); len(parts) == 2 {
 		first, second = parts[0], parts[1]
@@ -432,10 +497,11 @@ func (m *AdminManage) ensureType(ctx context.Context, groupName string, parentID
 		}
 		for _, t := range types {
 			if t.ParentID == parentID && t.Name == name {
+				m.applyTypeDesc(ctx, t, desc)
 				return t.ID, nil
 			}
 		}
-		return m.Products.CreateType(ctx, name, "上游导入", 99, parentID, false)
+		return m.Products.CreateType(ctx, name, desc, 99, parentID, false)
 	}
 	// 定位/创建一级
 	var fid int64
@@ -446,8 +512,16 @@ func (m *AdminManage) ensureType(ctx context.Context, groupName string, parentID
 		}
 	}
 	if fid == 0 {
-		if fid, err = m.Products.CreateType(ctx, first, "上游导入", 99, 0, false); err != nil {
+		if fid, err = m.Products.CreateType(ctx, first, desc, 99, 0, false); err != nil {
 			return 0, err
+		}
+	} else if second == "" {
+		// 上游只有一级分组：描述写在这个分类上
+		for _, t := range types {
+			if t.ID == fid {
+				m.applyTypeDesc(ctx, t, desc)
+				break
+			}
 		}
 	}
 	if second == "" {
@@ -456,10 +530,21 @@ func (m *AdminManage) ensureType(ctx context.Context, groupName string, parentID
 	// 定位/创建二级（仅限该一级下同名）
 	for _, t := range types {
 		if t.ParentID == fid && t.Name == second {
+			m.applyTypeDesc(ctx, t, desc)
 			return t.ID, nil
 		}
 	}
-	return m.Products.CreateType(ctx, second, "上游导入", 99, fid, false)
+	return m.Products.CreateType(ctx, second, desc, 99, fid, false)
+}
+
+// applyTypeDesc 覆盖已有分类的描述：只有导入时填了才动，避免把后台手写的分类说明冲掉。
+func (m *AdminManage) applyTypeDesc(ctx context.Context, t repo.ProductType, desc string) {
+	if desc = strings.TrimSpace(desc); desc == "" || desc == t.Description {
+		return
+	}
+	if err := m.Products.UpdateType(ctx, t.ID, t.Name, desc, t.Sort, t.ParentID, t.Hidden); err != nil {
+		log.Printf("[import] 更新分类 %d 描述失败: %v", t.ID, err)
+	}
 }
 
 // ---------- 服务管理 ----------

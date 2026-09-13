@@ -112,6 +112,19 @@ func (f *fakeSMTPServer) handle(c net.Conn) {
 	}
 }
 
+// TestMailHeaderFrom 发件人显示名：中文按 RFC 2047 编码、ASCII 直出、无站点名时只留地址。
+func TestMailHeaderFrom(t *testing.T) {
+	if got := mailHeaderFrom("无名云", "admin@x.test"); !strings.HasSuffix(got, "?= <admin@x.test>") || strings.Contains(got, "无名云") {
+		t.Fatalf("中文站点名未按 RFC 2047 编码: %q", got)
+	}
+	if got := mailHeaderFrom("LumeIDC", "admin@x.test"); got != `"LumeIDC" <admin@x.test>` {
+		t.Fatalf("纯 ASCII 站点名应原样作显示名（加引号）: %q", got)
+	}
+	if got := mailHeaderFrom("  ", "admin@x.test"); got != "admin@x.test" {
+		t.Fatalf("站点名为空时应只留地址: %q", got)
+	}
+}
+
 func TestSmtpDeliverAuthLoginSuccess(t *testing.T) {
 	srv := startFakeSMTP(t, "LOGIN", false)
 	addr := srv.addr()

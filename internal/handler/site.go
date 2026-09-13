@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"lumeidc/internal/middleware"
@@ -66,22 +67,22 @@ func (a *Admin) adminSite(w http.ResponseWriter, r *http.Request) {
 		return v
 	}
 	cfg := map[string]string{
-		service.KeySiteName:        get(service.KeySiteName),
-		service.KeySiteDescription: get(service.KeySiteDescription),
-		service.KeySiteKeywords:    get(service.KeySiteKeywords),
-		service.KeyServiceEmail:    get(service.KeyServiceEmail),
-		service.KeyServicePhone:    get(service.KeyServicePhone),
-		service.KeyServiceHours:    get(service.KeyServiceHours),
-		service.KeySiteURL:         get(service.KeySiteURL),
-		service.KeyListenPort:      get(service.KeyListenPort),
-		service.KeyAdminPath:       get(service.KeyAdminPath),
+		service.KeySiteName:         get(service.KeySiteName),
+		service.KeySiteDescription:  get(service.KeySiteDescription),
+		service.KeySiteKeywords:     get(service.KeySiteKeywords),
+		service.KeyServiceEmail:     get(service.KeyServiceEmail),
+		service.KeyServicePhone:     get(service.KeyServicePhone),
+		service.KeyServiceHours:     get(service.KeyServiceHours),
+		service.KeySiteURL:          get(service.KeySiteURL),
+		service.KeyListenPort:       get(service.KeyListenPort),
+		service.KeyAdminPath:        get(service.KeyAdminPath),
+		service.KeyUpstreamTimezone: get(service.KeyUpstreamTimezone),
 	}
-	a.renderAdmin(w, "admin_site.html", AdminData{
-		CSRF:        a.adminCSRF(w, r),
-		Error:       r.URL.Query().Get("err"),
-		Msg:         r.URL.Query().Get("ok"),
-		ServersList: cfg,
-	})
+	out := map[string]any{"ok": 1}
+	for k, v := range cfg {
+		out[k] = v
+	}
+	writeJSON(w, out)
 }
 
 // adminSiteSave POST /admin/site — 保存站点信息。
@@ -89,29 +90,45 @@ func (a *Admin) adminSiteSave(w http.ResponseWriter, r *http.Request) {
 	if !a.require(w, r) {
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		http.Redirect(w, r, "/admin/site?err="+url.QueryEscape("表单解析失败"), http.StatusSeeOther)
-		return
+	vals := jsonVals(r)
+	fv := func(k string) string {
+		if vals != nil {
+			return vals[k]
+		}
+		return r.PostFormValue(k)
 	}
-	name := strings.TrimSpace(r.PostFormValue(service.KeySiteName))
+	if vals == nil {
+		if err := r.ParseForm(); err != nil {
+			http.Redirect(w, r, "/admin/site?err="+url.QueryEscape("表单解析失败"), http.StatusSeeOther)
+			return
+		}
+	}
+	fail := func(msg string) {
+		if wantsJSON(r) {
+			writeJSON(w, map[string]any{"ok": 0, "msg": msg})
+			return
+		}
+		http.Redirect(w, r, "/admin/site?err="+url.QueryEscape(msg), http.StatusSeeOther)
+	}
+	name := strings.TrimSpace(fv(service.KeySiteName))
 	if name == "" {
-		http.Redirect(w, r, "/admin/site?err="+url.QueryEscape("站点名称不能为空"), http.StatusSeeOther)
+		fail("站点名称不能为空")
 		return
 	}
-	desc := strings.TrimSpace(r.PostFormValue(service.KeySiteDescription))
-	keywords := strings.TrimSpace(r.PostFormValue(service.KeySiteKeywords))
-	email := strings.TrimSpace(r.PostFormValue(service.KeyServiceEmail))
-	phone := strings.TrimSpace(r.PostFormValue(service.KeyServicePhone))
-	hours := strings.TrimSpace(r.PostFormValue(service.KeyServiceHours))
-	siteURL := strings.TrimRight(strings.TrimSpace(r.PostFormValue(service.KeySiteURL)), "/")
+	desc := strings.TrimSpace(fv(service.KeySiteDescription))
+	keywords := strings.TrimSpace(fv(service.KeySiteKeywords))
+	email := strings.TrimSpace(fv(service.KeyServiceEmail))
+	phone := strings.TrimSpace(fv(service.KeyServicePhone))
+	hours := strings.TrimSpace(fv(service.KeyServiceHours))
+	siteURL := strings.TrimRight(strings.TrimSpace(fv(service.KeySiteURL)), "/")
 	if siteURL != "" && !validSiteURL(siteURL) {
-		http.Redirect(w, r, "/admin/site?err="+url.QueryEscape("站点地址无效：需以 http:// 或 https:// 开头且不含路径（可留空自动推断）"), http.StatusSeeOther)
+		fail("站点地址无效：需以 http:// 或 https:// 开头且不含路径（可留空自动推断）")
 		return
 	}
-	port := strings.TrimSpace(r.PostFormValue(service.KeyListenPort))
+	port := strings.TrimSpace(fv(service.KeyListenPort))
 	if port != "" {
 		if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 {
-			http.Redirect(w, r, "/admin/site?err="+url.QueryEscape("监听端口无效：需为 1-65535 的整数（留空使用 config.yaml 的 listen）"), http.StatusSeeOther)
+			fail("监听端口无效：需为 1-65535 的整数（留空使用 config.yaml 的 listen）")
 			return
 		}
 	} else if a.ListenSwitcher != nil {
@@ -126,18 +143,25 @@ func (a *Admin) adminSiteSave(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	adminPath := strings.TrimSpace(r.PostFormValue(service.KeyAdminPath))
+	adminPath := strings.TrimSpace(fv(service.KeyAdminPath))
 	if adminPath != "" && !middleware.ValidAdminPath(adminPath) {
-		http.Redirect(w, r, "/admin/site?err="+url.QueryEscape("后台路径无效：仅允许 /字母数字_-，且不能与公共路径（如 /login、/services）冲突"), http.StatusSeeOther)
+		fail("后台路径无效：仅允许 /字母数字_-，且不能与公共路径（如 /login、/services）冲突")
 		return
+	}
+	upstreamTZ := strings.TrimSpace(fv(service.KeyUpstreamTimezone))
+	if upstreamTZ != "" {
+		if _, err := time.LoadLocation(upstreamTZ); err != nil {
+			fail("上游时区无效：需为 IANA 时区名（如 Asia/Shanghai），或留空使用本机时区")
+			return
+		}
 	}
 	limit := 512
 	if len([]rune(name)) > 128 {
-		http.Redirect(w, r, "/admin/site?err="+url.QueryEscape("站点名称过长"), http.StatusSeeOther)
+		fail("站点名称过长")
 		return
 	}
 	if len([]rune(desc)) > limit || len([]rune(keywords)) > limit || len([]rune(email)) > 128 || len([]rune(phone)) > 64 || len([]rune(hours)) > 128 {
-		http.Redirect(w, r, "/admin/site?err="+url.QueryEscape("字段过长"), http.StatusSeeOther)
+		fail("字段过长")
 		return
 	}
 	s := a.Settings
@@ -163,23 +187,29 @@ func (a *Admin) adminSiteSave(w http.ResponseWriter, r *http.Request) {
 	}
 	if a.ListenSwitcher != nil {
 		if err := a.ListenSwitcher(addr); err != nil {
-			http.Redirect(w, r, "/admin/site?err="+url.QueryEscape("切换监听端口失败（"+err.Error()+"），设置未保存"), http.StatusSeeOther)
+			fail("切换监听端口失败（" + err.Error() + "），设置未保存")
 			return
 		}
 	}
 	set(service.KeyListenPort, port)
 	set(service.KeyAdminPath, adminPath)
+	set(service.KeyUpstreamTimezone, upstreamTZ)
 	if a.AdminPathCfg != nil {
 		a.AdminPathCfg.Set(adminPath) // 立即生效，无需重启
 	}
-	// 端口热切换后，旧端口正在优雅关闭：若用户显式带端口访问（如 yun.662662.xyz:9090），
-	// 跳转地址必须带上新端口，否则 303 落回已关闭的旧端口；域名直连（无端口、走反代）保持相对跳转。
-	// 反代透传的内网/回环主机（如 127.0.0.1:8080）不能作为跳转主机，否则浏览器会跳向内网地址。
-	// 后台路径跳转直接按新 admin_path 构造：修改路径后旧前缀立即被屏蔽，不能依赖 middleware 改写。
 	newPath := strings.Trim(adminPath, "/")
 	if newPath == "" {
 		newPath = "admin"
 	}
+	if wantsJSON(r) {
+		writeJSON(w, map[string]any{
+			"ok": 1, "admin_path": "/" + newPath, "listen_port": port,
+		})
+		return
+	}
+	// 端口热切换后，旧端口正在优雅关闭：若用户显式带端口访问（如 yun.662662.xyz:9090），
+	// 跳转地址必须带上新端口，否则 303 落回已关闭的旧端口；域名直连（无端口、走反代）保持相对跳转。
+	// 后台路径跳转直接按新 admin_path 构造：修改路径后旧前缀立即被屏蔽，不能依赖 middleware 改写。
 	target := "/" + newPath + "/site?ok=1"
 	if port != "" {
 		if host, _, err := net.SplitHostPort(r.Host); err == nil && publicHost(host) {

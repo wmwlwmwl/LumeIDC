@@ -58,18 +58,18 @@ func (b *Balance) change(ctx context.Context, userID int64, amount string, typ, 
 	defer tx.Rollback()
 	var enough bool
 	if typ == "recharge" {
-		// 充值：金额必须 > 0
+		// 充值：金额必须 > 0（同时引用 $1 以锁定用户行并让 Postgres 推断参数类型）
 		if err := tx.QueryRowContext(ctx,
-			`SELECT $2::numeric > 0`, userID, amount).Scan(&enough); err != nil {
+			`SELECT $2::numeric > 0 FROM users WHERE id=$1 FOR UPDATE`, userID, amount).Scan(&enough); err != nil {
 			return err
 		}
 		if !enough {
 			return fmt.Errorf("金额必须大于 0")
 		}
 	} else {
-		// 管理员调整：正负皆可，但不能为 0
+		// 管理员调整：正负皆可，但不能为 0（引用 $1 以锁定用户行并让 Postgres 推断参数类型）
 		if err := tx.QueryRowContext(ctx,
-			`SELECT $2::numeric != 0`, userID, amount).Scan(&enough); err != nil {
+			`SELECT $2::numeric != 0 FROM users WHERE id=$1 FOR UPDATE`, userID, amount).Scan(&enough); err != nil {
 			return err
 		}
 		if !enough {

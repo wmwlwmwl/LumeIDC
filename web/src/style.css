@@ -1,0 +1,246 @@
+/* LumeIDC 业务自定义样式。Tailwind 4 入口由 @styles/core/tailwind.css 提供
+   （在 main.ts / admin/main.ts 中先于本文件导入）。
+   规则：
+   - 这里只放「前后台共享」的令牌与功能样式；
+   - 前后台统一走 Art Design Pro 默认令牌（tailwind.css / el-ui.scss）；
+   - public-app 仍作为前台专属非令牌样式的作用域，但不再覆盖配色。 */
+
+:root {
+  /* 共享令牌：前后台一致，不参与 Art / 前台配色差异 */
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 16px;
+  /* 与 setting store 的 customRadius 默认值一致，避免 JS 注入前的首帧圆角塌陷 */
+  --custom-radius: 0.75rem;
+  --el-font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+}
+
+/* ------------------------------------------------------------------ */
+/* 前台（html.public-app）与后台共用 Art Design Pro 令牌：              */
+/* 不再单独覆盖灰阶 / 页底 / 盒色 / 描边 / 主色 / 圆角，主色统一 Art     */
+/* 默认 #5D87FF。public-app 类保留，仅作为前台专属非令牌样式的作用域。   */
+/* ------------------------------------------------------------------ */
+
+html,
+body,
+#app,
+#admin-app {
+  min-height: 100%;
+  margin: 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* 派生令牌：Art 只提供 --theme-color / --art-gray-100..900，             */
+/* 而业务样式还引用了 deep/soft/contrast 与 gray-50。这里给全局（后台，   */
+/* 含 teleport 到 body 的抽屉/弹窗）补上；前台 html.public-app 会覆盖，   */
+/* 保持原有观感。                                                       */
+/* ------------------------------------------------------------------ */
+:root {
+  --theme-color-deep: color-mix(in srgb, var(--theme-color) 84%, #000);
+  --theme-color-soft: color-mix(in srgb, var(--theme-color) 12%, transparent);
+  --theme-color-contrast: #ffffff;
+  --art-gray-50: var(--art-gray-100);
+
+  /* 可读性校准：Art 默认 gray-400(#dbdfe1)/gray-500(#949eb7) 过淡，
+     提示与次要文字几乎看不清，这里提高对比度（前台 public-app 另行覆盖）。 */
+  --art-gray-400: #8b95a6;
+  --art-gray-500: #667085;
+}
+
+html.dark {
+  --theme-color-soft: color-mix(in srgb, var(--theme-color) 18%, transparent);
+
+  --art-gray-400: #8b95a6;
+  --art-gray-500: #a8b1c0;
+}
+
+/* Element Plus 2.8 的 ElConfigProvider 不支持 card 配置（Art 用的是 2.11），
+   AdminRoot/前台外壳里的 :card="{ shadow: 'never' }" 会被忽略，导致 el-card
+   保留默认投影，与扁平描边的 art-card 不一致（表现为卡片"立体"）。
+   这里补上等价效果（前后台通用）；不加 !important，切到"阴影模式"时 Art 的
+   盒阴影仍能生效。 */
+.el-card.is-always-shadow,
+.el-card.is-hover-shadow:hover,
+.el-card.is-hover-shadow:focus {
+  box-shadow: none;
+}
+
+html,
+body {
+  font-family: var(--el-font-family);
+  color: var(--art-gray-800);
+  background: var(--default-bg-color);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+body {
+  overflow-x: hidden;
+}
+
+html.public-app button,
+html.public-app a,
+html.public-app .el-button,
+html.public-app .el-menu-item,
+html.public-app .el-sub-menu__title {
+  transition: color 0.2s ease, background-color 0.2s ease, border-color 0.2s ease,
+    box-shadow 0.2s ease, transform 0.2s ease;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+/* 兼容：把 rounded-xl 对齐 Art 圆角令牌（个别视图使用）。 */
+.rounded-xl {
+  border-radius: var(--custom-radius);
+}
+
+/* 全局键盘焦点环：自定义按钮/链接/可交互元素必须可见。
+   用 :where() 保持零权重，方便组件按需覆盖。 */
+:where(
+    a,
+    button,
+    summary,
+    [tabindex]:not([tabindex='-1']),
+    [role='button'],
+    [role='link'],
+    [role='option'],
+    [role='tab']
+  ):focus-visible {
+  outline: 2px solid var(--theme-color);
+  outline-offset: 2px;
+  border-radius: inherit;
+}
+
+/* Responsive */
+@media (max-width: 640px) {
+  .el-table {
+    font-size: 12px;
+  }
+}
+
+/* 前后台统一使用 Art reset 的滚动条与 nprogress 样式。 */
+
+@media (max-width: 640px) {
+  .el-table .cell {
+    white-space: normal;
+  }
+
+  /* 分页在窄屏允许换行，避免「共 N 条 + 页码」撑破容器 */
+  .el-pagination {
+    flex-wrap: wrap;
+    justify-content: center;
+    max-width: 100%;
+    row-gap: 8px;
+  }
+}
+
+/* 尊重系统「减少动态效果」偏好：关闭位移/脉冲等装饰性动画。 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* 响应式 / 像素级打磨：弹窗与工具栏在窄屏下的表现                      */
+/* ------------------------------------------------------------------ */
+
+/* 弹窗不超出视口（Element Plus 默认仅设置固定 width） */
+.el-dialog {
+  max-width: calc(100vw - 30px);
+}
+
+.el-message-box {
+  max-width: calc(100vw - 30px);
+}
+
+/* 详情/表单页顶部工具栏 */
+.admin-detail-toolbar {
+  flex-wrap: wrap;
+}
+
+.admin-detail-toolbar__title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 导入/配置条换行时的行间距 */
+.admin-import-bar {
+  row-gap: 10px;
+}
+
+/* 后台表单/详情页：art-full-height 内的内容卡片可能高于一屏，
+   禁止 flex 压缩（否则卡片被压扁、内容被裁切且无法滚动），交由 #app-main 滚动。
+   表格页用的是 .art-table-card，不受影响。 */
+.art-full-height > .art-card {
+  flex-shrink: 0;
+}
+
+/* 后台设置页：表单网格与开关网格（窄屏单列/紧凑换行） */
+.admin-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 20px;
+}
+
+.admin-form-grid > .el-form-item {
+  margin-bottom: 18px;
+}
+
+/* 开关组：紧凑换行排布，避免两列拉伸导致的大间距 */
+.admin-check-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 28px;
+}
+
+.admin-check-grid > .el-checkbox {
+  margin: 0;
+}
+
+/* 分区底部操作行：统一与上方内容/下方分割线的间距 */
+.admin-section__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+@media (max-width: 720px) {
+  .admin-form-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  /* 手机端弹窗几乎全宽，避免横向溢出（前后台通用） */
+  .el-dialog {
+    width: calc(100vw - 24px) !important;
+    max-width: calc(100vw - 24px);
+    margin: 0 auto;
+  }
+
+  .el-message-box {
+    width: calc(100vw - 32px) !important;
+  }
+}
+
+/* 后台工单抽屉：从 admin-layout.scss 移出的全局规则（抽屉 teleport 到 body，作用域样式命中不到） */
+@media only screen and (width <= 600px) {
+  .ticket-drawer.el-drawer { width: 100vw !important; max-width: 100vw !important; }
+  .ticket-drawer.el-drawer .el-drawer__body { box-sizing: border-box; min-width: 0; padding: 0 14px 14px; overflow-x: hidden; }
+  .ticket-drawer.el-drawer .el-drawer__footer { box-sizing: border-box; padding: 10px 14px; }
+}
+

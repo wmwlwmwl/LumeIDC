@@ -1,7 +1,7 @@
 package handler
 
 import (
-	"embed"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -12,7 +12,6 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"lumeidc/internal/gateway"
@@ -24,9 +23,6 @@ import (
 	qrcode "github.com/skip2/go-qrcode"
 )
 
-//go:embed templates/pay.html
-var payFS embed.FS
-
 type Pay struct {
 	Orders   *service.Orders
 	Payment  *service.Payment
@@ -36,10 +32,6 @@ type Pay struct {
 	Invoices *repo.Invoices
 	Balance  *repo.Balance
 	*Deps
-
-	payOnce sync.Once
-	payTpl  *template.Template // pay.html 首次渲染后缓存（并发安全）
-	payErr  error
 }
 
 func (h *Pay) Register(mux *http.ServeMux) {
@@ -51,28 +43,35 @@ func (h *Pay) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /pay/{invoiceID}/balance", h.payByBalance)
 	mux.HandleFunc("GET /pay/{invoiceID}", h.payPage)
 	mux.HandleFunc("GET /pay/{invoiceID}/status", h.paymentStatus)
-	mux.HandleFunc("GET /pay/alipay-f2f", h.alipayF2FPage)
+	mux.HandleFunc("GET "+gateway.LocalCheckoutPath, h.localCheckoutPage)
 	mux.HandleFunc("GET /mock/pay/{no}", h.mockPayPage)
 	mux.HandleFunc("POST /mock/pay/{no}", h.mockConfirm)
 }
 
-// alipayF2FPage 在本站生成二维码，避免把支付码交给第三方图片服务。
-func (h *Pay) alipayF2FPage(w http.ResponseWriter, r *http.Request) {
+// localCheckoutPage 渲染本地结算页（如扫码支付二维码）。由实现
+// gateway.LocalCheckout 能力的网关驱动，避免在通用处理器里写死支付品牌。
+func (h *Pay) localCheckoutPage(w http.ResponseWriter, r *http.Request) {
 	userID, ok := middleware.RequireUser(w, r)
 	if !ok {
 		return
 	}
 	no := strings.TrimSpace(r.URL.Query().Get("invoice"))
-	qrText := r.URL.Query().Get("qr")
+	qrText := r.URL.Query().Get("data")
 	if no == "" || qrText == "" {
 		http.NotFound(w, r)
 		return
 	}
-	id, status, driver, gatewayCode, baseAmount, qerr := h.Invoices.F2FByNoUser(r.Context(), no, userID)
-	if qerr != nil || status != 0 || driver != "alipay_f2f" {
+	id, status, driver, gatewayCode, baseAmount, qerr := h.Invoices.CheckoutByNoUser(r.Context(), no, userID)
+	if qerr != nil || status != 0 {
 		http.NotFound(w, r)
 		return
 	}
+	impl, ok := h.Gateways[driver]
+	if _, isLocal := impl.(gateway.LocalCheckout); !ok || !isLocal {
+		http.NotFound(w, r)
+		return
+	}
+	brand := impl.Name()
 	attempt, err := h.GwRepo.LatestAttempt(r.Context(), no, gatewayCode, true)
 	if err != nil {
 		http.NotFound(w, r)
@@ -85,8 +84,8 @@ func (h *Pay) alipayF2FPage(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	dataURI := "data:image/png;base64," + base64.StdEncoding.EncodeToString(pngBytes)
-	if _, err := fmt.Fprintf(w, `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>支付宝扫码支付</title><style>body{font-family:system-ui,sans-serif;background:#f6f8fb;color:#182230;text-align:center;padding:40px 16px}.card{max-width:440px;margin:auto;padding:32px 24px;background:#fff;border-radius:18px;box-shadow:0 10px 30px #12263d12}img{width:320px;max-width:100%%;height:auto}.amount{font-size:28px;font-weight:700;margin:12px}</style></head><body><main class="card"><h1>支付宝扫码支付</h1><p>账单号：%s</p><p class="amount">应付金额：￥%s</p><p>账单金额：￥%s</p><img src="%s" alt="支付宝支付二维码"><p id="message" role="status">支付完成后页面会自动检查到账状态</p><p><a href="/pay/%d">返回账单页</a></p></main><script>(function(){var message=document.getElementById('message');function check(){fetch('/pay/%d/status',{credentials:'same-origin'}).then(function(response){if(!response.ok)throw new Error();return response.json()}).then(function(data){if(data.paid){message.textContent='支付成功，正在返回账单页';location.href='/pay/%d';return}setTimeout(check,4000)}).catch(function(){message.textContent='状态检查失败，正在重试';setTimeout(check,5000)})}check()})();</script></body></html>`, template.HTMLEscapeString(no), attempt.Amount, baseAmount, dataURI, id, id, id); err != nil {
-		log.Printf("[template] 支付宝二维码页面输出失败: %v", err)
+	if _, err := fmt.Fprintf(w, `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>%s扫码支付</title><style>body{font-family:system-ui,sans-serif;background:#f6f8fb;color:#182230;text-align:center;padding:40px 16px}.card{max-width:440px;margin:auto;padding:32px 24px;background:#fff;border-radius:18px;box-shadow:0 10px 30px #12263d12}img{width:320px;max-width:100%%;height:auto}.amount{font-size:28px;font-weight:700;margin:12px}</style></head><body><main class="card"><h1>%s扫码支付</h1><p>账单号：%s</p><p class="amount">应付金额：￥%s</p><p>账单金额：￥%s</p><img src="%s" alt="支付二维码"><p id="message" role="status">支付完成后页面会自动检查到账状态</p><p><a href="/pay/%d">返回账单页</a></p></main><script>(function(){var message=document.getElementById('message');function check(){fetch('/pay/%d/status',{credentials:'same-origin',headers:{'Accept':'application/json'}}).then(function(response){if(!response.ok)throw new Error();return response.json()}).then(function(data){if(data.paid){message.textContent='支付成功，正在返回账单页';location.href='/pay/%d';return}if(data.expired){message.textContent='账单已过期，请返回重新下单';return}setTimeout(check,4000)}).catch(function(){message.textContent='状态检查失败，正在重试';setTimeout(check,5000)})}check()})();</script></body></html>`, template.HTMLEscapeString(brand), template.HTMLEscapeString(brand), template.HTMLEscapeString(no), attempt.Amount, baseAmount, dataURI, id, id, id); err != nil {
+		log.Printf("[template] 二维码结算页输出失败: %v", err)
 	}
 }
 
@@ -106,44 +105,88 @@ func (h *Pay) paymentStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	json.NewEncoder(w).Encode(map[string]bool{"paid": status == 1})
+	json.NewEncoder(w).Encode(map[string]bool{"paid": status == 1, "expired": status == 3})
 }
 
 // createOrder POST product_id & cycle -> 创建订单+账单，跳转支付页
 func (h *Pay) createOrder(w http.ResponseWriter, r *http.Request) {
-	userID, ok := middleware.RequireUserOrRedirect(w, r)
+	userID, ok := middleware.RequireUser(w, r)
 	if !ok {
 		return
 	}
-	productID, _ := strconv.ParseInt(r.PostFormValue("product_id"), 10, 64)
-	cycle := r.PostFormValue("cycle")
+	vals, err := bodyValues(r)
+	if err != nil {
+		jsonStatus(w, r, 400, "表单解析失败")
+		return
+	}
+	fv := func(k string) string {
+		if vals != nil {
+			return vals[k]
+		}
+		return r.PostFormValue(k)
+	}
+	productID, _ := strconv.ParseInt(fv("product_id"), 10, 64)
+	cycle := fv("cycle")
 	if cycle == "" { // 兼容表单直接提交
 		cycle = "monthly"
 	}
 	psID, err := h.Products.DefaultPricesetID(r.Context())
 	if err != nil {
-		http.Error(w, "系统未配置价格组", 500)
+		jsonStatus(w, r, 500, "系统未配置价格组")
 		return
 	}
 	// 收集配置项选择：cfg_<field> -> value，服务端只认产品声明的 field
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "表单解析失败", 400)
-		return
-	}
 	selection := map[string]string{}
-	for key, vals := range r.PostForm {
-		if strings.HasPrefix(key, "cfg_") && len(vals) > 0 && vals[0] != "" {
-			selection[strings.TrimPrefix(key, "cfg_")] = vals[0]
+	if vals != nil {
+		for k, v := range vals {
+			if strings.HasPrefix(k, "cfg_") && v != "" {
+				selection[strings.TrimPrefix(k, "cfg_")] = v
+			}
+		}
+	} else {
+		if err := r.ParseForm(); err != nil {
+			jsonStatus(w, r, 400, "表单解析失败")
+			return
+		}
+		for key, vs := range r.PostForm {
+			if strings.HasPrefix(key, "cfg_") && len(vs) > 0 && vs[0] != "" {
+				selection[strings.TrimPrefix(key, "cfg_")] = vs[0]
+			}
 		}
 	}
-	coupon := strings.TrimSpace(r.PostFormValue("coupon"))
+	coupon := strings.TrimSpace(fv("coupon"))
 	orderID, invID, amount, err := h.Orders.CreateOrder(r.Context(), userID, productID, psID, cycle, selection, coupon)
 	if err != nil {
 		if errors.Is(err, service.ErrIdentityRequired) {
+			if wantsJSON(r) {
+				writeJSON(w, map[string]any{"ok": 0, "code": "identity_required", "msg": err.Error(), "redirect": "/user/verification"})
+				return
+			}
 			http.Redirect(w, r, "/user/verification?err="+url.QueryEscape(err.Error()), http.StatusSeeOther)
 			return
 		}
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		// 上游价格已变（本地已同步）：前端据此重载购买页，让用户以新价重新确认。
+		// 用 400 而非 200：前端 http 层只在非 2xx 时才抛错，200+ok:0 会被当成下单成功。
+		if errors.Is(err, service.ErrUpstreamPriceChanged) {
+			if wantsJSON(r) {
+				w.WriteHeader(http.StatusBadRequest)
+				writeJSON(w, map[string]any{"ok": 0, "code": "price_changed", "msg": err.Error()})
+				return
+			}
+			http.Redirect(w, r, "/buy/"+strconv.FormatInt(productID, 10), http.StatusSeeOther)
+			return
+		}
+		// 上游已下架该商品：前端提示后回到产品中心。
+		if errors.Is(err, service.ErrUpstreamUnshelved) {
+			if wantsJSON(r) {
+				w.WriteHeader(http.StatusBadRequest)
+				writeJSON(w, map[string]any{"ok": 0, "code": "unshelved", "msg": err.Error()})
+				return
+			}
+			http.Redirect(w, r, "/cart", http.StatusSeeOther)
+			return
+		}
+		jsonStatus(w, r, 400, err.Error())
 		return
 	}
 	// 0 元订单（纯免费产品）：创建即自动核销并开通，跳过支付页。余额/真实网关都无法处理 0 金额。
@@ -151,15 +194,23 @@ func (h *Pay) createOrder(w http.ResponseWriter, r *http.Request) {
 		no, qerr := h.Invoices.NoByID(r.Context(), invID)
 		if qerr != nil {
 			log.Printf("[0元购] 读取账单号失败 invoice=%d: %v", invID, qerr)
-			http.Error(w, "免费订单开通失败，请联系管理员", http.StatusInternalServerError)
+			jsonStatus(w, r, 500, "免费订单开通失败，请联系管理员")
 			return
 		}
 		if perr := h.Payment.MarkPaid(r.Context(), no, "FREE-"+strconv.FormatInt(invID, 10), "balance"); perr != nil {
 			log.Printf("[0元购] 订单 %d 自动核销失败: %v", orderID, perr)
-			http.Error(w, "免费订单开通失败，请联系管理员", http.StatusInternalServerError)
+			jsonStatus(w, r, 500, "免费订单开通失败，请联系管理员")
+			return
+		}
+		if wantsJSON(r) {
+			writeJSON(w, map[string]any{"ok": 1, "paid": true, "redirect": "/services"})
 			return
 		}
 		http.Redirect(w, r, "/services", http.StatusSeeOther)
+		return
+	}
+	if wantsJSON(r) {
+		writeJSON(w, map[string]any{"ok": 1, "paid": false, "invoice_id": invID, "amount": amount, "redirect": "/pay/" + strconv.FormatInt(invID, 10)})
 		return
 	}
 	http.Redirect(w, r, "/pay/"+strconv.FormatInt(invID, 10), http.StatusSeeOther)
@@ -204,9 +255,22 @@ func (h *Pay) payPage(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	no, amount, status, _, err := h.Invoices.LoadByID(r.Context(), id)
+	no, amount, status, _, credit, err := h.Invoices.LoadByID(r.Context(), id)
 	if err != nil || !h.ownsInvoice(r, userID, no) {
 		http.NotFound(w, r)
+		return
+	}
+	// 易支付页面跳转通知会把支付参数追加到 return_url。异步通知仍是
+	// 首选，但处理浏览器回跳可以覆盖内网环境无法接收异步通知的情况。
+	if r.URL.Query().Get("out_trade_no") != "" {
+		if status != 1 {
+			if err := h.settleReturn(r, no); err != nil {
+				log.Printf("[return] 支付回跳核销失败 invoice=%s: %v", no, err)
+			}
+		}
+		// 无论核销成功与否都跳回干净的收银台页：失败时由异步通知/补单兜底，
+		// 绝不把 payPage 的 JSON 直接展示在浏览器地址栏。
+		http.Redirect(w, r, r.URL.Path, http.StatusSeeOther)
 		return
 	}
 	kind, _ := h.Invoices.KindByID(r.Context(), id)
@@ -217,9 +281,23 @@ func (h *Pay) payPage(w http.ResponseWriter, r *http.Request) {
 	if bal, err := h.Balance.Get(r.Context(), userID); err == nil {
 		data.UserBalance = bal
 	}
+	// 在线支付只针对“账单金额 - 已抵扣余额”，手续费也只按该剩余额计算。
+	remaining := amount
+	if _, aCents, aerr := moneyutil.ParsePositive(amount, 999999999999); aerr == nil {
+		cCents := int64(0)
+		if _, c, cerr := moneyutil.ParseNonNegative(credit, 999999999999); cerr == nil {
+			cCents = c
+		}
+		if cCents > aCents {
+			cCents = aCents
+		}
+		remaining = moneyutil.FormatCents(aCents - cCents)
+	}
 	switch {
 	case status == 1:
 		data.Status = "已支付"
+	case status == 3:
+		data.Status = "已过期"
 	default:
 		if h.GwRepo != nil {
 			if list, lerr := h.GwRepo.Enabled(r.Context()); lerr == nil {
@@ -227,7 +305,7 @@ func (h *Pay) payPage(w http.ResponseWriter, r *http.Request) {
 					if _, ok := h.Gateways[v.Driver]; !ok {
 						continue
 					}
-					feePercent, feeAmount, payable, qerr := quoteGateway(amount, v.Config)
+					feePercent, feeAmount, payable, qerr := quoteGateway(remaining, v.Config)
 					if qerr != nil {
 						log.Printf("[payment] 网关 %s 手续费配置无效: %v", v.Code, qerr)
 						continue
@@ -238,16 +316,90 @@ func (h *Pay) payPage(w http.ResponseWriter, r *http.Request) {
 		}
 		data.BalancePay = !data.Recharge
 	}
-	h.payOnce.Do(func() {
-		h.payTpl, h.payErr = template.ParseFS(payFS, "templates/pay.html")
+	gateways := make([]map[string]any, 0, len(data.Gateways))
+	for _, g := range data.Gateways {
+		gateways = append(gateways, map[string]any{
+			"code": g.Code, "name": g.Name, "fee_percent": g.FeePercent,
+			"fee_amount": g.FeeAmount, "amount": g.Amount,
+		})
+	}
+	writeJSON(w, map[string]any{
+		"ok": 1,
+		"invoice": map[string]any{
+			"id": data.InvoiceID, "no": data.InvoiceNo, "amount": data.Amount,
+			"credit": credit, "remaining": remaining,
+			"status": data.Status, "recharge": data.Recharge,
+		},
+		"paid":        data.Status == "已支付",
+		"expired":     data.Status == "已过期",
+		"balance_pay": data.BalancePay && data.Status != "已支付",
+		"balance":     data.UserBalance,
+		"gateways":    gateways,
+		"csrf":        data.CSRF,
+		"site_name":   data.SiteName,
 	})
-	if h.payErr != nil {
-		http.Error(w, h.payErr.Error(), 500)
-		return
+}
+
+// settleReturn verifies and settles a signed browser return from a gateway.
+// It deliberately uses the same pending payment attempt checks as async notify.
+func (h *Pay) settleReturn(r *http.Request, invoiceNo string) error {
+	params := make(map[string]string, len(r.URL.Query()))
+	for key, values := range r.URL.Query() {
+		if key == "code" || len(values) == 0 {
+			continue
+		}
+		params[key] = values[0]
 	}
-	if err := h.payTpl.Execute(w, data); err != nil {
-		log.Printf("[template] pay.html 执行失败: %v", err)
+	code, err := h.GwRepo.InvoiceGateway(r.Context(), invoiceNo)
+	if err != nil {
+		return err
 	}
+	inst, err := h.GwRepo.Get(r.Context(), code)
+	if err != nil {
+		return err
+	}
+	impl, ok := h.Gateways[inst.Driver]
+	if !ok {
+		return fmt.Errorf("支付网关驱动未注册")
+	}
+	result, err := impl.VerifyNotify(params, inst.Config)
+	if err != nil {
+		return err
+	}
+	if !result.Successful || result.InvoiceNo != invoiceNo {
+		return fmt.Errorf("支付回跳状态未成功")
+	}
+	return h.applyGatewayPayment(r.Context(), result, code)
+}
+
+// applyGatewayPayment 统一处理一笔已验签成功的到账：
+//   - 匹配当前绑定且待支付的尝试 → 核销账单并开通；
+//   - 只能匹配到历史/失效尝试（切换网关后的迟到回调）→ 到账金额退回余额；
+//   - 账单已支付且与本流水一致 → 视为重复回调；
+//   - 账单已支付但为另一次到账（重复支付）→ 到账金额退回余额。
+//
+// 退回余额以支付尝试的 provider_trade_no 幂等，重复回调不会重复入账。
+func (h *Pay) applyGatewayPayment(ctx context.Context, result gateway.NotifyResult, code string) error {
+	if attempt, err := h.GwRepo.LatestAttempt(ctx, result.InvoiceNo, code, true); err == nil && equalAmount(result.Amount, attempt.Amount) {
+		if merr := h.Payment.MarkPaid(ctx, result.InvoiceNo, result.TradeNo, code, attempt.ID); merr != nil && merr != service.ErrAlreadyPaid {
+			return merr
+		}
+		return nil
+	}
+	// 无法核销当前待支付尝试：查该网关的历史尝试，金额一致者退回余额。
+	if stale, err := h.GwRepo.AttemptByInvoiceGateway(ctx, result.InvoiceNo, code); err == nil && equalAmount(result.Amount, stale.Amount) {
+		if cerr := h.Payment.CreditCapturedToBalance(ctx, stale.ID, result.TradeNo); cerr != nil {
+			return cerr
+		}
+		return nil
+	}
+	// 重复回调：账单已支付且与本流水完全一致。
+	status, storedGateway, storedTrade, storedAmount, qerr := h.Invoices.RecordByNo(ctx, result.InvoiceNo)
+	if qerr == nil && status == 1 && storedGateway == code &&
+		storedTrade == result.TradeNo && equalAmount(storedAmount, result.Amount) {
+		return nil
+	}
+	return fmt.Errorf("支付记录/金额不匹配")
 }
 
 // start 绑定本次支付使用的网关实例并生成跳转地址。
@@ -257,47 +409,89 @@ func (h *Pay) start(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
-	tok := r.PostFormValue("_csrf")
-	sess := middleware.FromSession(r.Context())
-	if tok == "" || sess == nil || tok != sess.CSRFToken() {
-		middleware.RedirectToLogin(w, r, "页面已过期，请重新登录后重试")
-		return
+	vals := jsonVals(r)
+	fv := func(k string) string {
+		if vals != nil {
+			return vals[k]
+		}
+		return r.PostFormValue(k)
+	}
+	// SPA 由 CSRF 中间件按 X-CSRF-Token 头校验；SSR 表单手动校验 _csrf。
+	if vals == nil {
+		tok := fv("_csrf")
+		sess := middleware.FromSession(r.Context())
+		if tok == "" || sess == nil || tok != sess.CSRFToken() {
+			middleware.RedirectToLogin(w, r, "页面已过期，请重新登录后重试")
+			return
+		}
 	}
 	id, err := strconv.ParseInt(r.PathValue("invoiceID"), 10, 64)
 	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
-	no, amount, status, _, err := h.Invoices.LoadByID(r.Context(), id)
+	no, _, status, _, _, err := h.Invoices.LoadByID(r.Context(), id)
 	if err != nil || status != 0 || !h.ownsInvoice(r, userID, no) {
+		if status == 3 && h.ownsInvoice(r, userID, no) {
+			jsonStatus(w, r, http.StatusBadRequest, "账单已过期")
+			return
+		}
 		http.NotFound(w, r)
 		return
 	}
-	code := strings.TrimSpace(r.PostFormValue("gateway"))
+	code := strings.TrimSpace(fv("gateway"))
 	inst, err := h.GwRepo.Get(r.Context(), code)
+	if err != nil {
+		jsonStatus(w, r, http.StatusBadRequest, "支付网关不可用")
+		return
+	}
 	impl, ok := h.Gateways[inst.Driver]
-	if err != nil || !inst.Enabled || !ok {
-		http.Error(w, "支付网关不可用", http.StatusBadRequest)
+	if !inst.Enabled || !ok {
+		jsonStatus(w, r, http.StatusBadRequest, "支付网关不可用")
 		return
 	}
-	feePercent, feeAmount, payable, err := quoteGateway(amount, inst.Config)
+	feePercent, _, err := moneyutil.ParsePercent(inst.Config["fee_percent"])
 	if err != nil {
-		http.Error(w, "支付网关手续费配置无效", http.StatusBadRequest)
+		jsonStatus(w, r, http.StatusBadRequest, "支付网关手续费配置无效")
 		return
 	}
-	attemptID, err := h.GwRepo.BindAttempt(r.Context(), id, code, payable, feePercent, feeAmount)
+	// 组合支付：按需先用余额抵扣，再就剩余本金走在线支付（手续费只对在线本金收取）。
+	// 付款前复核：下单后上游改价（同步已落到本地）时先拦下，用户还没花钱就能重新下单。
+	if verr := h.Payment.VerifyOrderPriceBeforePay(r.Context(), id, userID); verr != nil {
+		jsonStatus(w, r, http.StatusBadRequest, verr.Error())
+		return
+	}
+	prep, err := h.Payment.PrepareOnline(r.Context(), id, userID, code, feePercent, fv("use_balance") == "1")
 	if err != nil {
-		http.Error(w, "创建支付记录失败", 500)
+		jsonStatus(w, r, http.StatusBadRequest, err.Error())
+		return
+	}
+	if prep.FullyCovered {
+		if perr := h.Payment.MarkPaidByBalance(r.Context(), no, userID); perr != nil {
+			log.Printf("[payment] 账单 %s 余额全额抵扣核销失败: %v", no, perr)
+			jsonStatus(w, r, http.StatusBadRequest, perr.Error())
+			return
+		}
+		redirect := "/pay/" + strconv.FormatInt(id, 10)
+		if wantsJSON(r) {
+			writeJSON(w, map[string]any{"ok": 1, "paid": true, "redirect": redirect})
+			return
+		}
+		http.Redirect(w, r, redirect, http.StatusSeeOther)
 		return
 	}
 	base := siteBaseURL(r.Context(), h.Settings, r) // 站点地址：后台 site_url 优先，否则按请求推断
 	notifyURL := base + "/pay/notify?" + url.Values{"code": {code}}.Encode()
-	u, err := impl.PayURL(r.Context(), gateway.PayRequest{InvoiceNo: no, Amount: payable, Title: "LumeIDC 账单 " + no,
+	u, err := impl.PayURL(r.Context(), gateway.PayRequest{InvoiceNo: no, Amount: prep.Payable, Title: h.currentSiteInfo().Name + " 账单 " + no,
 		NotifyURL: notifyURL, ReturnURL: base + "/pay/" + strconv.FormatInt(id, 10), Config: inst.Config})
 	if err != nil {
-		_ = h.GwRepo.MarkAttemptFailedByID(r.Context(), attemptID)
+		_ = h.Payment.ReleaseInvoiceCredit(r.Context(), id, prep.AttemptID)
 		log.Printf("[payment] 网关 %s 生成支付链接失败，账单 %s: %v", code, no, err)
-		http.Error(w, "生成支付链接失败", http.StatusBadGateway)
+		jsonStatus(w, r, http.StatusBadGateway, "生成支付链接失败")
+		return
+	}
+	if wantsJSON(r) {
+		writeJSON(w, map[string]any{"ok": 1, "url": u})
 		return
 	}
 	http.Redirect(w, r, u, http.StatusSeeOther)
@@ -357,39 +551,12 @@ func (h *Pay) notify(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("success"))
 		return
 	}
-	attempt, err := h.GwRepo.LatestAttempt(r.Context(), result.InvoiceNo, code, true)
-	if err != nil || !equalAmount(result.Amount, attempt.Amount) {
-		log.Printf("[notify] 网关 %s 账单/金额不匹配: invoice=%s 通知金额=%s 记录金额=%v err=%v", code, result.InvoiceNo, result.Amount, func() string {
-			if err == nil {
-				return attempt.Amount
-			}
-			return "无记录"
-		}(), err)
-		// A duplicate callback for the already completed attempt is harmless,
-		// but it must still match the recorded trade and paid amount exactly.
-		status, invoiceGateway, tradeNo, paidAmount, qerr := h.Invoices.RecordByNo(r.Context(), result.InvoiceNo)
-		if qerr == nil && status == 1 &&
-			invoiceGateway == code && tradeNo == result.TradeNo && equalAmount(result.Amount, paidAmount) {
-			w.Write([]byte("success"))
-			return
-		}
+	if err := h.applyGatewayPayment(r.Context(), result, code); err != nil {
+		log.Printf("[notify] 网关 %s 处理到账失败 账单 %s trade_no=%s 金额=%s: %v", code, result.InvoiceNo, result.TradeNo, result.Amount, err)
 		w.Write([]byte("fail"))
 		return
 	}
-	if err := h.Payment.MarkPaid(r.Context(), result.InvoiceNo, result.TradeNo, code, attempt.ID); err != nil {
-		if err != service.ErrAlreadyPaid {
-			log.Printf("[notify] 网关 %s 核销失败 账单 %s: %v", code, result.InvoiceNo, err)
-			w.Write([]byte("fail"))
-			return
-		}
-		status, storedGateway, storedTrade, storedAmount, qerr := h.Invoices.RecordByNo(r.Context(), result.InvoiceNo)
-		if qerr != nil || status != 1 ||
-			storedGateway != code || storedTrade != result.TradeNo || !equalAmount(storedAmount, result.Amount) {
-			w.Write([]byte("fail"))
-			return
-		}
-	}
-	log.Printf("[notify] 网关 %s 核销成功 账单 %s trade_no=%s 金额=%s", code, result.InvoiceNo, result.TradeNo, result.Amount)
+	log.Printf("[notify] 网关 %s 处理到账成功 账单 %s trade_no=%s 金额=%s", code, result.InvoiceNo, result.TradeNo, result.Amount)
 	w.Write([]byte("success"))
 }
 
@@ -436,13 +603,22 @@ func (h *Pay) payByBalance(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	no, _, _, _, err := h.Invoices.LoadByID(r.Context(), id)
+	no, _, _, _, _, err := h.Invoices.LoadByID(r.Context(), id)
 	if err != nil || !h.ownsInvoice(r, userID, no) {
 		http.NotFound(w, r)
 		return
 	}
+	// 付款前复核：下单后上游改价（同步已落到本地）时先拦下，钱还没花就让用户重新下单
+	if verr := h.Payment.VerifyOrderPriceBeforePay(r.Context(), id, userID); verr != nil {
+		jsonStatus(w, r, http.StatusBadRequest, verr.Error())
+		return
+	}
 	if err := h.Payment.MarkPaidByBalance(r.Context(), no, userID); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		jsonStatus(w, r, http.StatusBadRequest, err.Error())
+		return
+	}
+	if wantsJSON(r) {
+		writeJSON(w, map[string]any{"ok": 1, "msg": "余额支付成功", "redirect": "/services"})
 		return
 	}
 	http.Redirect(w, r, "/services", http.StatusSeeOther)

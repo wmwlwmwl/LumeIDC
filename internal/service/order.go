@@ -7,12 +7,15 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strconv"
 	"time"
 
 	"lumeidc/internal/money"
 	"lumeidc/internal/repo"
 )
+
+const invoiceDueInterval = "24 hours"
 
 type Orders struct {
 	db       *sql.DB
@@ -21,6 +24,8 @@ type Orders struct {
 	Identity interface {
 		IsApproved(context.Context, int64) (bool, error)
 	}
+	// Upstream 下单前的上游实时价格校验（可为 nil：未装配时跳过校验）。
+	Upstream *UpstreamGuard
 }
 
 var cycleCol = map[string]string{
@@ -35,6 +40,13 @@ func (o *Orders) CreateOrder(ctx context.Context, userID, productID, pricesetID 
 	if !ok {
 		return 0, 0, "", fmt.Errorf("无效的计费周期: %s", cycle)
 	}
+	// 上游实时价格校验：绑定了上游的商品必须先确认本地价没有落后于上游。
+	// 必须放在事务之外——事务内不做网络调用。
+	if o.Upstream != nil {
+		if err := o.Upstream.VerifyBeforeOrder(ctx, productID, cycle, selection); err != nil {
+			return 0, 0, "", err
+		}
+	}
 	tx, err := o.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, 0, "", err
@@ -44,7 +56,7 @@ func (o *Orders) CreateOrder(ctx context.Context, userID, productID, pricesetID 
 	var stock int
 	var requiresIdentity bool
 	err = tx.QueryRowContext(ctx, `SELECT p.stock,p.requires_identity FROM products p JOIN product_types t ON t.id=p.type_id
-		WHERE p.id=$1 AND p.hidden=false AND t.hidden=false AND (t.parent_id=0 OR EXISTS (SELECT 1 FROM product_types parent WHERE parent.id=t.parent_id AND parent.hidden=false)) FOR UPDATE`, productID).Scan(&stock, &requiresIdentity)
+		WHERE p.id=$1 AND p.hidden=false AND p.upstream_offline_reason='' AND t.hidden=false AND (t.parent_id=0 OR EXISTS (SELECT 1 FROM product_types parent WHERE parent.id=t.parent_id AND parent.hidden=false)) FOR UPDATE`, productID).Scan(&stock, &requiresIdentity)
 	if err != nil {
 		return 0, 0, "", fmt.Errorf("商品已下架")
 	}
@@ -97,7 +109,8 @@ func (o *Orders) CreateOrder(ctx context.Context, userID, productID, pricesetID 
 	if qerr != nil {
 		return 0, 0, "", qerr
 	}
-	// 成本口径 = 基础价+配置费用；按产品利润设置加成出售（对齐 ZJMF 上游百分比语义）。
+	// 成本口径 = 基础价 + 配置费用 + 初装费（初装费是上游一次性费用，仅首购收取）；
+	// 按产品利润设置加成出售（对齐 ZJMF 上游百分比语义）。
 	var profitType int16
 	var profitValue float64
 	if err := tx.QueryRowContext(ctx,
@@ -113,7 +126,7 @@ func (o *Orders) CreateOrder(ctx context.Context, userID, productID, pricesetID 
 			tx.QueryRowContext(ctx, `SELECT coalesce(profit_value,0) FROM servers WHERE id=$1`, sid.Int64).Scan(&profitValue)
 		}
 	}
-	cost := mathRound(quote.Total)
+	cost := mathRound(quote.PayableOnce())
 	sell := mathRound(applyProfit(cost, profitType, profitValue))
 	finalAmount := strconv.FormatFloat(sell, 'f', 2, 64)
 
@@ -159,8 +172,8 @@ func (o *Orders) CreateOrder(ctx context.Context, userID, productID, pricesetID 
 		return 0, 0, "", err
 	}
 	err = tx.QueryRowContext(ctx,
-		`INSERT INTO invoices(no,user_id,order_id,amount) VALUES($1,$2,$3,$4) RETURNING id`,
-		no, userID, orderID, finalAmount).Scan(&invoiceID)
+		`INSERT INTO invoices(no,user_id,order_id,amount,due_at) VALUES($1,$2,$3,$4,now()+$5::interval) RETURNING id`,
+		no, userID, orderID, finalAmount, invoiceDueInterval).Scan(&invoiceID)
 	if err != nil {
 		return 0, 0, "", err
 	}
@@ -196,8 +209,8 @@ func (o *Orders) CreateRechargeInvoice(ctx context.Context, userID int64, amount
 	}
 	var id int64
 	err = o.db.QueryRowContext(ctx,
-		`INSERT INTO invoices(no,user_id,amount,kind) VALUES($1,$2,$3,'recharge') RETURNING id`,
-		no, userID, amount).Scan(&id)
+		`INSERT INTO invoices(no,user_id,amount,kind,due_at) VALUES($1,$2,$3,'recharge',now()+$4::interval) RETURNING id`,
+		no, userID, amount, invoiceDueInterval).Scan(&id)
 	return id, err
 }
 
@@ -212,8 +225,10 @@ func applyProfit(cost float64, profitType int16, profitValue float64) float64 {
 	return cost * (1 + profitValue/100)
 }
 
+// mathRound 金额四舍五入到分：math.Round 对负数同样按半值远离零处理，
+// 旧实现 int64(v*100+0.5) 对负数是向零截断，降级差价会有 ±1 分偏差。
 func mathRound(v float64) float64 {
-	return float64(int64(v*100+0.5)) / 100
+	return math.Round(v*100) / 100
 }
 
 // subtractAmount 金额相减（元，两位小数），结果不为负。
@@ -289,11 +304,19 @@ func (o *Orders) CreateRenewOrder(ctx context.Context, userID, serviceID int64, 
 
 	// 锁定服务，串行化同一服务的续费建单，避免并发产生多张未支付账单。
 	var serviceStatus int16
-	if err := tx.QueryRowContext(ctx, `SELECT status FROM services WHERE id=$1 AND user_id=$2 FOR UPDATE`, serviceID, userID).Scan(&serviceStatus); err != nil {
+	var svcTransition string
+	if err := tx.QueryRowContext(ctx,
+		`SELECT status, coalesce(transition_state,'') FROM services WHERE id=$1 AND user_id=$2 FOR UPDATE`,
+		serviceID, userID).Scan(&serviceStatus, &svcTransition); err != nil {
 		return 0, 0, "", fmt.Errorf("服务不存在或不可续费")
 	}
 	if serviceStatus != 1 && serviceStatus != 2 {
 		return 0, 0, "", fmt.Errorf("服务不存在或不可续费")
+	}
+	// 有过进行中的流程（升级中 / 上次续费待人工处置）时不建单：钱可能已收，
+	// 再下一单会造成重复付费与重复续期。
+	if svcTransition != "" {
+		return 0, 0, "", fmt.Errorf("服务正在处理中，请稍后再试")
 	}
 
 	// 防重复续费：若同一服务已存在未支付续费账单，直接复用，避免多次支付导致重复延期。
@@ -311,17 +334,16 @@ func (o *Orders) CreateRenewOrder(ctx context.Context, userID, serviceID int64, 
 		return 0, 0, "", err
 	}
 
-	// 校验服务归属 + 取产品 + 取该服务所属订单的实际成交额（含配置附加，如 NAT、数据盘）。
-	// 配置计价型产品（弹性云/云电脑）基础价在 product_prices 存 0，仅读基础价会让续费单为 0 元，
-	// 故续费金额优先取服务自己订单的成交额（与开局/详情页价一致）；无订单时兜底读产品基础价。
+	// 取产品 + 保存的初购配置 + 管理员设置的固定续费价覆盖（NULL=跟随产品价）。
 	var productID int64
-	var ownAmt sql.NullString
 	var snap []byte
+	var ovM, ovQ, ovY sql.NullFloat64
 	err = tx.QueryRowContext(ctx,
-		`SELECT sv.product_id, o.amount, coalesce(sv.config_snapshot, o.config_snapshot)
+		`SELECT sv.product_id, coalesce(sv.config_snapshot, o.config_snapshot),
+		        sv.renew_monthly, sv.renew_quarterly, sv.renew_yearly
 		 FROM services sv LEFT JOIN orders o ON o.id=sv.order_id
 		 WHERE sv.id=$1 AND sv.user_id=$2 AND sv.status IN (1,2)`,
-		serviceID, userID).Scan(&productID, &ownAmt, &snap)
+		serviceID, userID).Scan(&productID, &snap, &ovM, &ovQ, &ovY)
 	if err != nil {
 		return 0, 0, "", fmt.Errorf("服务不存在或不可续费")
 	}
@@ -345,9 +367,8 @@ func (o *Orders) CreateRenewOrder(ctx context.Context, userID, serviceID int64, 
 	if err != nil {
 		return 0, 0, "", fmt.Errorf("系统未配置价格组")
 	}
-	// 续费金额：月付优先取服务订单成交额（配置计价型 base=0，成交额含配置价）；
-	// 季付/年付必须产品有对应周期正价，防止以 0 价或月付额误续。
-	// 续费按当前周期和保存的初购配置重算，不继承一次性优惠。
+	// 续费金额：按产品当前价 × 保存的初购配置 × 产品利润重算，不继承下单时的一次性优惠
+	// 与订单成交额；管理员设了固定续费价（renew_*）时直接采用。季付/年付必须产品有对应周期正价。
 	query := fmt.Sprintf(`SELECT %s FROM product_prices WHERE product_id=$1 AND priceset_id=$2`, col)
 	var baseRaw string
 	if err := tx.QueryRowContext(ctx, query, productID, psID).Scan(&baseRaw); err != nil {
@@ -356,6 +377,10 @@ func (o *Orders) CreateRenewOrder(ctx context.Context, userID, serviceID int64, 
 	base, err := strconv.ParseFloat(baseRaw, 64)
 	if err != nil || !money.FiniteNonNegative(base) {
 		return 0, 0, "", fmt.Errorf("商品价格无效")
+	}
+	// 周期可售性：与新购同口径——季/年付必须有该周期正价，防止改 POST 用未配置周期 0 元续一年。
+	if (cycle == "quarterly" || cycle == "yearly") && base <= 0 {
+		return 0, 0, "", fmt.Errorf("该产品未提供所选计费周期")
 	}
 	selection := map[string]string{}
 	if len(snap) > 0 {
@@ -373,19 +398,48 @@ func (o *Orders) CreateRenewOrder(ctx context.Context, userID, serviceID int64, 
 	if err != nil {
 		return 0, 0, "", err
 	}
+	// 续费只收周期费：上游初装费（quote.Setup）是一次性费用，仅首购收取，这里刻意用 Total。
 	var pType int16
 	var pVal float64
 	if err := tx.QueryRowContext(ctx, `SELECT profit_type,profit_value FROM products WHERE id=$1`, productID).Scan(&pType, &pVal); err != nil {
 		return 0, 0, "", err
 	}
 	amountRaw := strconv.FormatFloat(mathRound(applyProfit(quote.Total, pType, pVal)), 'f', 2, 64)
-	if amountRaw == "0.00" {
-		return 0, 0, "", fmt.Errorf("续费金额无效")
+	// 管理员固定续费价优先（后台「编辑服务」设置；NULL/0 表示跟随产品价）
+	var ov *float64
+	switch cycle {
+	case "monthly":
+		if ovM.Valid {
+			v := ovM.Float64
+			ov = &v
+		}
+	case "quarterly":
+		if ovQ.Valid {
+			v := ovQ.Float64
+			ov = &v
+		}
+	case "yearly":
+		if ovY.Valid {
+			v := ovY.Float64
+			ov = &v
+		}
+	}
+	if ov != nil && *ov > 0 {
+		amountRaw = strconv.FormatFloat(mathRound(*ov), 'f', 2, 64)
+	}
+	// 金额为 0 不再拒绝：月付价为 0 的免费商品同样要能续费（0 元单由调用方直接核销并延期）。
+	// 季/年付为 0 属于"未配置该周期"，已在上面拦掉，不会走到这里。
+	// 配置快照落库：续费前比价要用"下单时的成本额"（quote.total）当基准，
+	// 缺失会让上游涨价时无从核对。
+	snap, err = json.Marshal(map[string]any{"quote": quote, "selection": selection})
+	if err != nil {
+		return 0, 0, "", err
 	}
 
 	err = tx.QueryRowContext(ctx,
-		`INSERT INTO orders(user_id,product_id,priceset_id,cycle,amount,service_id,identity_required) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
-		userID, productID, psID, cycle, amountRaw, serviceID, requiresIdentity).Scan(&orderID)
+		`INSERT INTO orders(user_id,product_id,priceset_id,cycle,amount,service_id,identity_required,config_snapshot)
+		 VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+		userID, productID, psID, cycle, amountRaw, serviceID, requiresIdentity, snap).Scan(&orderID)
 	if err != nil {
 		return 0, 0, "", err
 	}
@@ -394,8 +448,8 @@ func (o *Orders) CreateRenewOrder(ctx context.Context, userID, serviceID int64, 
 		return 0, 0, "", err
 	}
 	err = tx.QueryRowContext(ctx,
-		`INSERT INTO invoices(no,user_id,order_id,amount) VALUES($1,$2,$3,$4) RETURNING id`,
-		no, userID, orderID, amountRaw).Scan(&invoiceID)
+		`INSERT INTO invoices(no,user_id,order_id,amount,due_at) VALUES($1,$2,$3,$4,now()+$5::interval) RETURNING id`,
+		no, userID, orderID, amountRaw, invoiceDueInterval).Scan(&invoiceID)
 	if err != nil {
 		return 0, 0, "", err
 	}
@@ -412,6 +466,14 @@ func (o *Orders) CreateUpgradeOrder(ctx context.Context, userID, serviceID, targ
 	col, ok := cycleCol[cycle]
 	if !ok {
 		return 0, 0, "", 0, fmt.Errorf("无效的计费周期: %s", cycle)
+	}
+	// 上游实时价格校验：与新购下单同一套逻辑，必须先确认目标商品的本地价没落后于上游，
+	// 否则差价按旧价算出来、到开通时才被上游账单打回（转人工）。放在事务之外——事务内不做网络调用。
+	// 只校验目标商品：当前商品是已购的，价格在下单时就已锁定。
+	if o.Upstream != nil {
+		if err := o.Upstream.VerifyBeforeOrder(ctx, targetProductID, cycle, selection); err != nil {
+			return 0, 0, "", 0, err
+		}
 	}
 	tx, err := o.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -467,10 +529,10 @@ func (o *Orders) CreateUpgradeOrder(ctx context.Context, userID, serviceID, targ
 	if err := tx.QueryRowContext(ctx,
 		`SELECT coalesce(sv.server_id, p.server_id) FROM services sv JOIN products p ON p.id=sv.product_id WHERE sv.id=$1`,
 		serviceID).Scan(&curServerID); err != nil || !curServerID.Valid {
-		return 0, 0, "", 0, fmt.Errorf("服务未绑定上游，无法升降级")
+		return 0, 0, "", 0, fmt.Errorf("该服务暂不支持升降级")
 	}
 	if !targetRepo.ServerID.Valid || targetRepo.ServerID.Int64 != curServerID.Int64 {
-		return 0, 0, "", 0, fmt.Errorf("目标产品与当前服务不在同一上游，无法升降级")
+		return 0, 0, "", 0, fmt.Errorf("目标产品与当前服务不匹配，无法升降级")
 	}
 
 	var requiresIdentity bool
@@ -559,8 +621,8 @@ func (o *Orders) CreateUpgradeOrder(ctx context.Context, userID, serviceID, targ
 		return 0, 0, "", 0, err
 	}
 	err = tx.QueryRowContext(ctx,
-		`INSERT INTO invoices(no,user_id,order_id,amount) VALUES($1,$2,$3,$4) RETURNING id`,
-		no, userID, orderID, orderAmount).Scan(&invoiceID)
+		`INSERT INTO invoices(no,user_id,order_id,amount,due_at) VALUES($1,$2,$3,$4,now()+$5::interval) RETURNING id`,
+		no, userID, orderID, orderAmount, invoiceDueInterval).Scan(&invoiceID)
 	if err != nil {
 		return 0, 0, "", 0, err
 	}

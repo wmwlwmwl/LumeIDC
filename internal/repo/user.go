@@ -24,6 +24,27 @@ type User struct {
 
 type Users struct{ db *sql.DB }
 
+func (u *Users) Profile(ctx context.Context, userID int64) (*User, error) {
+	var profile User
+	var email sql.NullString
+	var phoneVerified bool
+	err := u.db.QueryRowContext(ctx, `SELECT id,email,name,balance,email_verified,coalesce(phone_e164,''),phone_verified_at IS NOT NULL FROM users WHERE id=$1 AND status=1`, userID).Scan(&profile.ID, &email, &profile.Name, &profile.Balance, &profile.Verified, &profile.Phone, &phoneVerified)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	profile.Email = email.String
+	profile.PhoneVerified = phoneVerified
+	return &profile, nil
+}
+
+func (u *Users) UpdateProfile(ctx context.Context, userID int64, name, email string) error {
+	_, err := u.db.ExecContext(ctx, `UPDATE users SET name=$1,email=$2,email_verified=CASE WHEN email IS DISTINCT FROM $2 THEN false ELSE email_verified END,verify_token='',verify_token_created_at=NULL WHERE id=$3 AND status=1`, name, email, userID)
+	return err
+}
+
 // NormalizeEmail 只接受纯邮箱地址并统一为小写，拒绝带显示名的地址。
 func NormalizeEmail(raw string) (string, error) {
 	email := strings.ToLower(strings.TrimSpace(raw))
@@ -104,6 +125,16 @@ func (u *Users) PasswordHash(ctx context.Context, userID int64) ([]byte, error) 
 		return nil, ErrNotFound
 	}
 	return hash, err
+}
+
+// EmailByID 用户邮箱；不存在返回 ErrNotFound（后台换绑服务时校验目标用户）。
+func (u *Users) EmailByID(ctx context.Context, userID int64) (string, error) {
+	var email sql.NullString
+	err := u.db.QueryRowContext(ctx, `SELECT email FROM users WHERE id=$1 AND status=1`, userID).Scan(&email)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	return email.String, err
 }
 
 func (u *Users) MarkPhoneVerified(ctx context.Context, userID int64) error {

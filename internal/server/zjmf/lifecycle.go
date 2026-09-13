@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/url"
 	"strconv"
 	"strings"
@@ -47,6 +48,7 @@ func parseHostDetail(data map[string]json.RawMessage) (server.HostDetail, error)
 			OS           string `json:"os"`
 			BWLimit      any    `json:"bwlimit"`
 			BWUsage      any    `json:"bwusage"`
+			ExpiryAt     any    `json:"nextduedate"`
 		} `json:"host_data"`
 		ConfigOptions []struct {
 			NameK   string `json:"name_k"`
@@ -76,6 +78,7 @@ func parseHostDetail(data map[string]json.RawMessage) (server.HostDetail, error)
 	detail.AdditionalIPs = anyToStrSlice(hd.AssignedIPs)
 	detail.BWLimit = anyToStr(hd.BWLimit)
 	detail.BWUsage = anyToStr(hd.BWUsage)
+	detail.ExpiryAt = anyToStr(hd.ExpiryAt)
 	// 系统名称取自操作系统配置子项的 os_group（如 Ubuntu）；数据中心从配置项里识别。
 	for _, o := range out.ConfigOptions {
 		if o.NameK == "os" {
@@ -157,36 +160,83 @@ func domainStatusText(s string) string {
 	return s
 }
 
-func (p Provider) Renew(ctx context.Context, cfg server.Config, upstreamHostID int64, cycle string) error {
+func (p Provider) Renew(ctx context.Context, cfg server.Config, upstreamHostID int64, cycle string, ck server.CheckpointStore) error {
 	cycle, ok := cycleMap[cycle]
 	if !ok {
 		return fmt.Errorf("不支持的计费周期: %s", cycle)
 	}
-	form := url.Values{
-		"hostid":        {strconv.FormatInt(upstreamHostID, 10)},
-		"billingcycles": {cycle},
+	// 步骤1: 复用已建的续费账单；没有才去上游新建（/host/renew 只建账单不建订单）。
+	var invoiceID string
+	if ck != nil {
+		v, ok, err := ck.GetCheckpoint(ckRenewInvoice)
+		if err != nil {
+			return fmt.Errorf("读取续费账单检查点失败: %w", err)
+		}
+		if ok {
+			invoiceID = v
+		}
 	}
-	// 步骤1: 上游创建续费账单（/host/renew 只建账单不建订单），解析返回的账单号。
-	var ren struct {
-		Data struct {
-			InvoiceID flexString `json:"invoiceid"`
-		} `json:"data"`
-	}
-	if err := postForm(ctx, cfg, "/host/renew", form, &ren); err != nil {
-		return fmt.Errorf("上游续费下单失败: %w", err)
-	}
-	invoiceID := string(ren.Data.InvoiceID)
 	if invoiceID == "" {
-		return fmt.Errorf("上游续费未返回账单号，无法支付")
+		form := url.Values{
+			"hostid":        {strconv.FormatInt(upstreamHostID, 10)},
+			"billingcycles": {cycle},
+		}
+		var ren struct {
+			Data struct {
+				InvoiceID flexString `json:"invoiceid"`
+			} `json:"data"`
+		}
+		if err := postForm(ctx, cfg, "/host/renew", form, &ren); err != nil {
+			return fmt.Errorf("续费下单失败: %w", err)
+		}
+		invoiceID = string(ren.Data.InvoiceID)
+		if !validInvoiceID(invoiceID) {
+			// 上游未生成账单 = 无需付款（0 元商品的续费上游直接续期生效）。
+			// 必须按成功处理，不能当失败重试：每重试一次 /host/renew 都会让上游再多续一期。
+			log.Printf("[zjmf] host %d 续费未返回账单（invoiceid=%q），按上游已直接续期处理", upstreamHostID, invoiceID)
+			return nil
+		}
+		if ck != nil {
+			if err := ck.SetCheckpoint(ckRenewInvoice, invoiceID); err != nil {
+				// 账单已建但检查点没落库：重试会再建一张，交人工而不是硬重试。
+				return &server.ManualReviewError{
+					Msg:               fmt.Sprintf("保存续费账单检查点失败（已建账单 invoice=%s）: %v", invoiceID, err),
+					UpstreamInvoiceID: invoiceID,
+				}
+			}
+		}
 	}
 	// 步骤2: 用余额支付该续费账单（与开通 apply_credit 一致），使续费真正生效。
-	payForm := url.Values{
+	if err := postForm(ctx, cfg, "/apply_credit", url.Values{
 		"invoiceid":  {invoiceID},
 		"use_credit": {"1"},
 		"enough":     {"1"},
+	}, &map[string]any{}); err != nil {
+		// 账单已失效（被删除/作废）→ 重试永远付不掉：清掉检查点让重试时重新建单，并转人工。
+		if unusable, perr := upstreamInvoiceUnusable(ctx, cfg, invoiceID); perr != nil {
+			log.Printf("[zjmf] 查询上游续费账单 %s 状态失败: %v", invoiceID, perr)
+		} else if unusable {
+			if ck != nil {
+				if derr := ck.DeleteCheckpoint(ckRenewInvoice); derr != nil {
+					log.Printf("[zjmf] 清除失效续费账单检查点失败（invoice %s）: %v", invoiceID, derr)
+				}
+			}
+			return &server.ManualReviewError{
+				Msg: fmt.Sprintf("上游续费账单 %s 已失效（不存在或已作废），已清除其检查点，"+
+					"请确认上游无残留订单后重试: %v", invoiceID, err),
+				UpstreamInvoiceID: invoiceID,
+			}
+		}
+		// 账单还在（多为上游余额不足）：保持重试、不消耗重试次数，充值到账后自动付掉。
+		return &server.RetryLaterError{
+			Msg: fmt.Sprintf("上游续费账单 %s 支付失败（请检查上游余额）: %v", invoiceID, err),
+		}
 	}
-	if err := postForm(ctx, cfg, "/apply_credit", payForm, &map[string]any{}); err != nil {
-		return fmt.Errorf("上游续费账单支付失败（请检查上游余额）: %w", err)
+	// 续费成功：清掉账单检查点，否则下次续费（新订单）会误复用这张已付账单。
+	if ck != nil {
+		if err := ck.DeleteCheckpoint(ckRenewInvoice); err != nil {
+			log.Printf("[zjmf] 清除续费账单检查点失败（host %d，invoice %s）: %v", upstreamHostID, invoiceID, err)
+		}
 	}
 	return nil
 }

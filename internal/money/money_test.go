@@ -19,6 +19,35 @@ func TestParsePositive(t *testing.T) {
 	}
 }
 
+func TestParseNonNegative(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		ok   bool
+		want string
+	}{
+		{"0", true, "0.00"}, {"0.00", true, "0.00"}, {"10", true, "10.00"},
+		{"10.5", true, "10.50"}, {"-1", false, ""}, {"", false, ""},
+		{"1.234", false, ""}, {"abc", false, ""},
+	} {
+		got, _, err := ParseNonNegative(tc.in, 999999999999)
+		if (err == nil) != tc.ok {
+			t.Fatalf("ParseNonNegative(%q) ok=%v, want %v", tc.in, err == nil, tc.ok)
+		}
+		if tc.ok && got != tc.want {
+			t.Fatalf("ParseNonNegative(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestFormatCents(t *testing.T) {
+	if got := FormatCents(0); got != "0.00" {
+		t.Fatalf("FormatCents(0) = %q", got)
+	}
+	if got := FormatCents(1234); got != "12.34" {
+		t.Fatalf("FormatCents(1234) = %q", got)
+	}
+}
+
 func TestParsePositiveKeepsTwoDecimalPlaces(t *testing.T) {
 	for in, want := range map[string]string{"0.01": "0.01", "0.10": "0.10", "12.5": "12.50"} {
 		got, _, err := ParsePositive(in, 999999999999)

@@ -2,10 +2,7 @@ package handler
 
 import (
 	"context"
-	"crypto/rand"
-	"embed"
 	"encoding/base64"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
@@ -17,9 +14,6 @@ import (
 	"lumeidc/internal/repo"
 	"lumeidc/internal/service"
 )
-
-//go:embed templates/auth.html
-var authFS embed.FS
 
 type Auth struct {
 	Users        *repo.Users
@@ -34,12 +28,11 @@ type Auth struct {
 }
 
 func (h *Auth) Register(mux *http.ServeMux) {
-	mux.HandleFunc("GET /register", h.registerForm)
+	// 登录/注册页现由前台 SPA 承载，仅保留 JSON 接口。
 	mux.HandleFunc("POST /register", h.registerSubmit)
 	mux.HandleFunc("POST /auth/register-code", h.registerCode)
 	mux.HandleFunc("GET /captcha", h.captchaImage)
 	mux.HandleFunc("GET /auth/captcha/config", h.externalCaptchaConfig)
-	mux.HandleFunc("GET /login", h.loginForm)
 	mux.HandleFunc("POST /login", h.loginSubmit)
 	mux.HandleFunc("POST /auth/phone-code", h.phoneCode)
 	mux.HandleFunc("POST /auth/login-by-code", h.loginByPhoneCode)
@@ -52,50 +45,6 @@ func (h *Auth) settingOn(ctx context.Context, key string, fallback bool) bool {
 		return fallback
 	}
 	return h.Settings.Bool(ctx, key, fallback)
-}
-
-func (h *Auth) authFormData(ctx context.Context, w http.ResponseWriter, r *http.Request, register bool) map[string]any {
-	data := map[string]any{"CSRF": csrfOf(h.Sessions, w, r)}
-	if register {
-		data["CaptchaScene"] = "register"
-		data["EmailRegistrationEnabled"] = h.settingOn(ctx, "registration_email_enabled", true)
-		data["PhoneRegistrationEnabled"] = h.settingOn(ctx, "registration_phone_enabled", false)
-		data["EmailVerificationRequired"] = h.settingOn(ctx, "registration_email_verification_required", false)
-		data["PhoneVerificationRequired"] = h.settingOn(ctx, "registration_phone_verification_required", true)
-		data["RegistrationShowAllMethods"] = h.settingOn(ctx, "registration_show_all_methods", false)
-		emailForce := h.settingOn(ctx, "registration_email_verification_required", false)
-		phoneForce := h.settingOn(ctx, "registration_phone_verification_required", true)
-		localRegister := h.LocalCaptcha != nil && h.LocalCaptcha.Enabled(ctx, "register")
-		externalRegister := h.Captcha != nil && h.Captcha.ExternalRequested(ctx, "register")
-		data["CaptchaRegisterEnabled"] = localRegister
-		data["EmailDirectCaptchaEnabled"] = !emailForce && localRegister
-		data["PhoneDirectCaptchaEnabled"] = !phoneForce && localRegister
-		data["EmailExternalCaptcha"] = !emailForce && externalRegister
-		data["PhoneExternalCaptcha"] = !phoneForce && externalRegister
-		data["CaptchaEmailCodeEnabled"] = emailForce || (h.LocalCaptcha != nil && h.LocalCaptcha.Enabled(ctx, "email_code"))
-		data["CaptchaPhoneCodeEnabled"] = phoneForce || (h.LocalCaptcha != nil && h.LocalCaptcha.Enabled(ctx, "phone_code"))
-		data["ExternalRegisterCaptcha"] = externalRegister
-	} else {
-		data["CaptchaScene"] = "login"
-		data["CaptchaLoginEnabled"] = h.LocalCaptcha != nil && h.LocalCaptcha.Enabled(ctx, "login")
-		data["ExternalLoginCaptcha"] = h.Captcha != nil && h.Captcha.ExternalRequested(ctx, "login")
-		data["ExternalPhoneLoginCaptcha"] = h.Captcha != nil && h.Captcha.ExternalRequested(ctx, "phone_login_code")
-	}
-	data["PhoneOTPLoginEnabled"] = h.settingOn(ctx, "login_phone_otp_enabled", false)
-	data["CaptchaPhoneCodeEnabled"] = h.LocalCaptcha != nil && h.LocalCaptcha.Enabled(ctx, "phone_code")
-	data["CaptchaAdminLoginEnabled"] = h.LocalCaptcha != nil && h.LocalCaptcha.Enabled(ctx, "admin_login")
-	return data
-}
-
-func (h *Auth) registerForm(w http.ResponseWriter, r *http.Request) {
-	data := h.authFormData(r.Context(), w, r, true)
-	data["IsRegister"] = true
-	h.renderAuth(w, data)
-}
-func (h *Auth) loginForm(w http.ResponseWriter, r *http.Request) {
-	data := h.authFormData(r.Context(), w, r, false)
-	data["Next"] = safeNext(r.URL.Query().Get("next"))
-	h.renderAuth(w, data)
 }
 
 func (h *Auth) captchaImage(w http.ResponseWriter, r *http.Request) {
@@ -146,7 +95,27 @@ func (h *Auth) registerSettings(ctx context.Context) (bool, bool, bool, bool) {
 	return h.settingOn(ctx, "registration_email_enabled", true), h.settingOn(ctx, "registration_phone_enabled", false), h.settingOn(ctx, "registration_email_verification_required", false), h.settingOn(ctx, "registration_phone_verification_required", true)
 }
 
-func (h *Auth) captchaCheck(ctx context.Context, scene string, r *http.Request, forceLocal bool) error {
+// jsonVals 在 SPA（Accept: application/json）时把请求体解析为字段表返回，否则返回 nil。
+// SSR（浏览器导航）沿用 PostFormValue 惰性解析，不受影响。
+func jsonVals(r *http.Request) map[string]string {
+	if !wantsJSON(r) {
+		return nil
+	}
+	vals, err := bodyValues(r)
+	if err != nil {
+		return map[string]string{}
+	}
+	return vals
+}
+
+// captchaCheckVals 支持 SPA JSON 请求体：vals 为空时回退 r.PostFormValue。
+func (h *Auth) captchaCheckVals(ctx context.Context, scene string, r *http.Request, forceLocal bool, vals map[string]string) error {
+	fv := func(k string) string {
+		if vals != nil {
+			return vals[k]
+		}
+		return r.PostFormValue(k)
+	}
 	if scene == "client_register" {
 		scene = "register"
 	}
@@ -161,12 +130,12 @@ func (h *Auth) captchaCheck(ctx context.Context, scene string, r *http.Request, 
 		if h.LocalCaptcha == nil {
 			return errors.New("图形验证码服务未配置")
 		}
-		id, answer := r.PostFormValue("captcha_id"), r.PostFormValue("captcha_answer")
+		id, answer := fv("captcha_id"), fv("captcha_answer")
 		if localScene == "email_code" || localScene == "phone_code" {
-			if v := r.PostFormValue("captcha_id_code"); v != "" {
+			if v := fv("captcha_id_code"); v != "" {
 				id = v
 			}
-			if v := r.PostFormValue("captcha_answer_code"); v != "" {
+			if v := fv("captcha_answer_code"); v != "" {
 				answer = v
 			}
 		}
@@ -178,7 +147,7 @@ func (h *Auth) captchaCheck(ctx context.Context, scene string, r *http.Request, 
 		return errors.New("本地与外部验证码配置冲突")
 	}
 	if localEnabled {
-		return h.LocalCaptcha.Verify(ctx, localScene, r.PostFormValue("captcha_id"), r.PostFormValue("captcha_answer"), requestIP(r))
+		return h.LocalCaptcha.Verify(ctx, localScene, fv("captcha_id"), fv("captcha_answer"), requestIP(r))
 	}
 	if !externalRequested {
 		return nil
@@ -190,7 +159,7 @@ func (h *Auth) captchaCheck(ctx context.Context, scene string, r *http.Request, 
 	payload := map[string]string{}
 	limits := map[string]int{"captcha_token": 4096, "lot_number": 256, "captcha_output": 8192, "pass_token": 8192, "gen_time": 64, "knock": 4096, "dfu": 1024, "ip": 64}
 	for k, max := range limits {
-		v := r.PostFormValue(k)
+		v := fv(k)
 		if len(v) > max || strings.ContainsAny(v, "\x00\r\n") {
 			return errors.New("验证码参数无效")
 		}
@@ -202,10 +171,17 @@ func (h *Auth) captchaCheck(ctx context.Context, scene string, r *http.Request, 
 
 func (h *Auth) registerCode(w http.ResponseWriter, r *http.Request) {
 	if h.Challenges == nil {
-		http.Error(w, "验证码服务未配置", 503)
+		jsonStatus(w, r, 503, "验证码服务未配置")
 		return
 	}
-	mode := r.PostFormValue("mode")
+	vals := jsonVals(r)
+	fv := func(k string) string {
+		if vals != nil {
+			return vals[k]
+		}
+		return r.PostFormValue(k)
+	}
+	mode := fv("mode")
 	scene := "email_code"
 	force := false
 	if mode == "email" {
@@ -214,44 +190,51 @@ func (h *Auth) registerCode(w http.ResponseWriter, r *http.Request) {
 		scene = "phone_code"
 		force = h.settingOn(r.Context(), "registration_phone_verification_required", true)
 	} else {
-		http.Error(w, "注册方式无效", 400)
+		jsonStatus(w, r, 400, "注册方式无效")
 		return
 	}
-	if err := h.captchaCheck(r.Context(), scene, r, force); err != nil {
-		http.Error(w, "请完成图形验证码后再获取验证码", 403)
+	if err := h.captchaCheckVals(r.Context(), scene, r, force, vals); err != nil {
+		jsonStatus(w, r, 403, "请完成图形验证码后再获取验证码")
 		return
 	}
 	if mode == "email" {
-		email, e := repo.NormalizeEmail(r.PostFormValue("email"))
+		email, e := repo.NormalizeEmail(fv("email"))
 		if e != nil {
-			http.Error(w, "邮箱格式不正确", 400)
+			jsonStatus(w, r, 400, "邮箱格式不正确")
 			return
 		}
 		if h.Notifier == nil || !h.Notifier.EmailEnabled(r.Context()) {
-			http.Error(w, "邮件服务未配置", 503)
+			jsonStatus(w, r, 503, "邮件服务未配置")
 			return
 		}
 		if e = h.Challenges.Issue(r.Context(), "email", "register", email, requestIP(r)); e != nil {
-			http.Error(w, "验证码发送失败，请稍后重试", 502)
+			jsonStatus(w, r, 502, "验证码发送失败，请稍后重试")
 			return
 		}
 	} else {
-		phone, e := service.NormalizePhone(r.PostFormValue("phone"))
+		phone, e := service.NormalizePhone(fv("phone"))
 		if e != nil {
-			http.Error(w, "手机号格式不正确", 400)
+			jsonStatus(w, r, 400, "手机号格式不正确")
 			return
 		}
 		if e = h.Challenges.Issue(r.Context(), "phone", "register", phone, requestIP(r)); e != nil {
-			http.Error(w, "验证码发送失败，请稍后重试", 502)
+			jsonStatus(w, r, 502, "验证码发送失败，请稍后重试")
 			return
 		}
 	}
-	http.Error(w, "验证码已发送", 202)
+	jsonStatus(w, r, 202, "验证码已发送")
 }
 
 func (h *Auth) registerSubmit(w http.ResponseWriter, r *http.Request) {
+	vals := jsonVals(r)
+	fv := func(k string) string {
+		if vals != nil {
+			return vals[k]
+		}
+		return r.PostFormValue(k)
+	}
 	emailEnabled, phoneEnabled, emailVerify, phoneVerify := h.registerSettings(r.Context())
-	mode := strings.ToLower(strings.TrimSpace(r.PostFormValue("mode")))
+	mode := strings.ToLower(strings.TrimSpace(fv("mode")))
 	if mode == "" {
 		mode = "email"
 	}
@@ -263,7 +246,7 @@ func (h *Auth) registerSubmit(w http.ResponseWriter, r *http.Request) {
 		h.renderRegisterError(w, r, "手机号注册未启用")
 		return
 	}
-	email, phone := strings.TrimSpace(r.PostFormValue("email")), strings.TrimSpace(r.PostFormValue("phone"))
+	email, phone := strings.TrimSpace(fv("email")), strings.TrimSpace(fv("phone"))
 	var err error
 	if mode == "email" {
 		email, err = repo.NormalizeEmail(email)
@@ -280,8 +263,8 @@ func (h *Auth) registerSubmit(w http.ResponseWriter, r *http.Request) {
 		}
 		email = ""
 	}
-	pass := r.PostFormValue("password")
-	if len(pass) < 8 || pass != r.PostFormValue("password_confirm") {
+	pass := fv("password")
+	if len(pass) < 8 || pass != fv("password_confirm") {
 		h.renderRegisterError(w, r, "密码至少 8 位且两次输入必须一致")
 		return
 	}
@@ -291,86 +274,105 @@ func (h *Auth) registerSubmit(w http.ResponseWriter, r *http.Request) {
 		if mode == "email" {
 			ch, dest = "email", email
 		}
-		if h.Challenges == nil || h.Challenges.Verify(r.Context(), ch, "register", dest, r.PostFormValue("code")) != nil {
+		if h.Challenges == nil || h.Challenges.Verify(r.Context(), ch, "register", dest, fv("code")) != nil {
 			h.renderRegisterError(w, r, "验证码错误或已过期")
 			return
 		}
-	} else if err := h.captchaCheck(r.Context(), "register", r, h.settingOn(r.Context(), "captcha_register_enabled", false)); err != nil {
+	} else if err := h.captchaCheckVals(r.Context(), "register", r, h.settingOn(r.Context(), "captcha_register_enabled", false), vals); err != nil {
 		h.renderRegisterError(w, r, "请完成图形验证码后再注册")
 		return
 	}
-	id, err := h.Users.CreateAccount(r.Context(), email, phone, pass, strings.TrimSpace(r.PostFormValue("name")), mode == "phone" && phoneVerify)
+	id, err := h.Users.CreateAccount(r.Context(), email, phone, pass, strings.TrimSpace(fv("name")), mode == "phone" && phoneVerify)
 	if err != nil {
 		h.renderRegisterError(w, r, "注册失败：账号可能已被占用")
 		return
 	}
 	if err = h.Users.MarkVerified(r.Context(), id); err != nil {
-		http.Error(w, "注册完成失败", 500)
+		jsonStatus(w, r, 500, "注册完成失败")
 		return
 	}
 	sess := h.Sessions.Start(r, w)
 	sess.UserID = id
+	if wantsJSON(r) {
+		writeJSON(w, map[string]any{"ok": 1})
+		return
+	}
 	http.Redirect(w, r, "/", 303)
 }
 func (h *Auth) renderRegisterError(w http.ResponseWriter, r *http.Request, msg string) {
-	data := h.authFormData(r.Context(), w, r, true)
-	data["IsRegister"] = true
-	data["Error"] = msg
-	h.renderAuth(w, data)
+	writeJSON(w, map[string]any{"ok": 0, "msg": msg})
 }
 
 func (h *Auth) phoneCode(w http.ResponseWriter, r *http.Request) {
 	if !h.settingOn(r.Context(), "login_phone_otp_enabled", false) {
-		http.Error(w, "手机号验证码登录未启用", 403)
+		jsonStatus(w, r, 403, "手机号验证码登录未启用")
 		return
 	}
 	if h.Challenges == nil {
-		http.Error(w, "短信服务未配置", 503)
+		jsonStatus(w, r, 503, "短信服务未配置")
 		return
 	}
-	phone, e := service.NormalizePhone(r.PostFormValue("phone"))
+	vals := jsonVals(r)
+	fv := func(k string) string {
+		if vals != nil {
+			return vals[k]
+		}
+		return r.PostFormValue(k)
+	}
+	phone, e := service.NormalizePhone(fv("phone"))
 	if e != nil {
-		http.Error(w, "手机号格式不正确", 400)
+		jsonStatus(w, r, 400, "手机号格式不正确")
 		return
 	}
-	if e = h.captchaCheck(r.Context(), "phone_login_code", r, false); e != nil {
-		http.Error(w, "请完成图形验证码后再获取验证码", 403)
+	if e = h.captchaCheckVals(r.Context(), "phone_login_code", r, false, vals); e != nil {
+		jsonStatus(w, r, 403, "请完成图形验证码后再获取验证码")
 		return
 	}
 	user, _, e := h.Users.ByPhone(r.Context(), phone)
 	if e != nil || user == nil || !user.PhoneVerified {
-		http.Error(w, "如果手机号已绑定且可用，验证码将发送到手机", 202)
+		jsonStatus(w, r, 202, "如果手机号已绑定且可用，验证码将发送到手机")
 		return
 	}
 	if e = h.Challenges.Issue(r.Context(), "phone", "login", phone, requestIP(r)); e != nil {
-		http.Error(w, "验证码发送失败，请稍后重试", 502)
+		jsonStatus(w, r, 502, "验证码发送失败，请稍后重试")
 		return
 	}
-	http.Error(w, "验证码已发送", 202)
+	jsonStatus(w, r, 202, "验证码已发送")
 }
 func (h *Auth) loginByPhoneCode(w http.ResponseWriter, r *http.Request) {
 	if !h.settingOn(r.Context(), "login_phone_otp_enabled", false) {
-		http.Error(w, "手机号验证码登录未启用", 403)
+		jsonStatus(w, r, 403, "手机号验证码登录未启用")
 		return
 	}
 	if h.Challenges == nil {
-		http.Error(w, "短信服务未配置", 503)
+		jsonStatus(w, r, 503, "短信服务未配置")
 		return
 	}
-	phone, e := service.NormalizePhone(r.PostFormValue("phone"))
-	if e != nil || h.Challenges.Verify(r.Context(), "phone", "login", phone, r.PostFormValue("code")) != nil {
-		http.Error(w, "手机号或验证码错误", 401)
+	vals := jsonVals(r)
+	fv := func(k string) string {
+		if vals != nil {
+			return vals[k]
+		}
+		return r.PostFormValue(k)
+	}
+	phone, e := service.NormalizePhone(fv("phone"))
+	if e != nil || h.Challenges.Verify(r.Context(), "phone", "login", phone, fv("code")) != nil {
+		jsonStatus(w, r, 401, "手机号或验证码错误")
 		return
 	}
 	user, _, e := h.Users.ByPhone(r.Context(), phone)
 	if e != nil || user == nil || !user.Verified {
-		http.Error(w, "手机号或验证码错误", 401)
+		jsonStatus(w, r, 401, "手机号或验证码错误")
 		return
 	}
 	_ = h.Users.TouchLogin(r.Context(), user.ID)
 	sess := h.Sessions.Start(r, w)
 	sess.UserID = user.ID
-	http.Redirect(w, r, safeNext(r.PostFormValue("next")), 303)
+	if wantsJSON(r) {
+		writeJSON(w, map[string]any{"ok": 1})
+		return
+	}
+	http.Redirect(w, r, safeNext(fv("next")), 303)
 }
 func (h *Auth) verifyEmail(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -383,17 +385,22 @@ func (h *Auth) verifyEmail(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, verifyPageHTML, msg)
 }
 func (h *Auth) loginError(w http.ResponseWriter, r *http.Request, status int, msg string) {
-	data := h.authFormData(r.Context(), w, r, false)
-	data["Error"] = msg
 	w.WriteHeader(status)
-	h.renderAuth(w, data)
+	writeJSON(w, map[string]any{"ok": 0, "msg": msg})
 }
 func (h *Auth) loginSubmit(w http.ResponseWriter, r *http.Request) {
-	if e := h.captchaCheck(r.Context(), "login", r, false); e != nil {
+	vals := jsonVals(r)
+	fv := func(k string) string {
+		if vals != nil {
+			return vals[k]
+		}
+		return r.PostFormValue(k)
+	}
+	if e := h.captchaCheckVals(r.Context(), "login", r, false, vals); e != nil {
 		h.loginError(w, r, 401, "请完成验证码后再登录")
 		return
 	}
-	identifier := strings.TrimSpace(r.PostFormValue("email"))
+	identifier := strings.TrimSpace(fv("email"))
 	lock := strings.ToLower(identifier)
 	if h.Lockout != nil {
 		if locked, e := h.Lockout.Locked(r.Context(), lock); e == nil && locked {
@@ -419,7 +426,7 @@ func (h *Auth) loginSubmit(w http.ResponseWriter, r *http.Request) {
 			lock = phone
 		}
 	}
-	if e != nil || u == nil || !h.Users.VerifyPassword(hash, r.PostFormValue("password")) {
+	if e != nil || u == nil || !h.Users.VerifyPassword(hash, fv("password")) {
 		if h.Lockout != nil {
 			_ = h.Lockout.Fail(r.Context(), lock)
 		}
@@ -437,10 +444,18 @@ func (h *Auth) loginSubmit(w http.ResponseWriter, r *http.Request) {
 	_ = h.Users.TouchLogin(r.Context(), u.ID)
 	sess := h.Sessions.Start(r, w)
 	sess.UserID = u.ID
-	http.Redirect(w, r, safeNext(r.PostFormValue("next")), 303)
+	if wantsJSON(r) {
+		writeJSON(w, map[string]any{"ok": 1})
+		return
+	}
+	http.Redirect(w, r, safeNext(fv("next")), 303)
 }
 func (h *Auth) logout(w http.ResponseWriter, r *http.Request) {
 	h.Sessions.Destroy(r, w)
+	if wantsJSON(r) {
+		writeJSON(w, map[string]any{"ok": 1})
+		return
+	}
 	http.Redirect(w, r, "/login", 303)
 }
 func safeNext(next string) string {
@@ -456,13 +471,6 @@ func csrfOf(s *middleware.Store, w http.ResponseWriter, r *http.Request) string 
 	ns := s.Start(r, w)
 	*r = *r.WithContext(middleware.WithSession(r.Context(), ns))
 	return ns.CSRFToken()
-}
-func genToken() string {
-	b := make([]byte, 16)
-	if _, e := rand.Read(b); e != nil {
-		return ""
-	}
-	return hex.EncodeToString(b)
 }
 
 const verifyPageHTML = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>邮箱验证</title></head><body><h1>LumeIDC</h1><p>%s</p><p><a href="/login">前往登录</a></p></body></html>`

@@ -2,11 +2,12 @@ package handler
 
 import (
 	"context"
-	"embed"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"html"
 	"html/template"
+	"log"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -17,14 +18,12 @@ import (
 	"lumeidc/internal/middleware"
 	"lumeidc/internal/repo"
 	"lumeidc/internal/service"
+	"lumeidc/internal/storage"
 )
 
-//go:embed templates/site.html templates/products.html templates/service_list.html templates/buy.html templates/user_recharge.html
-//go:embed templates/user_home.html templates/user_invoices.html templates/user_password.html templates/service_detail.html templates/user_profile.html templates/user_verification.html
-//go:embed templates/user_notifications.html templates/notfound.html templates/service_upgrade.html
-var siteFS embed.FS
-
 type Pages struct {
+	DB            *sql.DB
+	PrivateFiles  *storage.PrivateFiles
 	Products      *repo.Products
 	Svc           *service.ServicesRepo
 	Orders        *service.Orders
@@ -36,8 +35,8 @@ type Pages struct {
 	Announcements *repo.Announcements
 	Settings      *repo.Settings
 	Invoices      *repo.Invoices
-	Lifecycle     *service.Lifecycle
-	Payment       *service.Payment // 降级 0 元单余额核销用
+	CancelReqs    *repo.CancelRequests // 用户停用申请
+	Payment       *service.Payment     // 降级 0 元单余额核销用
 	*Deps
 }
 
@@ -52,14 +51,19 @@ func (h *Pages) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /user/recharge", h.rechargeSubmit)
 	mux.HandleFunc("GET /user/invoices", h.userInvoices)
 	mux.HandleFunc("GET /services/{serviceID}", h.serviceDetail)
+	mux.HandleFunc("POST /services/{serviceID}/refresh", h.serviceRefresh)
+	mux.HandleFunc("GET /services/{serviceID}/invoices", h.serviceInvoices)
 	mux.HandleFunc("POST /services/{serviceID}/renew", h.serviceRenew)
 	mux.HandleFunc("POST /services/{serviceID}/name", h.serviceRename)
 	mux.HandleFunc("GET /services/{serviceID}/upgrade", h.serviceUpgradeForm)
 	mux.HandleFunc("POST /services/{serviceID}/upgrade", h.serviceUpgradeOrder)
-	mux.HandleFunc("POST /services/{serviceID}/cancel", h.serviceCancel)
+	mux.HandleFunc("POST /services/{serviceID}/cancel-request", h.serviceCancelRequestSubmit)
+	mux.HandleFunc("GET /services/{serviceID}/cancel-request", h.serviceCancelRequestInfo)
+	mux.HandleFunc("POST /services/{serviceID}/cancel-request/withdraw", h.serviceCancelRequestWithdraw)
 	mux.HandleFunc("POST /services/{serviceID}/console", h.consoleAction)
-	// VNC 页面使用 GET；其他控制台动作由 handler 拒绝 GET。
-	mux.HandleFunc("GET /services/{serviceID}/console", h.consoleAction)
+	// VNC 控制台页面由 SPA 承载（/services/{id}/console），后端只保留隧道与会话密码。
+	mux.HandleFunc("GET /services/{serviceID}/vnc-ws", h.vncWebSocket)
+	mux.HandleFunc("GET /services/{serviceID}/vnc-pass", h.serviceVncPass)
 	mux.HandleFunc("GET /services/{serviceID}/chart", h.serviceChart)
 	mux.HandleFunc("GET /services/{serviceID}/usage", h.serviceUsage)
 	mux.HandleFunc("GET /services/{serviceID}/power", h.servicePower)
@@ -70,72 +74,59 @@ func (h *Pages) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /services/{serviceID}/block/{fn}", h.serviceBlockAction)
 	mux.HandleFunc("GET /services/{serviceID}/block-rules", h.serviceBlockRules)
 	mux.HandleFunc("GET /services/{serviceID}/rescue-state", h.serviceRescueState)
-	mux.HandleFunc("GET /services/{serviceID}/vnc-assets/{path...}", h.vncAssets)
-	mux.HandleFunc("GET /services/{serviceID}/vnc-ws", h.vncWebSocket)
-	mux.HandleFunc("GET /services/{serviceID}/vnc-pass", h.serviceVncPass)
 	mux.HandleFunc("GET /services/{serviceID}/reinstall-options", h.reinstallOptions)
-	mux.HandleFunc("GET /services/{serviceID}/module", h.serviceModuleOverview)
-	mux.HandleFunc("GET /services/{serviceID}/module/{key}", h.serviceModulePage)
-	mux.HandleFunc("POST /services/{serviceID}/module/{key}", h.serviceModuleSubmit)
-	mux.HandleFunc("GET /services/{serviceID}/module-assets/{host64}/{path...}", h.serviceModuleAssets)
 	mux.HandleFunc("GET /user/password", h.passwordForm)
 	mux.HandleFunc("POST /user/password", h.passwordSubmit)
 	mux.HandleFunc("GET /notifications", h.notifications)
+	mux.HandleFunc("GET /notifications/unread-count", h.notificationUnreadCount)
+	mux.HandleFunc("POST /notifications/{notificationID}/read", h.notificationMarkRead)
+	mux.HandleFunc("POST /notifications/read-all", h.notificationMarkAllRead)
+	mux.HandleFunc("POST /notifications/{notificationID}/delete", h.notificationDelete)
+	mux.HandleFunc("POST /notifications/delete-all", h.notificationDeleteAll)
+	mux.HandleFunc("GET /tickets", h.tickets)
+	mux.HandleFunc("POST /tickets", h.createTicket)
+	mux.HandleFunc("GET /tickets/{ticketID}", h.ticketDetail)
+	mux.HandleFunc("POST /tickets/{ticketID}/reply", h.ticketReply)
+	mux.HandleFunc("POST /tickets/{ticketID}/close", h.ticketClose)
+	mux.HandleFunc("POST /tickets/{ticketID}/reopen", h.ticketReopen)
+	mux.HandleFunc("POST /tickets/{ticketID}/attachments", h.ticketAttachment)
+	mux.HandleFunc("GET /tickets/{ticketID}/attachments/{attachmentID}", h.ticketAttachmentDownload)
+	// 公告中心（前台 JSON）：列表（分类/关键字/分页）与详情（阅读量 +1）。
+	mux.HandleFunc("GET /announcements", h.announcementsList)
+	mux.HandleFunc("GET /announcements/{id}", h.announcementDetail)
 }
 
 // NotFound 全局 404（未匹配路由的统一兜底）。
 func (h *Pages) NotFound(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusNotFound)
-	h.render(w, r, "notfound.html", map[string]any{})
+	http.NotFound(w, r)
 }
 
-// notifications GET /notifications — 站内信列表（读取后标记已读）。
+// notifications GET /notifications — 站内信列表（查看列表不自动标记已读）。
 func (h *Pages) notifications(w http.ResponseWriter, r *http.Request) {
 	userID, ok := middleware.RequireUser(w, r)
 	if !ok {
 		return
 	}
-	list := []map[string]any{}
-	if h.Notifier != nil {
-		if l, err := h.Notifier.List(r.Context(), userID); err == nil {
-			list = l
-		}
-		h.Notifier.MarkRead(r.Context(), userID)
+	if h.Notifier == nil {
+		writeJSON(w, map[string]any{"ok": 1, "list": []any{}, "total": 0, "unread": 0, "page": 1, "limit": 10})
+		return
 	}
-	h.render(w, r, "user_notifications.html", map[string]any{"Rows": list})
-}
-
-// pageTitleLabel 返回前台页面对应的浏览器标题前缀；未匹配（兜底）返回空。
-func pageTitleLabel(page string) string {
-	switch page {
-	case "products.html":
-		return "产品与服务"
-	case "buy.html":
-		return "购买服务"
-	case "service_list.html":
-		return "我的服务"
-	case "service_detail.html":
-		return "服务详情"
-	case "user_home.html":
-		return "账户概览"
-	case "user_recharge.html":
-		return "账户充值"
-	case "user_invoices.html":
-		return "财务记录"
-	case "user_notifications.html":
-		return "消息中心"
-	case "user_profile.html":
-		return "账户资料"
-	case "user_password.html":
-		return "安全设置"
-	case "user_verification.html":
-		return "实名认证"
-	case "notfound.html":
-		return "页面不存在"
-	case "service_upgrade.html":
-		return "服务升降级"
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	if page < 1 {
+		page = 1
 	}
-	return ""
+	if limit < 1 || limit > 100 {
+		limit = 10
+	}
+	list, total, unread, err := h.Notifier.ListPage(r.Context(), userID,
+		strings.TrimSpace(r.URL.Query().Get("category")), strings.TrimSpace(r.URL.Query().Get("keyword")), page, limit)
+	if err != nil {
+		http.Error(w, "查询失败", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]any{"ok": 1, "list": list, "total": total, "unread": unread, "page": page, "limit": limit,
+		"categories": []map[string]string{{"key": "", "label": "全部"}, {"key": "order", "label": "订单"}, {"key": "payment", "label": "支付"}, {"key": "service", "label": "服务"}, {"key": "identity", "label": "实名"}, {"key": "system", "label": "系统"}}})
 }
 
 // listAnnouncements 取前台展示的公告（显示中、置顶优先）。
@@ -150,8 +141,9 @@ func (h *Pages) listAnnouncements(ctx context.Context) []map[string]any {
 	out := make([]map[string]any, 0, len(list))
 	for _, an := range list {
 		out = append(out, map[string]any{
-			"ID": an.ID, "Title": an.Title, "Content": an.Content,
-			"Pinned": an.Pinned, "CreatedAt": an.CreatedAt.Format("2006-01-02"),
+			"ID": an.ID, "Title": an.Title, "Category": an.Category, "Summary": an.Summary,
+			"Content": an.Content, "Cover": an.Cover, "Pinned": an.Pinned, "Reads": an.Reads,
+			"CreatedAt": an.CreatedAt.Format("2006-01-02"),
 		})
 	}
 	return out
@@ -165,7 +157,115 @@ type productView struct {
 	Stock   int
 }
 
+// productListJSON 前台产品 → JSON 视图（SPA 用，键小写对齐 API 约定）。
+func productListJSON(views []productView) []map[string]any {
+	out := make([]map[string]any, 0, len(views))
+	for _, v := range views {
+		out = append(out, map[string]any{
+			"id": v.ID, "name": v.Name, "desc": v.Desc, "monthly": v.Monthly, "stock": v.Stock,
+		})
+	}
+	return out
+}
+
+// typeNavJSON 分类导航 → JSON 视图。
+func typeNavJSON(nav []typeNav) []map[string]any {
+	out := make([]map[string]any, 0, len(nav))
+	for _, first := range nav {
+		children := make([]map[string]any, 0, len(first.Children))
+		for _, c := range first.Children {
+			children = append(children, map[string]any{
+				"id": c.ID, "name": c.Name, "description": c.Description, "hidden": c.Hidden,
+			})
+		}
+		out = append(out, map[string]any{"id": first.ID, "name": first.Name, "children": children})
+	}
+	return out
+}
+
+// announcementJSON 公告（listAnnouncements 的 PascalCase map）→ 小写键 JSON 视图。
+func announcementJSON(list []map[string]any) []map[string]any {
+	out := make([]map[string]any, 0, len(list))
+	for _, an := range list {
+		out = append(out, map[string]any{
+			"id": an["ID"], "title": an["Title"], "category": an["Category"], "summary": an["Summary"],
+			"content": an["Content"], "cover": an["Cover"], "pinned": an["Pinned"], "reads": an["Reads"],
+			"created_at": an["CreatedAt"],
+		})
+	}
+	return out
+}
+
 var descriptionTagRe = regexp.MustCompile(`(?is)<!--.*?-->|</?\s*([a-z][a-z0-9]*)[^>]*>`)
+
+// 危险标签要连内文一起丢：上游描述里内嵌 <style>（还有少数带 <script>），
+// 只去标签会把 CSS/JS 源码当正文渲染出来（列表卡片就会显示一堆 .config-row {…}）。
+var descriptionDropRe = regexp.MustCompile(`(?is)<\s*script\b[^>]*>.*?<\s*/\s*script\s*>|<\s*style\b[^>]*>.*?<\s*/\s*style\s*>`)
+
+// 连续换行折叠成一个、首尾不要换行（块级标签一头一尾会各补一个）。
+var descriptionBrRunRe = regexp.MustCompile(`(?i)(?:\s*<br\s*/?>\s*){2,}`)
+
+// 换行两侧的空格（横向容器里的列用空格拼接，可能落在换行边上）、连续空格。
+var descriptionBrSpaceRe = regexp.MustCompile(`(?i)\s*<br\s*/?>\s*`)
+var descriptionSpaceRunRe = regexp.MustCompile(` {2,}`)
+
+// 内联 style、以及 <style> 里的「类名 { 声明 }」，用于判断容器是不是横向排布。
+var descriptionStyleAttrRe = regexp.MustCompile(`(?i)\bstyle\s*=\s*["']([^"']*)["']`)
+var descriptionStyleRuleRe = regexp.MustCompile(`(?is)\.([a-z0-9_-]+)\s*\{([^}]*)\}`)
+
+// href 属性、以及放行外链用的 scheme 白名单（只放行 http/https，挡掉 javascript:/data: 等）。
+var descriptionHrefRe = regexp.MustCompile(`(?i)\bhref\s*=\s*["']([^"']*)["']`)
+var descriptionSafeURLRe = regexp.MustCompile(`(?i)^https?://[^\s<>"']+$`)
+
+// rowContainerClasses 从描述内嵌 <style> 里抽「横向容器」类名：display 为 flex/grid 且没写成 column。
+// 上游商品描述常是「外层 flex-column 堆行、.config-row 内 flex 行放图标+标签+值」，
+// 转文本时要按这个层级决定哪里换行、哪里用空格。
+func rowContainerClasses(s string) map[string]bool {
+	out := map[string]bool{}
+	for _, m := range descriptionStyleRuleRe.FindAllStringSubmatch(s, -1) {
+		if isRowDisplay(strings.ToLower(m[2])) {
+			out[m[1]] = true
+		}
+	}
+	return out
+}
+
+// isRowDisplay 声明体是否横向排布（flex/grid 且未声明 column）。
+func isRowDisplay(decl string) bool {
+	d := strings.NewReplacer(" ", "", "\t", "", "\r", "", "\n", "").Replace(strings.ToLower(decl))
+	if !strings.Contains(d, "display:flex") && !strings.Contains(d, "display:inline-flex") && !strings.Contains(d, "display:grid") {
+		return false
+	}
+	return !strings.Contains(d, "flex-direction:column") && !strings.Contains(d, "grid-auto-flow:row")
+}
+
+// rowContainer 该容器是否横向排布：内联 style 优先，其次看类名在内嵌样式里的声明。
+func rowContainer(full string, rowClasses map[string]bool) bool {
+	if sm := descriptionStyleAttrRe.FindStringSubmatch(full); len(sm) == 2 {
+		if strings.Contains(strings.ToLower(sm[1]), "display:") {
+			return isRowDisplay(sm[1])
+		}
+	}
+	if cm := descriptionClassRe.FindStringSubmatch(full); len(cm) == 2 {
+		for _, name := range strings.Fields(strings.ToLower(cm[1])) {
+			if rowClasses[name] {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// descriptionBlockTags 块级标签：白名单外会被去掉壳，去掉时补一个换行。
+// 上游不少商品描述是「一行一个 div」（如 <div class="config-row">CPU…</div>），
+// 只去壳不留断行的话，规格会全部粘成一坨（"CPU16核 intel E5内存32GB…"）。
+var descriptionBlockTags = map[string]bool{
+	"div": true, "p": true, "section": true, "article": true, "header": true, "footer": true,
+	"main": true, "aside": true, "nav": true, "figure": true, "blockquote": true, "pre": true,
+	"table": true, "thead": true, "tbody": true, "tr": true, "td": true, "th": true,
+	"dl": true, "dt": true, "dd": true, "hr": true, "center": true,
+	"h1": true, "h2": true, "h3": true, "h4": true, "h5": true, "h6": true,
+}
 var descriptionClassRe = regexp.MustCompile(`(?i)\bclass\s*=\s*["']([a-z0-9_ -]+)["']`)
 var descriptionClassNameRe = regexp.MustCompile(`^[a-z0-9_-]+$`)
 var multiSpaceRe = regexp.MustCompile(`[\s\x{3000}]+`)
@@ -176,23 +276,69 @@ func normSpace(s string) string {
 	return strings.TrimSpace(multiSpaceRe.ReplaceAllString(s, " "))
 }
 
+// safeDescriptionHref 取描述里 <a> 的安全外链地址：只放行 http/https，
+// 挡掉 javascript:/data: 等可执行 scheme（上游描述是外部内容，不能当成可信标签用）。
+func safeDescriptionHref(full string) (string, bool) {
+	m := descriptionHrefRe.FindStringSubmatch(full)
+	if len(m) != 2 {
+		return "", false
+	}
+	href := strings.TrimSpace(html.UnescapeString(m[1]))
+	if !descriptionSafeURLRe.MatchString(href) {
+		return "", false
+	}
+	return href, true
+}
+
 // safeDescriptionHTML 仅保留无属性的排版标签，避免描述成为脚本入口。
+// 块级标签（白名单外的 div/section/table…）去掉壳时补分隔符：默认换行；
+// 若该容器按内联 style / 描述内嵌样式是横向排布（flex 行、grid），其子元素改用空格拼接，
+// 于是上游「图标 标签 值」一行多列的规格，转成文本后仍是「CPU 16核 intel E5」一行。
 func safeDescriptionHTML(s string) template.HTML {
 	s = html.UnescapeString(s)
+	rowClasses := rowContainerClasses(s)          // 必须在丢弃 <style> 之前抽取
+	s = descriptionDropRe.ReplaceAllString(s, "") // <style>/<script> 连内容一起丢弃
 	allowed := map[string]bool{"p": true, "br": true, "strong": true, "b": true, "em": true, "i": true, "ul": true, "ol": true, "li": true, "span": true}
 	var b strings.Builder
 	last := 0
+	// 容器上下文栈：栈顶 true = 当前容器横向排布（它的兄弟元素之间用空格，不换行）。
+	inlineCtx := []bool{false}
+	// 已放行的 <a> 层数：href 不合法的链接整对丢掉，别留下孤立的 </a>。
+	linkDepth := 0
+	sep := func() string {
+		if inlineCtx[len(inlineCtx)-1] {
+			return " "
+		}
+		return "<br>"
+	}
 	for _, m := range descriptionTagRe.FindAllStringSubmatchIndex(s, -1) {
 		b.WriteString(template.HTMLEscapeString(normSpace(s[last:m[0]])))
 		full := s[m[0]:m[1]]
+		tag := ""
 		if m[2] >= 0 && m[3] >= 0 {
-			tag := strings.ToLower(s[m[2]:m[3]])
-			trimmed := strings.TrimSpace(full)
-			if allowed[tag] && strings.HasPrefix(trimmed[1:], "/") {
+			tag = strings.ToLower(s[m[2]:m[3]])
+		}
+		closing := strings.HasPrefix(strings.TrimSpace(full)[1:], "/")
+		switch {
+		case tag == "a":
+			// 外链只放行 http/https，并统一加固（新窗口 + noopener/nofollow）。
+			if closing {
+				if linkDepth > 0 {
+					b.WriteString("</a>")
+					linkDepth--
+				}
+			} else if href, ok := safeDescriptionHref(full); ok {
+				b.WriteString(`<a href="` + template.HTMLEscapeString(href) +
+					`" target="_blank" rel="noopener noreferrer nofollow">`)
+				linkDepth++
+			}
+		case allowed[tag]:
+			switch {
+			case closing:
 				b.WriteString("</" + tag + ">")
-			} else if allowed[tag] && tag == "br" {
+			case tag == "br":
 				b.WriteString("<br>")
-			} else if allowed[tag] {
+			default:
 				class := ""
 				if cm := descriptionClassRe.FindStringSubmatch(full); len(cm) == 2 {
 					var names []string
@@ -207,6 +353,17 @@ func safeDescriptionHTML(s string) template.HTML {
 				}
 				b.WriteString("<" + tag + class + ">")
 			}
+		case descriptionBlockTags[tag]:
+			// 壳去掉但结构不能丢：容器边界补分隔符（换行，横向容器内是空格）。
+			if closing {
+				if len(inlineCtx) > 1 {
+					inlineCtx = inlineCtx[:len(inlineCtx)-1]
+				}
+				b.WriteString(sep())
+			} else {
+				b.WriteString(sep())
+				inlineCtx = append(inlineCtx, rowContainer(full, rowClasses))
+			}
 		}
 		last = m[1]
 	}
@@ -214,6 +371,11 @@ func safeDescriptionHTML(s string) template.HTML {
 	out := b.String()
 	// 相邻 <b>/<strong> 无换行时自动插入 <br>（上游 "标签</b>值<b>标签" 格式）
 	out = inlineBreakRe.ReplaceAllString(out, "$1<br>$2")
+	out = strings.TrimSpace(out)
+	out = descriptionBrSpaceRe.ReplaceAllString(out, "<br>")
+	out = descriptionBrRunRe.ReplaceAllString(out, "<br>")
+	out = descriptionSpaceRunRe.ReplaceAllString(out, " ")
+	out = strings.TrimSuffix(strings.TrimPrefix(out, "<br>"), "<br>")
 	return template.HTML(out)
 }
 
@@ -266,7 +428,81 @@ func typeVisible(t repo.ProductType, types []repo.ProductType) bool {
 }
 
 func (h *Pages) home(w http.ResponseWriter, r *http.Request) {
-	h.products(w, r)
+	types, err := h.Products.ListTypes(r.Context())
+	if err != nil {
+		http.Error(w, "读取产品失败", 500)
+		return
+	}
+	nav := buildTypeNav(types)
+	// ponytail: 批量取数——分类产品、价格、配置选项、利润回退各 1 条 SQL，
+	// 原 N+1（每产品 6 条 × 8 + 每分类 1 条 ≈ 50+ 条）降为固定 6 条；
+	// 批量失败时价格/选项/利润按缺省值降级，产品列表回退逐分类查询。
+	// 顺序语义与逐分类查询一致：按分类导航顺序取产品，凑满 8 个为止。
+	var leafIDs []int64
+	for _, first := range nav {
+		for _, leaf := range first.Children {
+			if typeVisible(leaf, types) {
+				leafIDs = append(leafIDs, leaf.ID)
+			}
+		}
+	}
+	byType := make(map[int64][]repo.Product)
+	if len(leafIDs) > 0 {
+		all, lerr := h.Products.ListVisibleByTypes(r.Context(), leafIDs)
+		if lerr != nil {
+			// 批量查询失败：回退逐分类查询，保留"单分类失败只跳过该分类"的降级粒度
+			log.Printf("[home] 批量查询产品失败，回退逐分类查询: %v", lerr)
+			for _, leafID := range leafIDs {
+				if list, err := h.Products.ListVisibleByTypes(r.Context(), []int64{leafID}); err == nil {
+					byType[leafID] = list
+				}
+			}
+		} else {
+			for _, p := range all {
+				if p.TypeID.Valid {
+					byType[p.TypeID.Int64] = append(byType[p.TypeID.Int64], p)
+				}
+			}
+		}
+	}
+	var picked []repo.Product
+outer:
+	for _, first := range nav {
+		for _, leaf := range first.Children {
+			for _, p := range byType[leaf.ID] {
+				if len(picked) >= 8 {
+					break outer
+				}
+				picked = append(picked, p)
+			}
+		}
+	}
+	ids := make([]int64, len(picked))
+	for i, p := range picked {
+		ids[i] = p.ID
+	}
+	psID, _ := h.Products.DefaultPricesetID(r.Context())
+	prices := h.Products.PricesByProduct(r.Context(), psID, ids)
+	optsBy := h.Products.ConfigOptionsByProducts(r.Context(), ids)
+	fallbacks := h.Products.ServerProfitFallbacks(r.Context(), ids)
+	views := make([]productView, 0, len(picked))
+	for _, p := range picked {
+		m := "-"
+		if pr, ok := prices[p.ID]; ok {
+			eType, eVal := p.ProfitType, p.ProfitValue
+			if p.ProfitValue <= 0 {
+				fb := fallbacks[p.ID]
+				eType, eVal = fb.Type, fb.Value
+			}
+			m = fmt.Sprintf("%.2f", service.DisplayStartPrice(priceVal(pr.Monthly), optsBy[p.ID], eType, eVal, "monthly"))
+		}
+		views = append(views, productView{ID: p.ID, Name: p.Name, Desc: p.Description, Monthly: m, Stock: p.Stock})
+	}
+	writeJSON(w, map[string]any{
+		"catalog":       typeNavJSON(nav),
+		"products":      productListJSON(views),
+		"announcements": announcementJSON(h.listAnnouncements(r.Context())),
+	})
 }
 
 func (h *Pages) products(w http.ResponseWriter, r *http.Request) {
@@ -283,8 +519,12 @@ func (h *Pages) products(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, fmt.Sprintf("/cart?fid=%d&gid=%d", first.ID, first.Children[0].ID), http.StatusSeeOther)
 		return
 	}
-	// 没有可选二级分类时仍进入分类页，明确提示管理员配置二级分类。
-	h.productListPage(w, r, "/products")
+	// 没有可选二级分类时：SPA 请求返回分类数据；浏览器导航交给 SPA 的 /cart。
+	if wantsJSON(r) {
+		h.productListPage(w, r, "/products")
+		return
+	}
+	http.Redirect(w, r, "/cart", http.StatusSeeOther)
 }
 
 // cart 对齐魔方财务：一级 fid 与二级 gid 分开传递。
@@ -337,7 +577,7 @@ func (h *Pages) productListPage(w http.ResponseWriter, r *http.Request, _ string
 						if pr, perr := h.Products.Price(r.Context(), p.ID, psID); perr == nil {
 							opts, _ := h.Products.GetConfigOptions(r.Context(), p.ID)
 							eType, eVal := productProfitType(r.Context(), h.Products, p.ProfitType, p.ProfitValue, p.ID), productProfitValue(r.Context(), h.Products, p.ProfitType, p.ProfitValue, p.ID)
-							m = fmt.Sprintf("%.2f", service.DisplayPrice(priceVal(pr.Monthly), opts, eType, eVal))
+							m = fmt.Sprintf("%.2f", service.DisplayStartPrice(priceVal(pr.Monthly), opts, eType, eVal, "monthly"))
 						}
 						views = append(views, productView{ID: p.ID, Name: p.Name, Desc: p.Description, Monthly: m, Stock: p.Stock})
 					}
@@ -345,16 +585,17 @@ func (h *Pages) productListPage(w http.ResponseWriter, r *http.Request, _ string
 			}
 		}
 	}
-	h.render(w, r, "products.html", map[string]any{
-		"Products": views, "Types": nav, "FID": fid, "GID": gid,
-		"Announcements": h.listAnnouncements(r.Context()),
+	writeJSON(w, map[string]any{
+		"catalog": typeNavJSON(nav), "products": productListJSON(views),
+		"fid": fid, "gid": gid,
+		"announcements": announcementJSON(h.listAnnouncements(r.Context())),
 	})
 }
 
 func (h *Pages) buyForm(w http.ResponseWriter, r *http.Request) {
 	id := pathID(r, "productID")
 	p, err := h.Products.Get(r.Context(), id)
-	if err != nil || p.Hidden {
+	if err != nil || p.Hidden || p.UpstreamOfflineReason != "" {
 		http.NotFound(w, r)
 		return
 	}
@@ -383,21 +624,24 @@ func (h *Pages) buyForm(w http.ResponseWriter, r *http.Request) {
 	if v, err := strconv.ParseFloat(pr.Yearly, 64); err == nil {
 		baseMap["yearly"] = v
 	}
-	cfgJSON, _ := json.Marshal(map[string]any{
-		"base": baseMap, "options": opts,
-		"profit_type":  productProfitType(r.Context(), h.Products, p.ProfitType, p.ProfitValue, p.ID),
-		"profit_value": productProfitValue(r.Context(), h.Products, p.ProfitType, p.ProfitValue, p.ID),
-	})
 	// 周期下拉展示价：配置计价型（基础价 0）用加成后起步价，普通产品直接加成基础价。
 	eType, eVal := productProfitType(r.Context(), h.Products, p.ProfitType, p.ProfitValue, p.ID), productProfitValue(r.Context(), h.Products, p.ProfitType, p.ProfitValue, p.ID)
-	dispMonthly := fmt.Sprintf("%.2f", service.DisplayPrice(priceVal(pr.Monthly), opts, eType, eVal))
-	dispQuarterly := fmt.Sprintf("%.2f", service.DisplayPrice(priceVal(pr.Quarterly), opts, eType, eVal))
-	dispYearly := fmt.Sprintf("%.2f", service.DisplayPrice(priceVal(pr.Yearly), opts, eType, eVal))
-	h.render(w, r, "buy.html", map[string]any{
-		"Product": p, "Monthly": dispMonthly, "Quarterly": dispQuarterly, "Yearly": dispYearly,
-		"ShowQuarterly": showQ, "ShowYearly": showY,
-		"CSRF": h.pageCSRF(w, r), "Options": opts,
-		"ConfigData": template.JS(cfgJSON), "LoggedIn": isLoggedIn(r),
+	dispMonthly := fmt.Sprintf("%.2f", service.DisplayStartPrice(priceVal(pr.Monthly), opts, eType, eVal, "monthly"))
+	dispQuarterly := fmt.Sprintf("%.2f", service.DisplayStartPrice(priceVal(pr.Quarterly), opts, eType, eVal, "quarterly"))
+	dispYearly := fmt.Sprintf("%.2f", service.DisplayStartPrice(priceVal(pr.Yearly), opts, eType, eVal, "yearly"))
+	// SPA 复刻旧 buy.html 的客户端实时计价：下发原价表 + 配置项 + 利润，前端重算展示价。
+	writeJSON(w, map[string]any{
+		"product": map[string]any{
+			"id": p.ID, "name": p.Name, "description": p.Description,
+			"requires_identity": p.RequiresIdentity, "stock": p.Stock, "hidden": p.Hidden,
+			"upstream_offline_reason": p.UpstreamOfflineReason,
+		},
+		"base":        baseMap,
+		"cycle":       map[string]any{"monthly": dispMonthly, "quarterly": dispQuarterly, "yearly": dispYearly},
+		"show_q":      showQ,
+		"show_y":      showY,
+		"options":     opts,
+		"profit_type": eType, "profit_value": eVal,
 	})
 }
 
@@ -428,11 +672,6 @@ func productProfitValue(ctx context.Context, products *repo.Products, _ int16, p
 	return v
 }
 
-func isLoggedIn(r *http.Request) bool {
-	sess := middleware.FromSession(r.Context())
-	return sess != nil && sess.UserID > 0 && !sess.IsAdmin
-}
-
 func (h *Pages) myServices(w http.ResponseWriter, r *http.Request) {
 	userID, ok := middleware.RequireUser(w, r)
 	if !ok {
@@ -454,24 +693,10 @@ func (h *Pages) myServices(w http.ResponseWriter, r *http.Request) {
 		svc.ShowQ = priceVal(svc.QuarterlyBase) > 0
 		svc.ShowY = priceVal(svc.YearlyBase) > 0
 		// 配置摘要 + 月价：主查询带回的数据在内存计算（不逐行查库）
-		var sel map[string]string
-		if len(svc.ConfigSnap) > 0 {
-			var saved struct {
-				Selection map[string]string `json:"selection"`
-			}
-			if json.Unmarshal(svc.ConfigSnap, &saved) == nil {
-				sel = saved.Selection
-			}
-		}
-		var opts []repo.ConfigOption
-		_ = json.Unmarshal(svc.ConfigOpts, &opts)
-		svc.ConfigDesc = configDescFromOpts(opts, sel)
-		if base, err := strconv.ParseFloat(svc.MonthlyBase, 64); err == nil {
-			pt, pv := svc.ProfitType, svc.ProfitValue
-			if pv <= 0 {
-				pt, pv = svc.ServerProfitType, svc.ServerProfitValue
-			}
-			svc.Monthly = fmt.Sprintf("%.2f", service.SellPriceFromData(base, opts, pt, pv, sel))
+		svc.ConfigDesc, svc.Monthly = rowPricing(svc.ConfigSnap, svc.ConfigOpts, svc.MonthlyBase,
+			svc.ProfitType, svc.ProfitValue, svc.ServerProfitType, svc.ServerProfitValue)
+		if svc.ConfigNote != "" { // 后台手工填写的配置说明优先
+			svc.ConfigDesc = svc.ConfigNote
 		}
 		// 上游实时 IP/系统：仅激活/停机服务 best-effort 并行拉取（缩短超时；待开通/本地跳过）
 		if svc.Status == 1 || svc.Status == 2 {
@@ -493,8 +718,44 @@ func (h *Pages) myServices(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	wg.Wait()
-	h.render(w, r, "service_list.html", map[string]any{
-		"Services": list, "CSRF": h.pageCSRF(w, r)})
+	out := make([]map[string]any, 0, len(list))
+	for i := range list {
+		svc := list[i]
+		out = append(out, map[string]any{
+			"id": svc.ID, "name": svc.Name, "status": svc.Status, "status_text": svc.StatusText,
+			"hostname": svc.Hostname, "ip": svc.IP, "os": svc.OS,
+			"expires_at": svc.ExpiresAt.Format("2006-01-02 15:04"),
+			"days_left":  svc.DaysLeft, "expiring_soon": svc.ExpiringSoon,
+			"transition": svc.Transition,
+			"product_id": svc.ProductID, "monthly": svc.Monthly,
+			"config_desc": svc.ConfigDesc, "show_q": svc.ShowQ, "show_y": svc.ShowY,
+		})
+	}
+	writeJSON(w, map[string]any{"ok": 1, "list": out})
+}
+
+// rowPricing 从列表行携带的快照/选项/利润数据计算配置摘要与月价（不查库）。
+// 用户服务列表（myServices）与后台服务列表（ServicesList）共用同一口径。
+func rowPricing(snap, optsJSON []byte, monthlyBase string, pt int16, pv float64, spt int16, spv float64) (desc, monthly string) {
+	var sel map[string]string
+	if len(snap) > 0 {
+		var saved struct {
+			Selection map[string]string `json:"selection"`
+		}
+		if json.Unmarshal(snap, &saved) == nil {
+			sel = saved.Selection
+		}
+	}
+	var opts []repo.ConfigOption
+	_ = json.Unmarshal(optsJSON, &opts)
+	desc = configDescFromOpts(opts, sel)
+	if base, err := strconv.ParseFloat(monthlyBase, 64); err == nil {
+		if pv <= 0 { // 产品未设利润回退服务器默认（与 ProductSellProfit 口径一致）
+			pt, pv = spt, spv
+		}
+		monthly = fmt.Sprintf("%.2f", service.SellPriceFromData(base, opts, pt, pv, sel))
+	}
+	return desc, monthly
 }
 
 // configDescFromOpts 内存版配置摘要（opts 已随主查询带回，避免逐行查询）。

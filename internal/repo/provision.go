@@ -35,3 +35,11 @@ func (p *ProvisionRepo) SetCheckpoint(ctx context.Context, serviceID int64, key,
 		serviceID, key, val)
 	return err
 }
+
+// DeleteCheckpoint 清除指定检查点键（其余键保持不变，升级流程的 upgrade_<订单号> 依赖此语义）。
+func (p *ProvisionRepo) DeleteCheckpoint(ctx context.Context, serviceID int64, key string) error {
+	_, err := p.db.ExecContext(ctx,
+		`UPDATE services SET provision_data = coalesce(provision_data, '{}'::jsonb) - $2 WHERE id=$1`,
+		serviceID, key)
+	return err
+}

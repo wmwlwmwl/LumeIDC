@@ -7,8 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 	"time"
+
+	"lumeidc/internal/server"
 )
 
 type ServiceRow struct {
@@ -26,7 +29,10 @@ type ServiceRow struct {
 	OS           string    `json:"os"` // 系统名称/版本（best-effort）
 	Monthly      string    `json:"-"`  // 月售价（含配置+利润）
 	ConfigDesc   string    `json:"-"`  // 配置摘要（如 "CPU 2核 · 内存 4G"）
+	ConfigNote   string    `json:"-"`  // 后台手工填写的配置说明（非空时覆盖自动生成的摘要）
 	DaysLeft     int       `json:"-"`  // 距到期天数
+	// Transition 过渡状态（renew_pending=续费人工处理中）：前台据此提示并禁用再次续费。
+	Transition string `json:"-"`
 	// 内存计价数据（一次查询带回，避免逐行 N 次远程查询）
 	ConfigSnap        []byte // coalesce(sv.config_snapshot, o.config_snapshot)
 	ConfigOpts        []byte // products.configoption
@@ -44,10 +50,11 @@ type ServicesRepo struct{ db *sql.DB }
 func (s *ServicesRepo) ListByUser(ctx context.Context, userID int64) ([]ServiceRow, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT sv.id, sv.name, sv.status, coalesce(sv.expires_at,sv.created_at), sv.product_id, coalesce(sv.hostname,''),
-		        coalesce(sv.config_snapshot, o.config_snapshot),
+		        coalesce(sv.config_snapshot, o.config_snapshot), coalesce(sv.config_desc,''),
 		        coalesce(p.configoption::text,'[]'),
 		        coalesce(pp.monthly::text,'0'), coalesce(pp.quarterly::text,'0'), coalesce(pp.yearly::text,'0'),
-		        p.profit_type, p.profit_value, coalesce(s.profit_type,0), coalesce(s.profit_value,0)
+		        p.profit_type, p.profit_value, coalesce(s.profit_type,0), coalesce(s.profit_value,0),
+		        coalesce(sv.transition_state,'')
 		 FROM services sv JOIN products p ON p.id=sv.product_id
 		 LEFT JOIN servers s ON s.id=p.server_id
 		 LEFT JOIN orders o ON o.id=sv.order_id
@@ -62,8 +69,8 @@ func (s *ServicesRepo) ListByUser(ctx context.Context, userID int64) ([]ServiceR
 	for rows.Next() {
 		var sr ServiceRow
 		if err := rows.Scan(&sr.ID, &sr.Name, &sr.Status, &sr.ExpiresAt, &sr.ProductID, &sr.Hostname,
-			&sr.ConfigSnap, &sr.ConfigOpts, &sr.MonthlyBase, &sr.QuarterlyBase, &sr.YearlyBase,
-			&sr.ProfitType, &sr.ProfitValue, &sr.ServerProfitType, &sr.ServerProfitValue); err != nil {
+			&sr.ConfigSnap, &sr.ConfigNote, &sr.ConfigOpts, &sr.MonthlyBase, &sr.QuarterlyBase, &sr.YearlyBase,
+			&sr.ProfitType, &sr.ProfitValue, &sr.ServerProfitType, &sr.ServerProfitValue, &sr.Transition); err != nil {
 			return nil, err
 		}
 		out = append(out, sr)
@@ -81,32 +88,55 @@ type ConfigSnapshot struct {
 // ServiceDetail 服务详情。
 type ServiceDetail struct {
 	ServiceRow
-	ProductID    int64            `json:"product_id"`
-	Hostname     string           `json:"hostname"`
-	CreatedAt    time.Time        `json:"created_at"`
-	Cycle        string           `json:"cycle"`
-	Amount       string           `json:"amount"`
-	Configs      []ConfigSnapshot `json:"configs"`
-	UpstreamHost int64            `json:"upstream_host_id"`
-	Remark       string           `json:"remark"`
+	ProductID int64     `json:"product_id"`
+	Hostname  string    `json:"hostname"`
+	CreatedAt time.Time `json:"created_at"`
+	Cycle     string    `json:"cycle"`
+	Amount    string    `json:"amount"`
+	// RenewM/Q/Y 服务冻结的固定续费价（后台可改可清空，空=跟随产品当前价）。
+	RenewM       string               `json:"renew_monthly"`
+	RenewQ       string               `json:"renew_quarterly"`
+	RenewY       string               `json:"renew_yearly"`
+	Configs      []ConfigSnapshot     `json:"configs"`
+	UpstreamHost int64                `json:"upstream_host_id"`
+	Remark       string               `json:"remark"`
+	ConfigNote   string               `json:"config_desc"` // 后台手工填写的配置说明（空=按产品配置项自动生成）
+	Provider     string               `json:"provider"`    // 上游供应商代码（zjmf/easypanel…），前台按能力差异化展示
+	HostSnapshot *server.HostOverview `json:"-"`
 }
 
 // GetDetail 读取服务详情（归属校验在 SQL 内）。
 func (s *ServicesRepo) GetDetail(ctx context.Context, serviceID, userID int64) (*ServiceDetail, error) {
 	var d ServiceDetail
 	var orderID sql.NullInt64
+	var snapshot []byte
 	err := s.db.QueryRowContext(ctx,
 		`SELECT sv.id, sv.name, sv.status, coalesce(sv.expires_at,sv.created_at), sv.hostname,
-		        sv.created_at, sv.upstream_host_id, o.id, sv.product_id, sv.remark
+		        sv.created_at, sv.upstream_host_id,
+		        coalesce(sv.order_id, (SELECT o2.id FROM orders o2 WHERE o2.service_id=sv.id ORDER BY o2.id DESC LIMIT 1)),
+		        sv.product_id, sv.remark, sv.host_snapshot,
+		        coalesce(sv.config_desc,''),
+		        coalesce(nullif(sv.upstream_provider,''),srv.provider,''),
+		        coalesce(sv.renew_monthly::text,''), coalesce(sv.renew_quarterly::text,''), coalesce(sv.renew_yearly::text,''),
+		        coalesce(sv.transition_state,'')
 		 FROM services sv LEFT JOIN orders o ON o.id = sv.order_id
+		 JOIN products p ON p.id = sv.product_id
+		 LEFT JOIN servers srv ON srv.id = coalesce(sv.server_id, p.server_id)
 		 WHERE sv.id=$1 AND sv.user_id=$2`, serviceID, userID).
 		Scan(&d.ID, &d.Name, &d.Status, &d.ExpiresAt, &d.Hostname,
-			&d.CreatedAt, &d.UpstreamHost, &orderID, &d.ProductID, &d.Remark)
+			&d.CreatedAt, &d.UpstreamHost, &orderID, &d.ProductID, &d.Remark, &snapshot, &d.ConfigNote, &d.Provider,
+			&d.RenewM, &d.RenewQ, &d.RenewY, &d.Transition)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, errSvcNotFound
 	}
 	if err != nil {
 		return nil, err
+	}
+	if len(snapshot) > 0 {
+		var overview server.HostOverview
+		if json.Unmarshal(snapshot, &overview) == nil {
+			d.HostSnapshot = &overview
+		}
 	}
 	statusText := map[int16]string{0: "待开通", 1: "激活", 2: "已停机", 3: "已删除"}
 	d.StatusText = statusText[d.Status]
@@ -119,8 +149,8 @@ func (s *ServicesRepo) GetDetail(ctx context.Context, serviceID, userID int64) (
 		if err := s.db.QueryRowContext(ctx,
 			`SELECT o.cycle, o.amount, coalesce(o.config_snapshot::text,''),
 			        coalesce(sv.cycle,''), coalesce(sv.config_snapshot::text,'')
-			 FROM orders o JOIN services sv ON sv.id=o.service_id WHERE o.id=$1`,
-			orderID.Int64).Scan(&oCycle, &amount, &oSnap, &svCycle, &svSnap); err == nil {
+			 FROM orders o LEFT JOIN services sv ON sv.id=$2 WHERE o.id=$1`,
+			orderID.Int64, serviceID).Scan(&oCycle, &amount, &oSnap, &svCycle, &svSnap); err == nil {
 			cycle := oCycle
 			if svCycle != "" {
 				cycle = svCycle
@@ -150,6 +180,22 @@ func (s *ServicesRepo) GetDetail(ctx context.Context, serviceID, userID int64) (
 		}
 	}
 	return &d, nil
+}
+
+// SaveHostSnapshot 保存最近一次用户主动刷新得到的上游概况。
+func (s *ServicesRepo) SaveHostSnapshot(ctx context.Context, serviceID, userID int64, overview server.HostOverview) error {
+	raw, err := json.Marshal(overview)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `UPDATE services SET host_snapshot=$3 WHERE id=$1 AND user_id=$2`, serviceID, userID, raw)
+	return err
+}
+
+// UpdateExpiryFromHost 更新服务到期时间，仅用于明确的上游刷新流程。
+func (s *ServicesRepo) UpdateExpiryFromHost(ctx context.Context, serviceID, userID int64, expiry time.Time) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE services SET expires_at=$3 WHERE id=$1 AND user_id=$2`, serviceID, userID, expiry)
+	return err
 }
 
 // Rename 用户修改服务名称与备注（归属由调用方校验）。
@@ -222,16 +268,23 @@ type svcErr string
 func (e svcErr) Error() string { return string(e) }
 
 // UserStats 账户概览统计：服务数/激活数/累计支付/未支付账单数（SQL 与旧 handler 内查询逐字平移）。
+// ponytail: 统计失败按零值降级（页面可用性优先），但记录日志便于排查。
 func (s *ServicesRepo) UserStats(ctx context.Context, userID int64) (serviceCount, activeCount, unpaidCount int64, paidTotal string) {
-	_ = s.db.QueryRowContext(ctx,
+	if err := s.db.QueryRowContext(ctx,
 		`SELECT count(*),count(*) FILTER (WHERE status=1) FROM services WHERE user_id=$1 AND status<3`, userID).
-		Scan(&serviceCount, &activeCount)
-	_ = s.db.QueryRowContext(ctx,
+		Scan(&serviceCount, &activeCount); err != nil {
+		log.Printf("[repo] 用户 %d 服务统计查询失败: %v", userID, err)
+	}
+	if err := s.db.QueryRowContext(ctx,
 		`SELECT coalesce(sum(coalesce(paid_amount,amount)),0) FROM invoices WHERE user_id=$1 AND status=1`, userID).
-		Scan(&paidTotal)
-	_ = s.db.QueryRowContext(ctx,
+		Scan(&paidTotal); err != nil {
+		log.Printf("[repo] 用户 %d 支付统计查询失败: %v", userID, err)
+	}
+	if err := s.db.QueryRowContext(ctx,
 		`SELECT count(*) FROM invoices WHERE user_id=$1 AND status=0`, userID).
-		Scan(&unpaidCount)
+		Scan(&unpaidCount); err != nil {
+		log.Printf("[repo] 用户 %d 账单统计查询失败: %v", userID, err)
+	}
 	return
 }
 
@@ -253,17 +306,26 @@ func (s *ServicesRepo) OwnsActive(ctx context.Context, serviceID, userID int64) 
 
 // AdminServiceRow 后台服务列表行（SQL 与旧 handler 查询逐字平移；含内存计价所需数据）。
 type AdminServiceRow struct {
-	ID        int64
-	User      string // email
-	Name      string
-	Status    string
-	Expires   string
-	Upstream  string // upstream host id
-	ProvErr   string
-	Profit    string
-	ProductID int64
-	Hostname  string
-	ExpiresAt time.Time
+	ID       int64
+	UserID   int64
+	User     string // email
+	Name     string
+	Status   string
+	Expires  string
+	Upstream string // upstream host id
+	ProvErr  string
+	// Transition 服务过渡状态（如 upgrading）：后台据此展示"升级中"的操作入口。
+	Transition string
+	Profit     string
+	ProductID  int64
+	Hostname   string
+	ExpiresAt  time.Time
+	// 管理员固定续费价覆盖（空串=跟随产品价）
+	RenewM string
+	RenewQ string
+	RenewY string
+	// 后台手工填写的配置说明（空串=按产品配置项自动生成）
+	ConfigNote string
 	// 内存计价数据（一次查询带回，避免逐行 N 次远程查询）
 	ConfigSnap        []byte // coalesce(sv.config_snapshot, o.config_snapshot)
 	ConfigOpts        []byte // products.configoption
@@ -283,12 +345,14 @@ type AdminServiceFilter struct {
 
 // AdminList 后台服务列表（服务端筛选，LIMIT 200 保持）。
 func (s *ServicesRepo) AdminList(ctx context.Context, f AdminServiceFilter) ([]AdminServiceRow, error) {
-	query := `SELECT sv.id, coalesce(u.email,''), coalesce(sv.name,''),
+	query := `SELECT sv.id, sv.user_id, coalesce(u.email,''), coalesce(sv.name,''),
 	        CASE sv.status WHEN 0 THEN '待开通' WHEN 1 THEN '激活' WHEN 2 THEN '已停机' ELSE '已删除' END,
 	        to_char(coalesce(sv.expires_at, sv.created_at),'YYYY-MM-DD'),
-	        coalesce(sv.upstream_host_id::text,''), coalesce(sv.provision_error,''),
+	        coalesce(sv.upstream_host_id::text,''), coalesce(sv.provision_error,''), coalesce(sv.transition_state,''),
 	        coalesce((SELECT profit FROM orders WHERE id=sv.order_id),'0'),
 	        sv.product_id, coalesce(sv.hostname,''), coalesce(sv.expires_at, sv.created_at),
+	        coalesce(sv.renew_monthly::text,''), coalesce(sv.renew_quarterly::text,''), coalesce(sv.renew_yearly::text,''),
+	        coalesce(sv.config_desc,''),
 	        coalesce(sv.config_snapshot, o.config_snapshot),
 	        coalesce(p.configoption::text,'[]'),
 	        coalesce(pp.monthly::text,'0'),
@@ -321,10 +385,14 @@ func (s *ServicesRepo) AdminList(ctx context.Context, f AdminServiceFilter) ([]A
 	var out []AdminServiceRow
 	for rows.Next() {
 		var r AdminServiceRow
-		rows.Scan(&r.ID, &r.User, &r.Name, &r.Status, &r.Expires, &r.Upstream, &r.ProvErr, &r.Profit,
+		if err := rows.Scan(&r.ID, &r.UserID, &r.User, &r.Name, &r.Status, &r.Expires, &r.Upstream, &r.ProvErr, &r.Transition, &r.Profit,
 			&r.ProductID, &r.Hostname, &r.ExpiresAt,
+			&r.RenewM, &r.RenewQ, &r.RenewY, &r.ConfigNote,
 			&r.ConfigSnap, &r.ConfigOpts, &r.MonthlyBase,
-			&r.ProfitType, &r.ProfitValue, &r.ServerProfitType, &r.ServerProfitValue) // 单行失败不中断
+			&r.ProfitType, &r.ProfitValue, &r.ServerProfitType, &r.ServerProfitValue); err != nil {
+			// 单行失败跳过：零值行（ID=0、字段全空）混入列表会误导后台操作
+			continue
+		}
 		out = append(out, r)
 	}
 	return out, rows.Err()
@@ -335,6 +403,7 @@ type AdminServiceStatus struct {
 	ID          int64
 	StatusLabel string
 	ProvErr     string
+	Transition  string
 }
 
 // AdminStatus 后台服务状态轮询（仅读 DB）。
@@ -342,7 +411,7 @@ func (s *ServicesRepo) AdminStatus(ctx context.Context) ([]AdminServiceStatus, e
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT sv.id,
 			CASE sv.status WHEN 0 THEN '待开通' WHEN 1 THEN '激活' WHEN 2 THEN '已停机' ELSE '已删除' END,
-			coalesce(sv.provision_error,'')
+			coalesce(sv.provision_error,''), coalesce(sv.transition_state,'')
 		 FROM services sv WHERE sv.status < 3 ORDER BY sv.id DESC LIMIT 200`)
 	if err != nil {
 		return nil, err
@@ -351,10 +420,56 @@ func (s *ServicesRepo) AdminStatus(ctx context.Context) ([]AdminServiceStatus, e
 	var out []AdminServiceStatus
 	for rows.Next() {
 		var st AdminServiceStatus
-		if err := rows.Scan(&st.ID, &st.StatusLabel, &st.ProvErr); err != nil {
+		if err := rows.Scan(&st.ID, &st.StatusLabel, &st.ProvErr, &st.Transition); err != nil {
 			break
 		}
 		out = append(out, st)
 	}
 	return out, rows.Err()
+}
+
+// AdminEdit 后台编辑服务：换归属用户 / 到期时间 / 固定续费价 / 配置说明。
+// 各指针为 nil 表示不修改；renew 指向 0 表示清除覆盖（恢复跟随产品价）；
+// configDesc 指向空串表示清除手工配置说明（恢复按产品配置项自动生成）。
+// 返回更新后的归属用户 ID（供写服务日志——换用户后日志跟随新归属可见）。
+func (s *ServicesRepo) AdminEdit(ctx context.Context, serviceID int64, userID *int64, expiresAt *time.Time, renewM, renewQ, renewY *float64, configDesc *string) (int64, error) {
+	sets, args := []string{}, []any{}
+	if userID != nil {
+		args = append(args, *userID)
+		sets = append(sets, fmt.Sprintf("user_id=$%d", len(args)))
+	}
+	if expiresAt != nil {
+		args = append(args, *expiresAt)
+		sets = append(sets, fmt.Sprintf("expires_at=$%d", len(args)))
+	}
+	for _, p := range []struct {
+		col string
+		v   *float64
+	}{{"renew_monthly", renewM}, {"renew_quarterly", renewQ}, {"renew_yearly", renewY}} {
+		if p.v == nil {
+			continue
+		}
+		args = append(args, sql.NullFloat64{Float64: *p.v, Valid: *p.v > 0})
+		sets = append(sets, fmt.Sprintf("%s=$%d", p.col, len(args)))
+	}
+	if configDesc != nil {
+		args = append(args, sql.NullString{String: *configDesc, Valid: *configDesc != ""})
+		sets = append(sets, fmt.Sprintf("config_desc=$%d", len(args)))
+	}
+	if len(sets) > 0 {
+		args = append(args, serviceID)
+		tag, err := s.db.ExecContext(ctx,
+			`UPDATE services SET `+strings.Join(sets, ",")+` WHERE id=$`+strconv.Itoa(len(args)), args...)
+		if err != nil {
+			return 0, err
+		}
+		if n, _ := tag.RowsAffected(); n == 0 {
+			return 0, fmt.Errorf("服务不存在")
+		}
+	}
+	var uid int64
+	if err := s.db.QueryRowContext(ctx, `SELECT user_id FROM services WHERE id=$1`, serviceID).Scan(&uid); err != nil {
+		return 0, fmt.Errorf("服务不存在")
+	}
+	return uid, nil
 }

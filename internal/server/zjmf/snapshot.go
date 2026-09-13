@@ -91,16 +91,15 @@ func (p Provider) SnapshotAction(ctx context.Context, cfg server.Config, upstrea
 		return "", fmt.Errorf("不支持的快照操作: %s", fn)
 	}
 	f := url.Values{}
-	for k, vs := range form {
-		for _, v := range vs {
-			f.Add(k, v)
-		}
-	}
+	copyValues(f, form)
 	f.Set("func", fn)
-	// 上游 createSnap/createBackup 以 id 定位磁盘（/disks/{id}/snapshots），
-	// 前端传的是 disk_id：映射为 id，避免 ModuleAction 误填主机 id。
-	if (fn == "createSnap" || fn == "createBackup") && f.Get("id") == "" && f.Get("disk_id") != "" {
-		f.Set("id", f.Get("disk_id"))
+	// 上游 createSnap/createBackup 以 id 定位磁盘（/disks/{id}/snapshots）。
+	// 前端只发 disk_id：无条件丢弃表单注入的 id，再从 disk_id 映射，防止误指他人磁盘。
+	if fn == "createSnap" || fn == "createBackup" {
+		f.Del("id")
+		if f.Get("disk_id") != "" {
+			f.Set("id", f.Get("disk_id"))
+		}
 		f.Del("disk_id")
 	}
 	return p.ModuleAction(ctx, cfg, upstreamHostID, f)

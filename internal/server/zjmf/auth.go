@@ -94,7 +94,7 @@ func login(ctx context.Context, cfg server.Config) (string, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return "", fmt.Errorf("上游登录失败: http %d", resp.StatusCode)
+		return "", fmt.Errorf("登录失败: http %d", resp.StatusCode)
 	}
 	body, err := readLimited(resp.Body, 1<<20)
 	if err != nil {
@@ -109,7 +109,7 @@ func login(ctx context.Context, cfg server.Config) (string, error) {
 		return "", fmt.Errorf("登录响应解析失败: %w", err)
 	}
 	if bodyJSON.Status != 200 || bodyJSON.JWT == "" {
-		return "", fmt.Errorf("上游登录失败: %s", bodyJSON.Msg)
+		return "", fmt.Errorf("登录失败: %s", bodyJSON.Msg)
 	}
 	return bodyJSON.JWT, nil
 }

@@ -53,9 +53,20 @@ func (u *Users) ListUsers(ctx context.Context) ([]UserRow, error) {
 	return out, rows.Err()
 }
 
+// userSortCols 后台用户列表可排序字段白名单（prop → SQL 表达式）。
+var userSortCols = map[string]string{
+	"id":         "id",
+	"email":      "email",
+	"name":       "name",
+	"phone":      "coalesce(phone_e164,'')",
+	"balance":    "balance",
+	"status":     "status",
+	"created_at": "created_at",
+}
+
 // ListUsersPage 后台用户列表分页+关键词查询（limit/offset），并返回匹配总数。
-// q 匹配邮箱/姓名/手机号；空串表示不过滤。
-func (u *Users) ListUsersPage(ctx context.Context, q string, limit, offset int) ([]UserRow, int64, error) {
+// q 匹配邮箱/姓名/手机号；空串表示不过滤。sort/order 经白名单映射排序字段。
+func (u *Users) ListUsersPage(ctx context.Context, q, sort, order string, limit, offset int) ([]UserRow, int64, error) {
 	where := `WHERE ($1='' OR email ILIKE '%'||$1||'%' OR name ILIKE '%'||$1||'%' OR coalesce(phone_e164,'') LIKE '%'||$1||'%')`
 	var total int64
 	if err := u.db.QueryRowContext(ctx,
@@ -65,7 +76,7 @@ func (u *Users) ListUsersPage(ctx context.Context, q string, limit, offset int) 
 	rows, err := u.db.QueryContext(ctx,
 		`SELECT id,coalesce(email,''),name,coalesce(phone_e164,''),status,balance::float8,
 		        to_char(created_at,'YYYY-MM-DD HH24:MI')
-		 FROM users `+where+` ORDER BY id DESC LIMIT $2 OFFSET $3`, q, limit, offset)
+		 FROM users `+where+OrderByParam(sort, order, userSortCols, ` ORDER BY id DESC`)+` LIMIT $2 OFFSET $3`, q, limit, offset)
 	if err != nil {
 		return nil, 0, err
 	}

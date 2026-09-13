@@ -3,17 +3,78 @@ package gateway
 import (
 	"context"
 	"crypto/md5"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"net/url"
 	"sort"
 	"strings"
+	"time"
 )
 
 // Epay 实现易支付（彩虹易支付）标准提交协议：md5 签名、GET 跳转。
 type Epay struct{}
 
+type epayOrder struct {
+	Code       int    `json:"code"`
+	Msg        string `json:"msg"`
+	TradeNo    string `json:"trade_no"`
+	OutTradeNo string `json:"out_trade_no"`
+	Money      string `json:"money"`
+	Status     int    `json:"status"`
+}
+
 func (Epay) Driver() string { return "epay" }
 func (Epay) Name() string   { return "易支付" }
+
+// ValidateConfig 易支付启用前必须配置完整的商户凭据，避免空密钥导致验签失效。
+func (Epay) ValidateConfig(cfg map[string]string) error {
+	if strings.TrimSpace(cfg["api_url"]) == "" || strings.TrimSpace(cfg["pid"]) == "" || strings.TrimSpace(cfg["key"]) == "" {
+		return fmt.Errorf("易支付必须填写 API 地址、商户 PID 和商户密钥")
+	}
+	return nil
+}
+
+// QueryOrder queries an order without changing local state. The caller must
+// still validate the returned order number and amount before marking it paid.
+func (Epay) QueryOrder(ctx context.Context, req QueryOrderRequest) (QueryOrderResult, error) {
+	apiURL := req.Config["api_url"]
+	pid := req.Config["pid"]
+	key := req.Config["key"]
+	outTradeNo := req.InvoiceNo
+	if apiURL == "" || pid == "" || key == "" || outTradeNo == "" {
+		return QueryOrderResult{}, fmt.Errorf("易支付订单查询参数不完整")
+	}
+	values := url.Values{"act": {"order"}, "pid": {pid}, "key": {key}, "out_trade_no": {outTradeNo}}
+	endpoint := strings.TrimRight(apiURL, "/") + "/api.php?" + values.Encode()
+	requestCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	httpReq, err := http.NewRequestWithContext(requestCtx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return QueryOrderResult{}, err
+	}
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		return QueryOrderResult{}, fmt.Errorf("请求易支付订单查询失败: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return QueryOrderResult{}, fmt.Errorf("读取易支付订单查询失败: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return QueryOrderResult{}, fmt.Errorf("易支付订单查询 HTTP %d", resp.StatusCode)
+	}
+	var order epayOrder
+	if err := json.Unmarshal(body, &order); err != nil {
+		return QueryOrderResult{}, fmt.Errorf("易支付订单查询响应无效: %w", err)
+	}
+	if order.Code != 1 {
+		return QueryOrderResult{}, fmt.Errorf("易支付订单查询失败: %s", order.Msg)
+	}
+	return QueryOrderResult{TradeNo: order.TradeNo, OutTradeNo: order.OutTradeNo, Amount: order.Money, Paid: order.Status == 1}, nil
+}
 
 func (Epay) PayURL(ctx context.Context, req PayRequest) (string, error) {
 	api := req.Config["api_url"]
@@ -44,7 +105,7 @@ func (Epay) PayURL(ctx context.Context, req PayRequest) (string, error) {
 }
 
 func (e Epay) VerifyNotify(params map[string]string, cfg map[string]string) (NotifyResult, error) {
-	invoiceNo, tradeNo, ok := VerifyNotify(params, cfg["key"])
+	invoiceNo, tradeNo, ok := verifyEpaySign(params, cfg["key"])
 	if !ok {
 		return NotifyResult{}, fmt.Errorf("易支付回调签名校验失败")
 	}
@@ -57,10 +118,11 @@ func (e Epay) VerifyNotify(params map[string]string, cfg map[string]string) (Not
 	return NotifyResult{InvoiceNo: invoiceNo, TradeNo: tradeNo, Amount: params["money"], Successful: true}, nil
 }
 
-// VerifyNotify 校验易支付异步通知签名。params 为回调全部 GET 参数。
+// verifyEpaySign 校验易支付异步通知签名。params 为回调全部 GET 参数。
 // 返回商户订单号(out_trade_no)与平台流水号(trade_no)。
 // 不同易支付分支对“空值是否参与签名”实现不一，这里同时尝试两种规则，任一匹配即通过。
-func VerifyNotify(params map[string]string, key string) (invoiceNo, tradeNo string, ok bool) {
+// （与方法 Epay.VerifyNotify 同名易混，故包级函数带 verify 前缀区分。）
+func verifyEpaySign(params map[string]string, key string) (invoiceNo, tradeNo string, ok bool) {
 	sign := params["sign"]
 	if sign == "" || params["out_trade_no"] == "" {
 		return "", "", false
@@ -79,7 +141,7 @@ func VerifyNotify(params map[string]string, key string) (invoiceNo, tradeNo stri
 	return params["out_trade_no"], params["trade_no"], true
 }
 
-// md5Sign: 按 ASCII 键名排序拼接 a=b&c=d... 再拼 &KEY=key 取 md5 小写，跳过空值。
+// md5Sign: 按 ASCII 键名排序拼接 a=b&c=d...，再直接拼接商户密钥取 md5 小写，跳过空值。
 func md5Sign(q url.Values, key string) string {
 	keys := make([]string, 0, len(q))
 	for k := range q {
@@ -109,7 +171,7 @@ func md5SignKeys(q url.Values, keys []string, key string) string {
 	for i, k := range keys {
 		parts[i] = k + "=" + q.Get(k)
 	}
-	raw := strings.Join(parts, "&") + "&key=" + key
+	raw := strings.Join(parts, "&") + key
 	sum := md5.Sum([]byte(raw))
 	return fmt.Sprintf("%x", sum)
 }

@@ -2,7 +2,8 @@ package server
 
 import (
 	"context"
-	"html/template"
+	"errors"
+	"fmt"
 	"net/url"
 
 	"lumeidc/internal/repo"
@@ -20,10 +21,55 @@ type ManualReviewError struct {
 
 func (e *ManualReviewError) Error() string { return e.Msg }
 
-// IsManualReview 检查错误是否为人工复核类型。
+// RetryLaterError 标记"等外部条件自己好"的失败（典型：上游余额不足）。
+// 与 ManualReviewError 的区别：不需要人工介入，队列按固定间隔持续重试、不消耗重试次数，
+// 直到条件满足（上游充值到账）或转为人工（账单已被删除）。
+type RetryLaterError struct{ Msg string }
+
+func (e *RetryLaterError) Error() string { return e.Msg }
+
+// IsManualReview 检查错误是否为需要人工介入（不自动重试）的类型。
+// RetryLaterError 不算人工介入——它是等外部条件，由队列继续重试。
+// 用 errors.As 而非类型断言：调用方包了一层（%w）也能识别，避免漏判后退回自动重试，
+// 而这类失败（等人工确认、上游已涨价）自动重试永远不会成功。
 func IsManualReview(err error) bool {
-	_, ok := err.(*ManualReviewError)
-	return ok
+	var mre *ManualReviewError
+	if errors.As(err, &mre) {
+		return true
+	}
+	var pce *PriceChangedError
+	return errors.As(err, &pce)
+}
+
+// IsRetryLater 检查错误是否为"等外部条件、应保持重试"的类型（不消耗重试次数）。
+func IsRetryLater(err error) bool {
+	var rle *RetryLaterError
+	return errors.As(err, &rle)
+}
+
+// PriceTolerance 上游账单与本地金额的容差（人民币分）：口径差异在 2 分内视为一致。
+// 开通前比价、续费前比价、升级差价核对共用。
+// ponytail: 一期按人民币分固定 0.02；多币种二期再按汇率/比例。
+const PriceTolerance = 0.02
+
+// PriceChangedError 上游按当前价出的账单高于下单时的成本额：继续付款会吃掉利润甚至亏损。
+// 上游流程据此停下不进自动重试，交后台人工二选一：按此价继续（开通/续费），或退款给用户。
+type PriceChangedError struct {
+	UpstreamAmount    float64 // 上游按当前价算出的金额
+	ExpectAmount      float64 // 下单时的成本额（orders.config_snapshot.quote.total）
+	UpstreamInvoiceID string  // 上游账单号（开通路径已建账单时有值）
+	UpstreamPID       int64
+}
+
+// PriceChangedPrefix PriceChangedError 文案里的固定片段。
+// 后台服务列表据此识别"这次失败是上游改价、要管理员决定按新价继续还是退款"，
+// 从而在点「重试」时弹二次确认（改这段文案需同步这里）。
+const PriceChangedPrefix = "上游价格已变动"
+
+func (e *PriceChangedError) Error() string {
+	return fmt.Sprintf("%s：需付 ￥%.2f，下单时成本 ￥%.2f（贵 ￥%.2f）。"+
+		"确认后再次重试即按此价继续，或改为退款给用户",
+		PriceChangedPrefix, e.UpstreamAmount, e.ExpectAmount, e.UpstreamAmount-e.ExpectAmount)
 }
 
 // Provider 上游供应商适配器接口。实现方负责认证、协议细节。
@@ -36,7 +82,8 @@ type Provider interface {
 	Catalog(ctx context.Context, cfg Config) ([]UpstreamProduct, error)
 	// Provision 开通服务，返回开通结果。必须幂等：可凭 checkpoint 续跑。
 	Provision(ctx context.Context, cfg Config, req ProvisionRequest, checkpoint CheckpointStore) (ProvisionResult, error)
-	Renew(ctx context.Context, cfg Config, upstreamHostID int64, cycle string) error
+	// Renew 续费。可凭 checkpoint 复用已建的上游续费账单，避免重试时重复建单。
+	Renew(ctx context.Context, cfg Config, upstreamHostID int64, cycle string, checkpoint CheckpointStore) error
 	Suspend(ctx context.Context, cfg Config, upstreamHostID int64) error
 	Unsuspend(ctx context.Context, cfg Config, upstreamHostID int64) error
 	Terminate(ctx context.Context, cfg Config, upstreamHostID int64) error
@@ -67,7 +114,7 @@ type FieldSuggestion struct {
 	Label string `json:"label"`
 }
 
-// ProductFormHints 供应商对产品表单的差异化声明（布尔/文案级；带 UI 的差异走 ProductFormWidgetProvider）。
+// ProductFormHints 供应商对产品表单的差异化声明（布尔/文案级；带 UI 的差异走 ProductFormSpecProvider）。
 type ProductFormHints struct {
 	MarkupFree       bool              `json:"markupFree,omitempty"`       // 隐藏「利润加成」区
 	PIDHint          string            `json:"pidHint,omitempty"`          // PID 输入框的专属提示文案
@@ -77,13 +124,6 @@ type ProductFormHints struct {
 // ProductFormProvider 可选：声明产品表单差异（MarkupFree 由注册表自动合并，无需自填）。
 type ProductFormProvider interface {
 	ProductFormHints() ProductFormHints
-}
-
-// ProductFormWidgetProvider 可选：产品表单专属区块（独立模板插槽注入，同 DetailWidget 模式）。
-// 返回的 HTML 注入上游绑定区，共享表单按当前供应商显隐；区块内可自带脚本，
-// 约定用 provFormRegister(code, fields, init) 注册（详见 docs/provider.md）。
-type ProductFormWidgetProvider interface {
-	ProductFormWidget() (template.HTML, error)
 }
 
 // ConfigOptionsFetcher 可选拉取配置项能力的供应商（类型断言使用）。
@@ -107,6 +147,21 @@ type PriceFetcher interface {
 	FetchProductPrice(ctx context.Context, cfg Config, upstreamPID int64) (monthly, quarterly, yearly float64, err error)
 }
 
+// ProductSnapshot 单商品全量快照（一次上游请求取全：三周期基础价 + 配置项）。
+type ProductSnapshot struct {
+	Monthly       float64
+	Quarterly     float64
+	Yearly        float64
+	ConfigOptions []repo.ConfigOption
+}
+
+// ProductSnapshotFetcher 可选：一次请求拉取单商品基础价与配置项。
+// 下单前的实时价格校验需要同时拿到基础价与配置项，分别调用 FetchProductPrice /
+// FetchProductConfigOptions 会对同一上游接口重复请求，故合并为一个方法。
+type ProductSnapshotFetcher interface {
+	FetchProductSnapshot(ctx context.Context, cfg Config, upstreamPID int64) (ProductSnapshot, error)
+}
+
 // UpgradeTarget 上游产品可升级目标（本地服务升降级的目标候选）。
 type UpgradeTarget struct {
 	UpstreamPID int64  `json:"pid"`
@@ -122,6 +177,7 @@ type UpgradeTargetProvider interface {
 
 // UpgradeRequest 上游升降级请求（host 维度换商品）。
 type UpgradeRequest struct {
+	OrderID    int64   // 本地升级订单号：拼账单检查点键（同一服务可能多次升级，不能只看服务）
 	TargetPID  int64   // 上游目标商品 id
 	Cycle      string  // monthly/quarterly/yearly
 	DiffAmount float64 // 本地差价（目标月售价 − 当前月售价），供上游账单核对
@@ -130,7 +186,8 @@ type UpgradeRequest struct {
 // HostUpgradeProvider 可选：上游 host 升降级执行能力（换商品）。
 // 未实现的供应商（本地定价模式，如 EasyPanel）由调用方仅做本地换产品。
 type HostUpgradeProvider interface {
-	Upgrade(ctx context.Context, cfg Config, upstreamHostID int64, req UpgradeRequest) error
+	// Upgrade 执行升降级。可凭 checkpoint 复用已结算的升级账单，避免重试时重复结算。
+	Upgrade(ctx context.Context, cfg Config, upstreamHostID int64, req UpgradeRequest, checkpoint CheckpointStore) error
 }
 
 // Config 连接配置（来自 servers 表行）。
@@ -184,6 +241,10 @@ type ProvisionRequest struct {
 	ConfigOpts  map[string]string `json:"config_opts,omitempty"` // field -> 值/子项
 	// ServiceID 本地服务 ID。供应商可用它派生上游唯一标识（如 EasyPanel 站点名 u{id}）。
 	ServiceID int64 `json:"service_id,omitempty"`
+	// ExpectAmount 下单时的成本额（orders.config_snapshot.quote.total）。
+	// 上游按当前价出的账单高于它即判定为"上游已涨价"，转人工决定强制开通或退款；
+	// 为 0（老数据无快照）时跳过该比对。
+	ExpectAmount float64 `json:"expect_amount,omitempty"`
 }
 
 // ServiceStatus 上游实例状态。
@@ -210,6 +271,17 @@ type HostDetail struct {
 	BWLimit       string   // 带宽限额
 	BWUsage       string   // 带宽已用
 	Datacenter    string   // 数据中心 / 机房
+	// EasyPanel 虚拟主机资源信息。
+	WebQuota   string
+	DBName     string
+	DBQuota    string
+	DBUsed     string
+	FTP        bool
+	Domain     string
+	FlowLimit  string
+	SpeedLimit string
+	CreateTime string
+	ExpiryAt   string // 上游服务到期时间，例如魔方的 nextduedate
 }
 
 // HostDetailFetcher 可选获取实例登录/系统信息能力的供应商（类型断言使用）。
@@ -406,4 +478,22 @@ type ModuleBlocksProvider interface {
 type CheckpointStore interface {
 	GetCheckpoint(key string) (string, bool, error)
 	SetCheckpoint(key, val string) error
+	// DeleteCheckpoint 清除检查点，让开通流程从头重跑。
+	// 仅用于上游账单被删除/作废、必须重新下单的场景，由管理员在后台手动触发。
+	DeleteCheckpoint(key string) error
 }
+
+// 开通检查点键（存于 services.provision_data）。上游开通据此续跑避免重复下单；
+// 账单被上游删除/作废时由 Provision 自行清掉失效账单号并重新结算（无需人工重置）。
+// 注意：不要把 provision_data 整个清空——升级流程的 upgrade_<订单号> 检查点（done/refunded）
+// 也在这里，清掉会导致降级重复退款。
+const (
+	CheckpointUpstreamInvoiceID = "upstream_invoice_id" // 已生成的上游账单号
+	CheckpointUpstreamHostIDs   = "upstream_host_ids"   // 已开通的上游 host id 列表
+	// CheckpointUpgradeInvoicePrefix 升级账单检查点键前缀，后缀为本地升级订单号。
+	// 结算出账单后写入：重试复用同一张账单，管理员确认涨价后重试即按该账单强制开通。
+	CheckpointUpgradeInvoicePrefix = "upgrade_invoice_"
+	// CheckpointRenewInvoice 续费账单检查点键：重试复用已建的上游续费账单，避免重复建单；
+	// 续费成功或后台退款取消后续费时清除。
+	CheckpointRenewInvoice = "renew_invoice_id"
+)

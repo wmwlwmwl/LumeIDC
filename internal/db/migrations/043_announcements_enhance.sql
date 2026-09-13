@@ -1,0 +1,8 @@
+-- 公告增强：分类、摘要、封面、阅读量
+ALTER TABLE announcements
+  ADD COLUMN IF NOT EXISTS category TEXT NOT NULL DEFAULT '',
+  ADD COLUMN IF NOT EXISTS summary TEXT NOT NULL DEFAULT '',
+  ADD COLUMN IF NOT EXISTS cover TEXT NOT NULL DEFAULT '',
+  ADD COLUMN IF NOT EXISTS reads INTEGER NOT NULL DEFAULT 0;
+
+CREATE INDEX IF NOT EXISTS idx_announcements_category ON announcements (category);

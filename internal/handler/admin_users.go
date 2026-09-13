@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -22,29 +23,58 @@ func (m *AdminManage) UsersList(w http.ResponseWriter, r *http.Request) {
 	const per = 25
 	page := pageParam(r)
 	q := r.URL.Query().Get("q")
-	list, total, err := m.Users.ListUsersPage(r.Context(), q, per, (page-1)*per)
+	list, total, err := m.Users.ListUsersPage(r.Context(), q, r.URL.Query().Get("sort"), r.URL.Query().Get("order"), per, (page-1)*per)
 	if err != nil {
-		http.Error(w, "查询失败", 500)
+		jsonStatus(w, r, 500, "查询失败")
 		return
 	}
-	var rows []adminRow
+	type userJSON struct {
+		ID       int64  `json:"id"`
+		Email    string `json:"email"`
+		Name     string `json:"name"`
+		Phone    string `json:"phone"`
+		Status   string `json:"status"`
+		Balance  string `json:"balance"`
+		Realname string `json:"realname"`
+		Created  string `json:"created_at"`
+		Disabled bool   `json:"disabled"`
+	}
+	// 批量查实名状态（人工/自动任一通过=approved，否则待审=pending，否则 none）。
+	ids := make([]int64, 0, len(list))
+	for _, u := range list {
+		ids = append(ids, u.ID)
+	}
+	realname := map[int64]string{}
+	if m.Identity != nil {
+		if st, err := m.Identity.RealnameStatuses(r.Context(), ids); err == nil {
+			realname = st
+		} else {
+			log.Printf("[admin] 实名状态批量查询失败: %v", err)
+		}
+	}
+	items := make([]userJSON, 0, len(list))
 	for _, u := range list {
 		statusText := "正常"
+		disabled := false
 		if u.Status != 1 {
 			statusText = "禁用"
+			disabled = true
 		}
 		phone := "-"
 		if u.Phone != "" {
 			phone = service.MaskPhone(u.Phone)
 		}
-		rows = append(rows, adminRow{
-			ID: u.ID, A: u.Email, B: u.Name, C: phone,
-			D: statusText, E: fmt.Sprintf("%.2f", u.Balance), F: u.CreatedAt,
+		rn := realname[u.ID]
+		if rn == "" {
+			rn = "none"
+		}
+		items = append(items, userJSON{
+			ID: u.ID, Email: u.Email, Name: u.Name, Phone: phone,
+			Status: statusText, Balance: fmt.Sprintf("%.2f", u.Balance), Realname: rn,
+			Created: u.CreatedAt, Disabled: disabled,
 		})
 	}
-	pager := pagerFor(r, "/admin/users", per, total)
-	pager.Q = q
-	m.renderAdmin(w, "admin_users.html", AdminData{Rows: rows, Pager: &pager})
+	writeJSON(w, map[string]any{"ok": 1, "list": items, "total": total, "page": page})
 }
 
 func validAdminBalanceAdjustment(raw string) bool {
@@ -112,12 +142,12 @@ func (m *AdminManage) UserEdit(w http.ResponseWriter, r *http.Request) {
 	if user.LastLoginAt.Valid {
 		lastLogin = user.LastLoginAt.Time.Format("2006-01-02 15:04")
 	}
-	// 实名认证（对齐 ZJMF：管理员可看完整姓名/证件号 + 证件照片）
+	// 实名认证：详情页只返回状态摘要，不在此解密姓名/证件号，也不写审计。
+	// 管理员点击「查看实名资料」时再调用 UserRealname，解密并记录 real_name_viewed。
 	realNameStatus := "未提交"
-	verifName, verifNumber := "", ""
 	verifSubID := int64(0)
 	verifSubmittedAt, verifReviewedAt := "", ""
-	if m.Identity != nil && m.IdentitySvc != nil {
+	if m.Identity != nil {
 		if v, verr := m.Identity.CurrentVerification(r.Context(), id); verr == nil && v != nil {
 			realNameStatus = service.StatusText(v.Status)
 			verifSubID = v.ID
@@ -125,17 +155,9 @@ func (m *AdminManage) UserEdit(w http.ResponseWriter, r *http.Request) {
 			if v.ReviewedAt.Valid {
 				verifReviewedAt = v.ReviewedAt.Time.Format("2006-01-02 15:04")
 			}
-			if sub, nm, num, derr := m.IdentitySvc.AdminSubmission(r.Context(), v.ID); derr == nil && sub != nil {
-				verifName, verifNumber = nm, num
-			} else if derr != nil {
-				log.Printf("[admin] 实名资料解密失败 user=%d: %v", id, derr)
-			}
 		} else if verr != nil {
 			log.Printf("[admin] 实名状态查询失败 id=%d: %v", id, verr)
 		}
-	}
-	if verifNumber != "" {
-		m.audit(r, "real_name_viewed", "user", id, "admin_user_detail")
 	}
 	serviceCount, activeCount, unpaidCount, paidTotal := m.Svc.UserStats(r.Context(), id)
 	logs, _ := m.Balance.Logs(r.Context(), id)
@@ -150,36 +172,104 @@ func (m *AdminManage) UserEdit(w http.ResponseWriter, r *http.Request) {
 			log.Printf("[admin] 审计日志查询失败 id=%d: %v", id, aerr)
 		}
 	}
-	serversList := map[string]any{
-		"ID": id, "Email": user.Email, "A": user.Email, "B": user.Name,
-		"C": fmt.Sprintf("%.2f", user.Balance), "D": itoa(int64(user.Status)),
-		"Phone": user.Phone, "PhoneMasked": service.MaskPhone(user.Phone),
-		"PhoneStatus": phoneStatus, "EmailStatus": emailStatus,
-		"RegisteredAt": registeredAt, "LastLoginAt": lastLogin, "RealNameStatus": realNameStatus,
-		"ServiceCount": serviceCount, "ActiveCount": activeCount,
-		"UnpaidCount": unpaidCount, "PaidTotal": paidTotal,
-		"BalanceLogs": logs, "AdminLogs": adminLogs,
-		"VerifName": verifName, "VerifNumber": verifNumber,
-		"VerifSubmittedAt": verifSubmittedAt, "VerifReviewedAt": verifReviewedAt,
+	adminLogsJSON := make([]map[string]any, 0, len(adminLogs))
+	for _, l := range adminLogs {
+		adminLogsJSON = append(adminLogsJSON, map[string]any{
+			"action": l.Action, "detail": l.Detail, "admin_name": l.AdminName,
+			"created_at": l.CreatedAt.Format("2006-01-02 15:04:05"),
+		})
 	}
-	if verifSubID > 0 {
-		serversList["VerifFrontURL"] = "/admin/verifications/" + strconv.FormatInt(verifSubID, 10) + "/photo/front"
-		serversList["VerifBackURL"] = "/admin/verifications/" + strconv.FormatInt(verifSubID, 10) + "/photo/back"
-	}
-	m.renderAdmin(w, "admin_user_form.html", AdminData{
-		CSRF:        m.adminCSRF(w, r),
-		Error:       r.URL.Query().Get("err"),
-		ServersList: serversList,
+	writeJSON(w, map[string]any{
+		"ok": 1,
+		"user": map[string]any{
+			"id": id, "email": user.Email, "name": user.Name,
+			"balance": fmt.Sprintf("%.2f", user.Balance), "status": user.Status,
+			"phone": user.Phone, "phone_masked": service.MaskPhone(user.Phone),
+			"phone_status": phoneStatus, "email_status": emailStatus,
+			"registered_at": registeredAt, "last_login_at": lastLogin,
+		},
+		"realname": map[string]any{
+			"status":       realNameStatus,
+			"submitted_at": verifSubmittedAt, "reviewed_at": verifReviewedAt,
+			"submission_id": verifSubID, "has_submission": verifSubID > 0,
+		},
+		"stats": map[string]any{
+			"service_count": serviceCount, "active_count": activeCount,
+			"unpaid_count": unpaidCount, "paid_total": paidTotal,
+		},
+		"balance_logs": logs,
+		"admin_logs":   adminLogsJSON,
 	})
 }
 
 // UserSave POST /admin/users/{id}/save — 联系方式、状态/密码/余额调整。
 
+// userSaveInput 校验通过后的用户编辑表单字段。
+type userSaveInput struct {
+	email, phone, status, password, balanceAdjust string
+}
+
+// validateUserSaveInput 校验用户编辑表单：邮箱/手机号格式与占用查重、状态、密码长度、余额调整。
+// 返回 err 时其消息可直接展示给管理员（fail 前置校验集中在此，保存步骤留在 UserSave）。
+func (m *AdminManage) validateUserSaveInput(ctx context.Context, id int64, current *repo.AdminUser, fv func(string) string) (userSaveInput, error) {
+	email := strings.TrimSpace(fv("email"))
+	var err error
+	if email != "" {
+		email, err = repo.NormalizeEmail(email)
+		if err != nil {
+			return userSaveInput{}, errors.New("邮箱格式不正确")
+		}
+	}
+	if email != "" && email != current.Email {
+		taken, checkErr := m.Users.EmailTaken(ctx, email, id)
+		if checkErr != nil {
+			return userSaveInput{}, errors.New("检查邮箱失败，请稍后重试")
+		}
+		if taken {
+			return userSaveInput{}, errors.New("邮箱已被占用")
+		}
+	}
+
+	phoneInput := strings.TrimSpace(fv("phone"))
+	phone := ""
+	if phoneInput != "" {
+		phone, err = service.NormalizePhone(phoneInput)
+		if err != nil {
+			return userSaveInput{}, errors.New("手机号格式不正确")
+		}
+		if m.Identity == nil {
+			return userSaveInput{}, errors.New("手机号服务未配置")
+		}
+		taken, checkErr := m.Identity.PhoneTaken(ctx, phone, id)
+		if checkErr != nil {
+			return userSaveInput{}, errors.New("检查手机号失败，请稍后重试")
+		}
+		if taken {
+			return userSaveInput{}, errors.New("手机号已被占用")
+		}
+	}
+
+	if email == "" && phoneInput == "" {
+		return userSaveInput{}, errors.New("邮箱或手机号至少填写一个")
+	}
+
+	status := fv("status")
+	if status != "0" && status != "1" {
+		return userSaveInput{}, errors.New("账号状态无效")
+	}
+	password := fv("new_password")
+	if password != "" && len(password) < 8 {
+		return userSaveInput{}, errors.New("密码至少8位")
+	}
+	balanceAdjust := strings.TrimSpace(fv("balance_adjust"))
+	if !validAdminBalanceAdjustment(balanceAdjust) {
+		return userSaveInput{}, errors.New("余额调整金额无效")
+	}
+	return userSaveInput{email: email, phone: phone, status: status, password: password, balanceAdjust: balanceAdjust}, nil
+}
+
 func (m *AdminManage) UserSave(w http.ResponseWriter, r *http.Request) {
 	if !m.require(w, r) {
-		return
-	}
-	if !m.requireCSRF(w, r) {
 		return
 	}
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
@@ -187,9 +277,28 @@ func (m *AdminManage) UserSave(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		userEditError(w, r, id, "表单解析失败")
-		return
+	vals := jsonVals(r)
+	if vals == nil {
+		if !m.requireCSRF(w, r) {
+			return
+		}
+		if err := r.ParseForm(); err != nil {
+			userEditError(w, r, id, "表单解析失败")
+			return
+		}
+	}
+	fv := func(k string) string {
+		if vals != nil {
+			return vals[k]
+		}
+		return r.PostFormValue(k)
+	}
+	fail := func(msg string) {
+		if wantsJSON(r) {
+			writeJSON(w, map[string]any{"ok": 0, "msg": msg})
+			return
+		}
+		userEditError(w, r, id, msg)
 	}
 	current, err := m.Users.AdminUserByID(r.Context(), id)
 	if err != nil {
@@ -198,83 +307,26 @@ func (m *AdminManage) UserSave(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		log.Printf("[admin] 用户查询失败 id=%d: %v", id, err)
-		userEditError(w, r, id, "读取用户失败，请稍后重试")
+		fail("读取用户失败，请稍后重试")
 		return
 	}
 
-	email := strings.TrimSpace(r.PostFormValue("email"))
-	if email != "" {
-		email, err = repo.NormalizeEmail(email)
-		if err != nil {
-			userEditError(w, r, id, "邮箱格式不正确")
-			return
-		}
-	}
-	if email != "" && email != current.Email {
-		taken, checkErr := m.Users.EmailTaken(r.Context(), email, id)
-		if checkErr != nil {
-			userEditError(w, r, id, "检查邮箱失败，请稍后重试")
-			return
-		}
-		if taken {
-			userEditError(w, r, id, "邮箱已被占用")
-			return
-		}
-	}
-
-	phoneInput := strings.TrimSpace(r.PostFormValue("phone"))
-	phone := ""
-	if phoneInput != "" {
-		phone, err = service.NormalizePhone(phoneInput)
-		if err != nil {
-			userEditError(w, r, id, "手机号格式不正确")
-			return
-		}
-		if m.Identity == nil {
-			userEditError(w, r, id, "手机号服务未配置")
-			return
-		}
-		taken, checkErr := m.Identity.PhoneTaken(r.Context(), phone, id)
-		if checkErr != nil {
-			userEditError(w, r, id, "检查手机号失败，请稍后重试")
-			return
-		}
-		if taken {
-			userEditError(w, r, id, "手机号已被占用")
-			return
-		}
-	}
-
-	if email == "" && phoneInput == "" {
-		userEditError(w, r, id, "邮箱或手机号至少填写一个")
+	in, err := m.validateUserSaveInput(r.Context(), id, current, fv)
+	if err != nil {
+		fail(err.Error())
 		return
 	}
-
-	status := r.PostFormValue("status")
-	if status != "0" && status != "1" {
-		userEditError(w, r, id, "账号状态无效")
-		return
-	}
-	password := r.PostFormValue("new_password")
-	if password != "" && len(password) < 8 {
-		userEditError(w, r, id, "密码至少8位")
-		return
-	}
-	balanceAdjust := strings.TrimSpace(r.PostFormValue("balance_adjust"))
-	if !validAdminBalanceAdjustment(balanceAdjust) {
-		userEditError(w, r, id, "余额调整金额无效")
-		return
-	}
+	email, phone, status, password, balanceAdjust := in.email, in.phone, in.status, in.password, in.balanceAdjust
 
 	emailChanged := email != current.Email
 	phoneChanged := phone != current.Phone
 	if phoneChanged && m.Identity == nil {
-		userEditError(w, r, id, "手机号服务未配置")
+		fail("手机号服务未配置")
 		return
 	}
 	if emailChanged {
 		if err := m.Users.UpdateEmail(r.Context(), id, email); err != nil {
-			userEditError(w, r, id, "保存邮箱失败，请稍后重试")
+			fail("保存邮箱失败，请稍后重试")
 			return
 		}
 	}
@@ -282,9 +334,9 @@ func (m *AdminManage) UserSave(w http.ResponseWriter, r *http.Request) {
 		changed, err := m.Identity.AdminSetPhone(r.Context(), id, phone, time.Now())
 		if err != nil {
 			if errors.Is(err, repo.ErrPhoneInUse) {
-				userEditError(w, r, id, "手机号已被占用")
+				fail("手机号已被占用")
 			} else {
-				userEditError(w, r, id, "保存手机号失败，请稍后重试")
+				fail("保存手机号失败，请稍后重试")
 			}
 			return
 		}
@@ -293,19 +345,19 @@ func (m *AdminManage) UserSave(w http.ResponseWriter, r *http.Request) {
 	statusChanged := (status == "1") != (current.Status == 1)
 	if statusChanged {
 		if err := m.Users.SetStatus(r.Context(), id, status == "1"); err != nil {
-			userEditError(w, r, id, "保存状态失败")
+			fail("保存状态失败")
 			return
 		}
 	}
 	if password != "" {
 		if err := m.Users.ResetPassword(r.Context(), id, password); err != nil {
-			userEditError(w, r, id, "重置密码失败")
+			fail("重置密码失败")
 			return
 		}
 	}
 	if balanceAdjust != "" {
 		if err := m.Balance.AdminAdjust(r.Context(), id, balanceAdjust, "管理员调整"); err != nil {
-			userEditError(w, r, id, "余额调整失败")
+			fail("余额调整失败")
 			return
 		}
 	}
@@ -334,7 +386,185 @@ func (m *AdminManage) UserSave(w http.ResponseWriter, r *http.Request) {
 		changes = append(changes, "balance_adjusted=true")
 	}
 	m.audit(r, "user_update", "user", id, strings.Join(changes, ","))
+	if wantsJSON(r) {
+		writeJSON(w, map[string]any{"ok": 1, "msg": "已保存"})
+		return
+	}
 	http.Redirect(w, r, "/admin/users", http.StatusSeeOther)
+}
+
+// UserRealname GET /admin/users/{id}/realname — 查看用户当前实名资料。
+// 仅在管理员主动点击「查看实名资料」时调用，解密姓名/证件号并记录 real_name_viewed 审计。
+func (m *AdminManage) UserRealname(w http.ResponseWriter, r *http.Request) {
+	if !m.require(w, r) {
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		jsonStatus(w, r, 400, "用户参数无效")
+		return
+	}
+	if m.Identity == nil || m.IdentitySvc == nil {
+		writeJSON(w, map[string]any{"ok": 1, "realname": nil})
+		return
+	}
+	v, verr := m.Identity.CurrentVerification(r.Context(), id)
+	if verr != nil {
+		jsonStatus(w, r, 500, "查询实名失败")
+		return
+	}
+	if v == nil {
+		writeJSON(w, map[string]any{"ok": 1, "realname": nil})
+		return
+	}
+	sub, name, number, derr := m.IdentitySvc.AdminSubmission(r.Context(), v.ID)
+	if derr != nil || sub == nil {
+		jsonStatus(w, r, 500, "读取实名资料失败")
+		return
+	}
+	m.audit(r, "real_name_viewed", "user", id, "admin_user_detail")
+	reviewedAt := ""
+	if v.ReviewedAt.Valid {
+		reviewedAt = v.ReviewedAt.Time.Format("2006-01-02 15:04")
+	}
+	sid := strconv.FormatInt(v.ID, 10)
+	writeJSON(w, map[string]any{
+		"ok": 1,
+		"realname": map[string]any{
+			"status":        service.StatusText(v.Status),
+			"name":          name,
+			"number":        number,
+			"submitted_at":  v.SubmittedAt.Format("2006-01-02 15:04"),
+			"reviewed_at":   reviewedAt,
+			"submission_id": v.ID,
+			"front_url":     "/admin/verifications/" + sid + "/photo/front",
+			"back_url":      "/admin/verifications/" + sid + "/photo/back",
+		},
+	})
+}
+
+// UserSetStatus POST /admin/users/{id}/status — 管理员启用/禁用用户。
+func (m *AdminManage) UserSetStatus(w http.ResponseWriter, r *http.Request) {
+	if !m.require(w, r) {
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		jsonStatus(w, r, 400, "用户参数无效")
+		return
+	}
+	vals := jsonVals(r)
+	if vals == nil {
+		if !m.requireCSRF(w, r) {
+			return
+		}
+	}
+	fv := func(k string) string {
+		if vals != nil {
+			return vals[k]
+		}
+		return r.PostFormValue(k)
+	}
+	// disabled=1 表示禁用，disabled=0 表示启用。
+	enable := fv("disabled") != "1"
+	if _, err := m.Users.AdminUserByID(r.Context(), id); err != nil {
+		if errors.Is(err, repo.ErrNotFound) {
+			jsonStatus(w, r, 404, "用户不存在")
+		} else {
+			jsonStatus(w, r, 500, "读取用户失败")
+		}
+		return
+	}
+	if err := m.Users.SetStatus(r.Context(), id, enable); err != nil {
+		writeJSON(w, map[string]any{"ok": 0, "msg": "保存状态失败"})
+		return
+	}
+	if !enable && m.AdminStore != nil {
+		m.AdminStore.RevokeUser(id)
+	}
+	if enable {
+		m.audit(r, "user_enable", "user", id, "status=enabled")
+	} else {
+		m.audit(r, "user_disable", "user", id, "status=disabled")
+	}
+	msg := "已启用"
+	if !enable {
+		msg = "已禁用"
+	}
+	writeJSON(w, map[string]any{"ok": 1, "msg": msg})
+}
+
+// UserRecharge POST /admin/users/{id}/recharge — 管理员给用户充值余额。
+func (m *AdminManage) UserRecharge(w http.ResponseWriter, r *http.Request) {
+	m.userBalanceOp(w, r, "recharge")
+}
+
+// UserRefund POST /admin/users/{id}/refund — 管理员从用户余额退款（扣减）。
+func (m *AdminManage) UserRefund(w http.ResponseWriter, r *http.Request) {
+	m.userBalanceOp(w, r, "refund")
+}
+
+func (m *AdminManage) userBalanceOp(w http.ResponseWriter, r *http.Request, op string) {
+	if !m.require(w, r) {
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		jsonStatus(w, r, 400, "用户参数无效")
+		return
+	}
+	vals := jsonVals(r)
+	if vals == nil {
+		if !m.requireCSRF(w, r) {
+			return
+		}
+	}
+	fv := func(k string) string {
+		if vals != nil {
+			return vals[k]
+		}
+		return r.PostFormValue(k)
+	}
+	amount, _, err := moneyutil.ParsePositive(strings.TrimSpace(fv("amount")), 999999999999)
+	if err != nil {
+		jsonStatus(w, r, 400, "金额无效（最多两位小数且大于 0）")
+		return
+	}
+	note := strings.TrimSpace(fv("note"))
+	if _, err := m.Users.AdminUserByID(r.Context(), id); err != nil {
+		if errors.Is(err, repo.ErrNotFound) {
+			jsonStatus(w, r, 404, "用户不存在")
+		} else {
+			jsonStatus(w, r, 500, "读取用户失败")
+		}
+		return
+	}
+	switch op {
+	case "recharge":
+		if note == "" {
+			note = "管理员充值"
+		}
+		err = m.Balance.Recharge(r.Context(), id, amount, note)
+	case "refund":
+		if note == "" {
+			note = "管理员退款"
+		}
+		// 余额扣减：负数调整，余额不足时 AdminAdjust 返回 ErrInsufficientBalance。
+		err = m.Balance.AdminAdjust(r.Context(), id, "-"+amount, note)
+	default:
+		jsonStatus(w, r, 400, "操作无效")
+		return
+	}
+	if err != nil {
+		msg := err.Error()
+		if errors.Is(err, repo.ErrInsufficientBalance) {
+			msg = "余额不足，无法退款"
+		}
+		writeJSON(w, map[string]any{"ok": 0, "msg": msg})
+		return
+	}
+	m.audit(r, "balance_"+op, "user", id, amount+", "+note)
+	writeJSON(w, map[string]any{"ok": 1, "msg": "操作成功"})
 }
 
 // OrderRefund POST /admin/orders/{id}/refund — 管理员退款。

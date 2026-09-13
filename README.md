@@ -61,20 +61,59 @@ internal/service      业务逻辑（订单/支付/服务）
 internal/gateway      支付网关接口与实现
 internal/cron         定时任务（到期停机/删除）
 db/migrations         SQL 迁移文件
+web/                  Vue3 + TS + Element Plus + Tailwind 前端工程（Vite 双入口）
 ```
 
-## UI 资源
+## UI 架构（前后端分离）
 
-前端是 Go 服务端渲染模板，统一 UI 资源位于 `internal/handler/assets`，并通过 `embed.FS` 编译进单二进制。项目使用本地 Bootstrap 5.3.3 和自有 `ui-*` 样式层，不需要 npm、Node.js 或运行时 CDN；上游模块需要的 Bootstrap 4、jQuery、SweetAlert2，以及 ZJMF 图表用的 ECharts 也已随源码本地化。第三方资源版本与许可证见 `THIRD_PARTY_NOTICES.md`。
+前端为 **Vue3 SPA**（`web/`，Vite 构建，产物 `go:embed` 进单二进制）。**SPA 为前台与后台的唯一界面**，Go 侧对同一 URL 提供 JSON API；仅少量无状态/流程页保留 SSR。前端构建产物是**强制依赖**：`internal/handler/webui/dist` 缺失时进程拒绝启动并提示 `cd web && npm run build`。
 
-修改 UI 后直接按常规方式构建即可：
+**内容协商**：后端在**同一 URL**上按客户端返回 SPA 外壳（HTML）或 JSON——浏览器导航（`Accept` 含 `text/html`）由 `handler.SPAGate` 返回 SPA 外壳；SPA 的 `fetch` 显式携带 `Accept: application/json` 走 JSON API（见 `internal/handler/json.go` 的 `wantsJSON`）。会话（HMAC cookie）与 CSRF（`X-CSRF-Token` 请求头 / `_csrf` 表单字段）两种形态共用同一套会话存储，前台启动先调 `GET /session` 获取 csrf / 站点 / 登录态。
+
+**SPA 接管范围（`handler.SPAGate` 的 `spaOwned`）**：
 
 ```
-go test ./...
-go build -o lumeidc ./cmd/lumeidc
+/            /cart          /buy/{id}      /pay/{id}
+/services    /services/{id} /user          /user/{recharge,invoices,password,profile}
+/notifications
 ```
 
-不要把业务表单的 `action`、字段名、`_csrf` 隐藏字段、脚本依赖的 DOM ID 或供应商插槽改掉；这些是页面与后端的功能契约。
+这些路径的旧 SSR 模板与渲染分支**已删除**；`/login`、`/register`、`/user/verification` 通常也由 SPA 接管。
+
+**仍由 SSR 承载（不可删）**：
+- `/install`（安装向导，装完锁定）。
+- `/services/{id}` 的**子路径**：`module*`（上游面板代理）、`chart` 等监控/JSON，以及 `vnc-ws`（wss 隧道）与 `vnc-pass`（当前 VNC 会话密码）。
+- `/pay/notify`（网关回调）、`/pay/qr`（本站二维码结算页）、`/mock/pay/{no}`（测试网关页）。
+- **认证页**：后台登录 `/admin/login`，以及部署启用**手机号流程**（`login_phone_otp_enabled` / `registration_phone_enabled`）时的 `/login`、`/register`（`auth.html`）。
+- **实名插件流程**：配置了自动实名插件（`verification_provider` 非空且非 `manual`）时的 `/user/verification`（`site.html` + `user_verification.html`）。
+
+前两个认证/实名判定见组合根 `authReady` / `verifyReady`。新增 SPA 页面时，若该 URL 同时存在 SSR 路由，需把它加进 `spaOwned` 并补 `TestSpaOwned` 断言。
+
+**管理后台入口**：后台 SPA（`dist/admin.html`，hash 路由）由 `SPAGate` 挂在**后台根路径**上——默认 `/admin`，启用自定义后台路径后即该路径（`AdminPath` 中间件会把它改写为内部 `/admin`）。后台所有列表/表单/写操作均为 JSON API，旧后台模板与 `renderAdmin` 已删除；`/admin/login` 保留 SSR 图形验证码页。自定义路径启用时直连 `/admin` 仍返回 404（不泄漏路径）。
+
+**构建**：
+
+```
+cd web && npm install && npm run build   # 产物 → internal/handler/webui/dist
+cd .. && go build -o lumeidc ./cmd/lumeidc
+```
+
+`webui/dist` 已加入 `.gitignore`（仅保留 `.gitkeep` 占位），干净 clone 可直接 `go build`/`go test`；但**运行前必须构建前端**，否则进程启动时即报错。仅构建机需要 Node，运行环境仍为单二进制。
+
+**已知取舍（体积）**：Element Plus 目前为 `app.use(ElementPlus)` 全量注册 + `element-plus/dist/index.css` 全量样式，前端主包约 1 MB（gzip ~350 KB）、样式约 380 KB。如需瘦身，可改用 `unplugin-vue-components` + `unplugin-auto-import` 按需引入——但需同时把各文件显式 `import { ElMessage } from 'element-plus'` 改为自动导入（否则程序式组件的样式不会随包引入），并改用 `<el-config-provider :locale="zhCn">` 配置中文，属于一次跨约 30 个文件的重构，务必逐个页面回归。ECharts 已完成按需注册（仅折线图所需模块，异步加载，不进首屏）。
+
+开发期 `web/` 内 `npm run dev` 会把 API 代理到本地 Go 服务（`/__api/*` → `:8080`，即 `config.yaml` 的 `listen` 默认值；若本地改了端口，用 `LUME_DEV_API=http://localhost:端口 npm run dev` 覆盖）。
+
+**供应商能力契约**：后台产品表单的供应商差异已从「HTML+脚本插槽」改为结构化 `ProductFormSpecProvider` 声明（`ProductFormField`），由后台 SPA 渲染控件并执行选品联动，无需供应商再提供 `productform.html`。用户侧服务详情面板中依赖 Bootstrap4/jQuery 与页面内 DOM 的供应商 `widget.html` 与模块页（`/services/{id}/module/*`）仍由 Go 原生渲染，SPA 以 iframe/新窗口承载。
+
+VNC 控制台为前台 SPA 页面（`/services/{id}/console`，`web/src/views/ServiceConsole.vue`），满屏裸页（路由 `meta.bare`，不套前台头尾），noVNC 以 `@novnc/novnc` 随前端打包；Go 侧只保留 wss 隧道 `vnc-ws` 与会话密码 `vnc-pass`，上游 wss 地址与令牌不下发浏览器。
+
+安装结果页（`done.html`、`error.html`）仍由 Go 原生渲染，样式已全部内联，不依赖外部静态资源。
+
+## ai提供商
+
+https://api.6top.site/
+
 
 ## License
 

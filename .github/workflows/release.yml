@@ -22,6 +22,15 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: 构建前端
+        # webui/dist 未入库（.gitignore 仅留 .gitkeep），产物由 go:embed 打进二进制。
+        # 不构建前端则二进制缺少 index.html/admin.html，启动时直接拒绝运行。
+        run: cd web && npm ci && npm run build
       - name: 校验与测试
         run: go vet ./... && go test ./...
       - name: 交叉编译

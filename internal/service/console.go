@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"html/template"
 	"log"
 	"net/url"
 	"sync"
@@ -107,33 +106,6 @@ func (c *Console) savePassword(ctx context.Context, serviceID int64, password st
 		`UPDATE services SET password_crypt=$2 WHERE id=$1`, serviceID, enc); err != nil {
 		log.Printf("[console] service %d 密码落库失败: %v", serviceID, err)
 	}
-}
-
-// ProviderWidget 渲染供应商自带详情页区块（DetailWidgetProvider 插槽）。
-// 未实现该能力的供应商返回零值（详情页回落到全局面板）。csrf 为全局控制台路由表单令牌。
-func (c *Console) ProviderWidget(ctx context.Context, userID, serviceID int64, csrf, statusText string, overview server.HostOverview) (template.HTML, error) {
-	prov, cfg, hostID, err := c.resolveBase(ctx, userID, serviceID)
-	if err != nil {
-		return "", err
-	}
-	wp, ok := prov.(server.DetailWidgetProvider)
-	if !ok {
-		return "", nil
-	}
-	// 实例密码：上游查不回时用 password_crypt 解密
-	var pw string
-	var enc string
-	if c.Crypt != nil {
-		if qerr := c.db.QueryRowContext(ctx,
-			`SELECT password_crypt FROM services WHERE id=$1`, serviceID).Scan(&enc); qerr == nil {
-			if dec, derr := c.Crypt.Decrypt(enc); derr == nil {
-				pw = dec
-			}
-		}
-	}
-	return wp.DetailWidget(ctx, cfg, hostID, server.WidgetData{
-		ServiceID: serviceID, CSRF: csrf, Password: pw, StatusText: statusText, Overview: overview,
-	})
 }
 
 // fillPassword 上游未回传密码时（如 EasyPanel getVh 查不回），用 password_crypt 解密填充。
@@ -448,15 +420,6 @@ func (c *Console) ModulePageContent(ctx context.Context, userID, serviceID int64
 		return "", err
 	}
 	return mp.ModulePage(ctx, cfg, hostID, key)
-}
-
-// ModuleAction 提交方块表单到上游，返回上游响应原文。
-func (c *Console) ModuleAction(ctx context.Context, userID, serviceID int64, form url.Values) (string, error) {
-	mp, cfg, hostID, err := c.moduleProvider(ctx, userID, serviceID)
-	if err != nil {
-		return "", err
-	}
-	return mp.ModuleAction(ctx, cfg, hostID, form)
 }
 
 // UpgradeTargetView 用户可见的升降级目标（已映射到本地产品）。

@@ -11,7 +11,17 @@ import (
 var ErrInvalid = errors.New("金额无效")
 
 // ParsePositive parses a non-exponent decimal amount with at most two decimals.
+// Zero is rejected; use ParseNonNegative when zero is a valid value.
 func ParsePositive(s string, maxCents int64) (string, int64, error) {
+	return parseAmount(s, maxCents, false)
+}
+
+// ParseNonNegative 与 ParsePositive 相同，但允许 0（用于余额抵扣、剩余额等）。
+func ParseNonNegative(s string, maxCents int64) (string, int64, error) {
+	return parseAmount(s, maxCents, true)
+}
+
+func parseAmount(s string, maxCents int64, allowZero bool) (string, int64, error) {
 	if s == "" || strings.TrimSpace(s) != s || strings.HasPrefix(s, "+") || strings.HasPrefix(s, "-") {
 		return "", 0, ErrInvalid
 	}
@@ -47,10 +57,10 @@ func ParsePositive(s string, maxCents int64) (string, int64, error) {
 		return "", 0, ErrInvalid
 	}
 	cents += f
-	if cents <= 0 || cents > maxCents {
+	if cents < 0 || cents > maxCents || (cents == 0 && !allowZero) {
 		return "", 0, ErrInvalid
 	}
-	return strconv.FormatFloat(float64(cents)/100, 'f', 2, 64), cents, nil
+	return FormatCents(cents), cents, nil
 }
 
 func FiniteNonNegative(v float64) bool { return !math.IsNaN(v) && !math.IsInf(v, 0) && v >= 0 }
@@ -123,9 +133,10 @@ func AddPercent(amount, percent string) (fee, payable string, err error) {
 	if feeCents > 999999999999-baseCents {
 		return "", "", ErrInvalid
 	}
-	return formatCents(feeCents), formatCents(baseCents + feeCents), nil
+	return FormatCents(feeCents), FormatCents(baseCents + feeCents), nil
 }
 
-func formatCents(cents int64) string {
+// FormatCents 把分值格式化为两位小数字符串。
+func FormatCents(cents int64) string {
 	return fmt.Sprintf("%d.%02d", cents/100, cents%100)
 }
