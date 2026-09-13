@@ -358,6 +358,11 @@ func (h *Pay) settleReturn(r *http.Request, invoiceNo string) error {
 	if err != nil {
 		return err
 	}
+	// 停用即停收：与下单、模拟支付、补单（PendingPaymentAttempts 过滤 enabled）一致，
+	// 避免管理员因密钥泄露停用网关后，泄露的密钥仍能核销账单。
+	if !inst.Enabled {
+		return fmt.Errorf("支付网关已停用")
+	}
 	impl, ok := h.Gateways[inst.Driver]
 	if !ok {
 		return fmt.Errorf("支付网关驱动未注册")
@@ -386,8 +391,10 @@ func (h *Pay) applyGatewayPayment(ctx context.Context, result gateway.NotifyResu
 		}
 		return nil
 	}
-	// 无法核销当前待支付尝试：查该网关的历史尝试，金额一致者退回余额。
-	if stale, err := h.GwRepo.AttemptByInvoiceGateway(ctx, result.InvoiceNo, code); err == nil && equalAmount(result.Amount, stale.Amount) {
+	// 无法核销当前待支付尝试：查该网关金额一致的历史尝试，退回余额。
+	// 必须按金额找而不只看最新一条：同一账单重开支付会把旧尝试置为失效，
+	// 但旧二维码/链接在网关侧仍可付，迟到回调的金额只对得上那条旧尝试。
+	if stale, err := h.GwRepo.AttemptByInvoiceGatewayAmount(ctx, result.InvoiceNo, code, result.Amount); err == nil {
 		if cerr := h.Payment.CreditCapturedToBalance(ctx, stale.ID, result.TradeNo); cerr != nil {
 			return cerr
 		}
@@ -523,6 +530,13 @@ func (h *Pay) notify(w http.ResponseWriter, r *http.Request) {
 	inst, err := h.GwRepo.Get(r.Context(), code)
 	if err != nil {
 		log.Printf("[notify] 网关 %s 不存在: %v", code, err)
+		http.NotFound(w, r)
+		return
+	}
+	// 停用即停收（与下单、模拟支付、补单一致）：否则管理员为密钥泄露等原因
+	// 停用网关后，泄露的密钥仍能伪造回调把账单核销掉。
+	if !inst.Enabled {
+		log.Printf("[notify] 网关 %s 已停用，忽略回调", code)
 		http.NotFound(w, r)
 		return
 	}

@@ -53,7 +53,10 @@ func TestConfigValidatorCapability(t *testing.T) {
 	if err := epayValidator.ValidateConfig(map[string]string{"api_url": "https://x", "pid": "1"}); err == nil {
 		t.Fatal("缺少商户密钥时应校验失败")
 	}
-	if err := epayValidator.ValidateConfig(map[string]string{"api_url": "https://x", "pid": "1", "key": "k"}); err != nil {
+	if err := epayValidator.ValidateConfig(map[string]string{"api_url": "https://x", "pid": "1", "key": "k"}); err == nil {
+		t.Fatal("缺少支付渠道时应校验失败（submit.php 的 type 必填）")
+	}
+	if err := epayValidator.ValidateConfig(map[string]string{"api_url": "https://x", "pid": "1", "key": "k", "channel": "alipay"}); err != nil {
 		t.Fatalf("凭据完整时不应报错: %v", err)
 	}
 }

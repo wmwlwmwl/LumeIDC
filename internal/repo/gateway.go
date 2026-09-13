@@ -173,15 +173,17 @@ func (g *Gateways) LatestAttempt(ctx context.Context, invoiceNo, code string, pe
 	return p, err
 }
 
-// AttemptByInvoiceGateway 返回账单在指定网关下的最近一次尝试（不限状态、
-// 不要求账单当前仍绑定该网关）。用于识别“切换网关后到达的迟到回调”。
-func (g *Gateways) AttemptByInvoiceGateway(ctx context.Context, invoiceNo, code string) (PaymentAttempt, error) {
+// AttemptByInvoiceGatewayAmount 返回账单在指定网关下金额一致的最近一次尝试
+// （不限状态、不要求账单当前仍绑定该网关）。用于识别“切换网关或重新选择支付
+// 方式后到达的迟到回调”：旧尝试会被新尝试置为失效，只看最新一条会漏掉它，
+// 导致已到账的钱既不核销也不退回。金额按数值比较，容忍 12.5/12.50 的写法差异。
+func (g *Gateways) AttemptByInvoiceGatewayAmount(ctx context.Context, invoiceNo, code, amount string) (PaymentAttempt, error) {
 	var p PaymentAttempt
 	err := g.db.QueryRowContext(ctx,
 		`SELECT p.id,p.invoice_id,p.gateway_code,p.amount::text,p.fee_percent::text,p.fee_amount::text,p.status
 		 FROM payment_attempts p JOIN invoices i ON i.id=p.invoice_id
-		 WHERE i.no=$1 AND p.gateway_code=$2
-		 ORDER BY p.id DESC LIMIT 1`, invoiceNo, code).
+		 WHERE i.no=$1 AND p.gateway_code=$2 AND p.amount=$3::numeric
+		 ORDER BY p.id DESC LIMIT 1`, invoiceNo, code, amount).
 		Scan(&p.ID, &p.InvoiceID, &p.GatewayCode, &p.Amount, &p.FeePercent, &p.FeeAmount, &p.Status)
 	return p, err
 }

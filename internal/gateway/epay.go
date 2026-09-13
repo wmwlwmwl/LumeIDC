@@ -28,10 +28,11 @@ type epayOrder struct {
 func (Epay) Driver() string { return "epay" }
 func (Epay) Name() string   { return "易支付" }
 
-// ValidateConfig 易支付启用前必须配置完整的商户凭据，避免空密钥导致验签失效。
+// ValidateConfig 易支付启用前必须配置完整的商户凭据，避免空密钥导致验签失效；
+// 支付渠道同为下单必填项（submit.php 的 type），缺失时能启用但用户点支付必失败。
 func (Epay) ValidateConfig(cfg map[string]string) error {
-	if strings.TrimSpace(cfg["api_url"]) == "" || strings.TrimSpace(cfg["pid"]) == "" || strings.TrimSpace(cfg["key"]) == "" {
-		return fmt.Errorf("易支付必须填写 API 地址、商户 PID 和商户密钥")
+	if strings.TrimSpace(cfg["api_url"]) == "" || strings.TrimSpace(cfg["pid"]) == "" || strings.TrimSpace(cfg["channel"]) == "" || strings.TrimSpace(cfg["key"]) == "" {
+		return fmt.Errorf("易支付必须填写 API 地址、商户 PID、支付渠道和商户密钥")
 	}
 	return nil
 }
@@ -80,12 +81,13 @@ func (Epay) PayURL(ctx context.Context, req PayRequest) (string, error) {
 	api := req.Config["api_url"]
 	pid := req.Config["pid"]
 	key := req.Config["key"]
-	if api == "" || pid == "" || key == "" {
-		return "", fmt.Errorf("易支付未配置完整（需要 api_url/pid/key）")
+	channel := req.Config["channel"]
+	if api == "" || pid == "" || key == "" || channel == "" {
+		return "", fmt.Errorf("易支付未配置完整（需要 api_url/pid/key/channel）")
 	}
 	params := map[string]string{
 		"pid":          pid,
-		"type":         req.Config["channel"],
+		"type":         channel,
 		"out_trade_no": req.InvoiceNo,
 		"notify_url":   req.NotifyURL,
 		"return_url":   req.ReturnURL,
