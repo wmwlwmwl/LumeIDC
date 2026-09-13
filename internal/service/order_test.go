@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -184,4 +185,75 @@ func TestCreateRenewOrderFreeProduct(t *testing.T) {
 			t.Fatalf("未配置周期应拦下并给出可读原因，实得: %v", err)
 		}
 	})
+}
+
+// 累计消费口径：排除充值账单（充值只是余额入账，充 100 再花 100 不该显示 200），
+// 并扣减已退款额（退款把已付金额退回用户，不构成消费）。前台概览与后台用户编辑共用此统计。
+func TestUserStatsSpendingScope(t *testing.T) {
+	d := testDB(t)
+	ctx := context.Background()
+	var uid int64
+	if err := d.QueryRowContext(ctx,
+		`INSERT INTO users(email,password_hash) VALUES($1,'x') RETURNING id`,
+		"userstats-"+time.Now().Format("150405.000000000")+"@example.invalid").Scan(&uid); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		for _, q := range []string{
+			`DELETE FROM refunds WHERE user_id=$1`,
+			`DELETE FROM invoices WHERE user_id=$1`,
+			`DELETE FROM users WHERE id=$1`,
+		} {
+			if _, err := d.ExecContext(context.Background(), q, uid); err != nil {
+				t.Errorf("清理测试数据失败(%s): %v", q, err)
+			}
+		}
+	})
+	// 已付充值 100（应排除）、已付订单 30（应计入）、未付订单 50（不应计入）
+	// paid_amount 为 NOT NULL DEFAULT 0（030 迁移），已付账单须显式写入实付金额
+	for _, inv := range []struct {
+		kind   string
+		amount string
+		paid   string
+		status int
+	}{
+		{"recharge", "100.00", "100.00", 1},
+		{"order", "30.00", "30.00", 1},
+		{"order", "50.00", "0", 0},
+	} {
+		no, err := genInvoiceNo()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := d.ExecContext(ctx,
+			`INSERT INTO invoices(no,user_id,amount,paid_amount,kind,status) VALUES($1,$2,$3,$4,$5,$6)`,
+			no, uid, inv.amount, inv.paid, inv.kind, inv.status); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	svc := NewServicesRepo(d)
+	spent := func() float64 {
+		t.Helper()
+		_, _, _, paidTotal := svc.UserStats(ctx, uid)
+		v, err := strconv.ParseFloat(paidTotal, 64)
+		if err != nil {
+			t.Fatalf("累计消费不是合法数字: %q (%v)", paidTotal, err)
+		}
+		return v
+	}
+
+	if got := spent(); got != 30 {
+		t.Fatalf("累计消费应只含已付订单 30、排除已付充值与未付订单，实得 %v", got)
+	}
+
+	// 退款 10 后应扣减（refunds.order_id 无外键，统计只按 user_id + status 汇总）
+	if _, err := d.ExecContext(ctx,
+		`INSERT INTO refunds(user_id,order_id,amount,method,status) VALUES($1,0,'10.00','balance','done')`,
+		uid); err != nil {
+		t.Fatal(err)
+	}
+	if got := spent(); got != 20 {
+		t.Fatalf("已退款 10 应从累计消费扣减，期望 20，实得 %v", got)
+	}
 }

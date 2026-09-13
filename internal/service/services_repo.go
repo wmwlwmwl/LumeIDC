@@ -267,7 +267,9 @@ type svcErr string
 
 func (e svcErr) Error() string { return string(e) }
 
-// UserStats 账户概览统计：服务数/激活数/累计支付/未支付账单数（SQL 与旧 handler 内查询逐字平移）。
+// UserStats 账户概览统计：服务数/激活数/累计消费/未支付账单数（SQL 与旧 handler 内查询逐字平移）。
+// 累计消费＝已付订单账单 − 已退款额：充值只是余额入账不构成消费；退款把已付金额退回用户、
+// 也不构成消费（退款不改账单状态，故必须单独扣减）。
 // ponytail: 统计失败按零值降级（页面可用性优先），但记录日志便于排查。
 func (s *ServicesRepo) UserStats(ctx context.Context, userID int64) (serviceCount, activeCount, unpaidCount int64, paidTotal string) {
 	if err := s.db.QueryRowContext(ctx,
@@ -275,8 +277,13 @@ func (s *ServicesRepo) UserStats(ctx context.Context, userID int64) (serviceCoun
 		Scan(&serviceCount, &activeCount); err != nil {
 		log.Printf("[repo] 用户 %d 服务统计查询失败: %v", userID, err)
 	}
+	// 累计消费：kind<>'recharge' 排除充值账单；再扣减 refunds（只由订单退款写入，
+	// 后台"余额退款"走余额调整不落此表，故按 user_id 汇总不会误扣）。
 	if err := s.db.QueryRowContext(ctx,
-		`SELECT coalesce(sum(coalesce(paid_amount,amount)),0) FROM invoices WHERE user_id=$1 AND status=1`, userID).
+		`SELECT coalesce((SELECT sum(coalesce(paid_amount,amount)) FROM invoices
+		                   WHERE user_id=$1 AND status=1 AND kind <> 'recharge'),0)
+		      - coalesce((SELECT sum(amount::numeric) FROM refunds
+		                   WHERE user_id=$1 AND status='done'),0)`, userID).
 		Scan(&paidTotal); err != nil {
 		log.Printf("[repo] 用户 %d 支付统计查询失败: %v", userID, err)
 	}
