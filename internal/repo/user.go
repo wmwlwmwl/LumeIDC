@@ -142,29 +142,11 @@ func (u *Users) MarkPhoneVerified(ctx context.Context, userID int64) error {
 	return err
 }
 
-func (u *Users) SetVerifyToken(ctx context.Context, userID int64, token string) error {
-	_, err := u.db.ExecContext(ctx, `UPDATE users SET verify_token=$2,verify_token_created_at=now() WHERE id=$1`, userID, token)
-	return err
-}
-
 // MarkVerified 直接标记已验证（无邮件能力时使用）。
 func (u *Users) MarkVerified(ctx context.Context, userID int64) error {
 	_, err := u.db.ExecContext(ctx,
 		`UPDATE users SET email_verified=true, verify_token='', verify_token_created_at=NULL WHERE id=$1`, userID)
 	return err
-}
-
-// VerifyEmail 使用令牌完成验证；无效或已用返回错误。
-func (u *Users) VerifyEmail(ctx context.Context, token string) error {
-	res, err := u.db.ExecContext(ctx,
-		`UPDATE users SET email_verified=true, verify_token='', verify_token_created_at=NULL WHERE verify_token=$1 AND email_verified=false AND verify_token_created_at IS NOT NULL AND verify_token_created_at > now()-interval '24 hours'`, token)
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return errors.New("验证链接无效或已使用")
-	}
-	return nil
 }
 
 func (u *Users) VerifyPassword(hash []byte, password string) bool {
@@ -179,12 +161,6 @@ func (u *Users) DeleteUnverified(ctx context.Context, userID int64) error {
 func (u *Users) TouchLogin(ctx context.Context, userID int64) error {
 	_, err := u.db.ExecContext(ctx, `UPDATE users SET last_login_at=now() WHERE id=$1`, userID)
 	return err
-}
-
-func (u *Users) Count(ctx context.Context) (int64, error) {
-	var n int64
-	err := u.db.QueryRowContext(ctx, `SELECT count(*) FROM users`).Scan(&n)
-	return n, err
 }
 
 var ErrDisabled = errDisabled("账号已禁用")

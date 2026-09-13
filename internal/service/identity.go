@@ -13,7 +13,6 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
-	"sync"
 	"time"
 	"unicode"
 
@@ -33,29 +32,6 @@ type UnavailablePhoneOTPProvider struct{}
 
 func (UnavailablePhoneOTPProvider) Send(context.Context, string, string) error {
 	return errors.New("短信服务暂未配置")
-}
-
-// MemoryPhoneOTPProvider 仅供测试和本地联调使用，不得用于生产。
-type MemoryPhoneOTPProvider struct {
-	mu    sync.Mutex
-	codes map[string]string
-}
-
-func NewMemoryPhoneOTPProvider() *MemoryPhoneOTPProvider {
-	return &MemoryPhoneOTPProvider{codes: make(map[string]string)}
-}
-
-func (p *MemoryPhoneOTPProvider) Send(_ context.Context, phone, code string) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.codes[phone] = code
-	return nil
-}
-
-func (p *MemoryPhoneOTPProvider) Code(phone string) string {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.codes[phone]
 }
 
 type Identity struct {

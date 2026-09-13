@@ -88,17 +88,6 @@ func (h *Pages) rechargeSubmit(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/pay/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
 }
 
-type invoiceRow struct {
-	ID         int64
-	No         string
-	Amount     string
-	PaidAmount string
-	FeeAmount  string
-	Kind       string
-	Status     string
-	CreatedAt  string
-}
-
 func invoiceStatusText(status int16) string {
 	switch status {
 	case 0:

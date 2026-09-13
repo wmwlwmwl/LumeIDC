@@ -20,5 +20,3 @@ func (Provider) ProductFormSpec() []server.ProductFormField {
 		Hint:        "选择上游商品后，名称/价格/库存/配置项会自动带出（仍可手动修改）。保存后支付成功将自动向上游开通。",
 	}}
 }
-
-// 删除旧实现：ProductFormWidget、productform.html、embed

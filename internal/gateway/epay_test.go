@@ -1,6 +1,18 @@
 package gateway
 
-import "testing"
+import (
+	"net/url"
+	"testing"
+)
+
+// mapToValues 原在 gateway/urlvalues.go，仅测试使用，随测试就近放置。
+func mapToValues(m map[string]string) url.Values {
+	q := url.Values{}
+	for k, v := range m {
+		q.Set(k, v)
+	}
+	return q
+}
 
 func TestMD5SignUsesDirectKeySuffix(t *testing.T) {
 	params := mapToValues(map[string]string{

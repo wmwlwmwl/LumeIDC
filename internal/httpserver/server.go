@@ -390,7 +390,6 @@ func registerAdminRoutes(mux *http.ServeMux, adminVerification *handler.AdminVer
 	mux.HandleFunc("POST /admin/products/{id}/pull-config", mng.PullConfig)
 	mux.HandleFunc("GET /admin/products/upstream-options", mng.UpstreamOptions)
 	mux.HandleFunc("GET /admin/products/upstream-config", mng.UpstreamConfig)
-	mux.HandleFunc("POST /admin/settings/profit", mng.SaveGlobalProfit)
 }
 
 // registerHealthRoutes 注册健康/就绪检查端点（不经过 CSRF）。

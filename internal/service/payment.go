@@ -1074,10 +1074,6 @@ func (p *Payment) failProvision(ctx context.Context, serviceID int64, err error)
 	return err
 }
 
-func (p *Payment) clearProvisionError(ctx context.Context, serviceID int64) {
-	p.db.ExecContext(ctx, `UPDATE services SET provision_error='' WHERE id=$1`, serviceID)
-}
-
 // serviceCheckpoint 把 CheckpointStore 桥接到 provision_data JSONB。
 type serviceCheckpoint struct {
 	repo      *repo.ProvisionRepo

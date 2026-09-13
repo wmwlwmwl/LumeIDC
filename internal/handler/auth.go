@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
-	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -37,7 +36,6 @@ func (h *Auth) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /auth/phone-code", h.phoneCode)
 	mux.HandleFunc("POST /auth/login-by-code", h.loginByPhoneCode)
 	mux.HandleFunc("POST /logout", h.logout)
-	mux.HandleFunc("GET /verify", h.verifyEmail)
 }
 
 func (h *Auth) settingOn(ctx context.Context, key string, fallback bool) bool {
@@ -374,16 +372,6 @@ func (h *Auth) loginByPhoneCode(w http.ResponseWriter, r *http.Request) {
 	}
 	http.Redirect(w, r, safeNext(fv("next")), 303)
 }
-func (h *Auth) verifyEmail(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	msg := "验证失败：链接无效或已使用"
-	if r.URL.Query().Get("token") == "" {
-		msg = "缺少验证参数"
-	} else if h.Users.VerifyEmail(r.Context(), r.URL.Query().Get("token")) == nil {
-		msg = "邮箱验证成功，请前往登录。"
-	}
-	fmt.Fprintf(w, verifyPageHTML, msg)
-}
 func (h *Auth) loginError(w http.ResponseWriter, r *http.Request, status int, msg string) {
 	w.WriteHeader(status)
 	writeJSON(w, map[string]any{"ok": 0, "msg": msg})
@@ -472,5 +460,3 @@ func csrfOf(s *middleware.Store, w http.ResponseWriter, r *http.Request) string 
 	*r = *r.WithContext(middleware.WithSession(r.Context(), ns))
 	return ns.CSRFToken()
 }
-
-const verifyPageHTML = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>邮箱验证</title></head><body><h1>LumeIDC</h1><p>%s</p><p><a href="/login">前往登录</a></p></body></html>`

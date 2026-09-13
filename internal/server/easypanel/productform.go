@@ -31,5 +31,3 @@ func (Provider) ProductFormSpec() []server.ProductFormField {
 		},
 	}}
 }
-
-// 删除旧实现：ProductFormWidget、productform.html、embed
