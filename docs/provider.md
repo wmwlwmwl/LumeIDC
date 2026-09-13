@@ -38,7 +38,6 @@ type Provider interface {
 | `ProductFormProvider` | 声明产品表单差异（`MarkupFree` 注册表自动合并；PID 提示等文案级差异） |
 | `ProductFormSpecProvider` | 产品表单区块**结构化声明**（`ProductFormField`：`Key/Type/Options/OptionsURL/SyncName/PullConfig/ConfigByValue`），取代旧的 HTML+脚本插槽。后台 SPA 按所选服务器类型渲染控件并执行联动：`OptionsURL` 动态拉选项（`{server_id}` 占位）、`SyncName` 回填名称、`PullConfig` 拉取配置项/价格/库存、`ConfigByValue` 值→增删隐藏配置项。参考 `zjmf/productform.go`（上游商品下拉）与 `easypanel/productform.go`（站点类型→隐藏 `cdn`） |
 | `ProviderUI` | 声明凭据表单字段（服务器表单按类型动态渲染，`api_url`/`api_username`/`api_key` 三列映射） |
-| `DetailWidgetProvider` | 自带服务详情页管理区块（内嵌模板 + 插槽注入，实现后全局面板自动让位）。参考 `easypanel/widget.go` |
 | `ConsoleProvider` | 电源/重装/救援/重置密码（详情页控制台） |
 | `HostDetailFetcher` / `HostOverviewFetcher` | 详情页登录/系统信息；`Detail.PanelURL` 非空时显示"登录主机面板"直登按钮 |
 | `ChartFetcher` / `PowerStatusFetcher` / `TrafficUsageFetcher` / `SnapshotProvider` / `ModuleBlocksProvider` / `ModuleProvider` | 监控/快照/NAT 等高级能力 |

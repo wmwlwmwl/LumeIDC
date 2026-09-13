@@ -22,7 +22,10 @@ git push origin v1.2.3
 
 1. `.github/workflows/release.yml` 自动执行：
 
-- `go vet` + `go test` 全绿后交叉编译两个平台产物
+- 先构建前端：`cd web && npm ci && npm run build`（产物 `internal/handler/webui/dist`
+  由 `go:embed` 打进二进制；缺失时进程启动即报错）
+
+- 构建后 `go vet` + `go test` 全绿，再交叉编译两个平台产物
 
 - 产物与校验文件（资产命名与程序侧严格匹配，小写）：
 

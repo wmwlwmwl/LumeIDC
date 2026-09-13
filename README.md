@@ -55,12 +55,12 @@ cmd/lumeidc/          入口
 internal/config       配置加载
 internal/db           连接与迁移
 internal/middleware   会话 / CSRF / 权限
-internal/handler      HTTP 处理器 + 模板
+internal/handler      HTTP 处理器、SPA 外壳与 JSON API
 internal/repo         数据访问（全参数化）
 internal/service      业务逻辑（订单/支付/服务）
 internal/gateway      支付网关接口与实现
 internal/cron         定时任务（到期停机/删除）
-db/migrations         SQL 迁移文件
+internal/db/migrations  SQL 迁移文件
 web/                  Vue3 + TS + Element Plus + Tailwind 前端工程（Vite 双入口）
 ```
 
@@ -82,7 +82,7 @@ web/                  Vue3 + TS + Element Plus + Tailwind 前端工程（Vite �
 
 **仍由 SSR 承载（不可删）**：
 - `/install`（安装向导，装完锁定）。
-- `/services/{id}` 的**子路径**：`module*`（上游面板代理）、`chart` 等监控/JSON，以及 `vnc-ws`（wss 隧道）与 `vnc-pass`（当前 VNC 会话密码）。
+- `/services/{id}` 的**子路径**：JSON 端点 `blocks` / `block/{fn}` / `block-rules` / `snapshot` / `chart` / `usage` / `power` / `traffic` 等，以及 `vnc-ws`（wss 隧道）与 `vnc-pass`（当前 VNC 会话密码）。
 - `/pay/notify`（网关回调）、`/pay/qr`（本站二维码结算页）、`/mock/pay/{no}`（测试网关页）。
 - **认证页**：后台登录 `/admin/login`，以及部署启用**手机号流程**（`login_phone_otp_enabled` / `registration_phone_enabled`）时的 `/login`、`/register`（`auth.html`）。
 - **实名插件流程**：配置了自动实名插件（`verification_provider` 非空且非 `manual`）时的 `/user/verification`（`site.html` + `user_verification.html`）。
@@ -104,7 +104,7 @@ cd .. && go build -o lumeidc ./cmd/lumeidc
 
 开发期 `web/` 内 `npm run dev` 会把 API 代理到本地 Go 服务（`/__api/*` → `:8080`，即 `config.yaml` 的 `listen` 默认值；若本地改了端口，用 `LUME_DEV_API=http://localhost:端口 npm run dev` 覆盖）。
 
-**供应商能力契约**：后台产品表单的供应商差异已从「HTML+脚本插槽」改为结构化 `ProductFormSpecProvider` 声明（`ProductFormField`），由后台 SPA 渲染控件并执行选品联动，无需供应商再提供 `productform.html`。用户侧服务详情面板中依赖 Bootstrap4/jQuery 与页面内 DOM 的供应商 `widget.html` 与模块页（`/services/{id}/module/*`）仍由 Go 原生渲染，SPA 以 iframe/新窗口承载。
+**供应商能力契约**：供应商差异全部改为结构化声明、由 SPA 渲染——后台产品表单用 `ProductFormSpecProvider`（`ProductFormField`），用户侧服务详情「功能面板」用 `ModuleBlocksProvider` / `ModuleProvider`（`/services/{id}/blocks`、`/block-rules`、`/snapshot` 等 JSON 端点，前端组件 `web/src/components/ServiceBlocks.vue` 渲染 NAT 转发 / 共享建站 / 安全组 / 实例设置 / 快照备份）。原「HTML+脚本插槽」机制（`productform.html`、`widget.html` 与依赖 Bootstrap4/jQuery 的模块页）已删除，不再由 Go 原生渲染。
 
 VNC 控制台为前台 SPA 页面（`/services/{id}/console`，`web/src/views/ServiceConsole.vue`），满屏裸页（路由 `meta.bare`，不套前台头尾），noVNC 以 `@novnc/novnc` 随前端打包；Go 侧只保留 wss 隧道 `vnc-ws` 与会话密码 `vnc-pass`，上游 wss 地址与令牌不下发浏览器。
 
