@@ -196,19 +196,89 @@ func (r *FulfillmentJobs) CheckRetry(ctx context.Context, serviceID int64) error
 	return checkFulfillmentRetry(ctx, r.db, serviceID)
 }
 
-// EnqueueRetry 将人工确认及入队一起提交，避免失败时覆盖未知上游结果的提示。
+const fulfillmentRetryBusiness = `a.id<b.id AND a.service_id=b.service_id AND a.kind=b.kind AND a.cycle=b.cycle
+ AND coalesce(a.order_id,CASE WHEN a.kind='provision' THEN coalesce(s.order_id,0) END)=coalesce(b.order_id,CASE WHEN b.kind='provision' THEN coalesce(s.order_id,0) END)
+ AND b.dedupe_key ~ ('^retry:' || b.kind || ':' || b.service_id::text || ':[0-9]+$')`
+
+const fulfillmentSuperseded = `EXISTS (SELECT 1 FROM fulfillment_jobs b JOIN services s ON s.id=b.service_id
+ WHERE a.superseded_by=b.id AND a.status='dead' AND NOT a.recovery_required AND a.lease_until IS NULL
+ AND ` + fulfillmentRetryBusiness + `)`
+
+func PendingFulfillmentJobsTx(ctx context.Context, tx *sql.Tx, serviceID int64) (int, error) {
+	var count int
+	err := tx.QueryRowContext(ctx, `SELECT count(*) FROM fulfillment_jobs a WHERE service_id=$1
+ AND (recovery_required OR (status<>'succeeded' AND NOT `+fulfillmentSuperseded+`))`, serviceID).Scan(&count)
+	return count, err
+}
+
+// FulfillmentRetryHistoryTx 仅识别人工重试之前、同业务且无未知结果的历史。
+// 开通允许旧人工任务缺少订单号；续费/升级必须明确属于同一订单，不能仅凭服务合并。
+func FulfillmentRetryHistoryTx(ctx context.Context, tx *sql.Tx, jobID int64) ([]int64, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT a.id FROM fulfillment_jobs a
+ JOIN fulfillment_jobs b ON b.id=$1 JOIN services s ON s.id=b.service_id
+ WHERE `+fulfillmentRetryBusiness+`
+ AND a.superseded_by IS NULL AND NOT a.recovery_required AND a.lease_until IS NULL
+ AND a.created_at<=a.updated_at AND a.updated_at<=b.created_at
+ AND a.status IN ('manual_review','dead') ORDER BY a.id`, jobID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// SupersedeFulfillmentHistoryTx 保留失败证据，不把被接替的任务冒充成功；调用者须持服务行锁。
+func SupersedeFulfillmentHistoryTx(ctx context.Context, tx *sql.Tx, jobID int64, ids []int64) error {
+	for _, id := range ids {
+		res, err := tx.ExecContext(ctx, `UPDATE fulfillment_jobs a SET status='dead',superseded_by=b.id
+ FROM fulfillment_jobs b JOIN services s ON s.id=b.service_id
+ WHERE a.id=$1 AND b.id=$2 AND `+fulfillmentRetryBusiness+`
+ AND a.superseded_by IS NULL AND NOT a.recovery_required AND a.lease_until IS NULL
+ AND a.created_at<=a.updated_at AND a.updated_at<=b.created_at
+ AND a.status IN ('manual_review','dead')`, id, jobID)
+		if err != nil {
+			return err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if n != 1 {
+			return errors.New("历史履约任务已变化，禁止接替，请重新核对")
+		}
+	}
+	return nil
+}
+
+// EnqueueRetry 将人工确认、历史收敛及入队一起提交，避免失败时覆盖未知上游结果的提示。
 func (r *FulfillmentJobs) EnqueueRetry(ctx context.Context, serviceID, orderID int64, kind, cycle string) error {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	var id int64
-	if err := tx.QueryRowContext(ctx, `SELECT id FROM services WHERE id=$1 FOR UPDATE`, serviceID).Scan(&id); err != nil {
+	var originalOrder int64
+	if err := tx.QueryRowContext(ctx, `SELECT coalesce(order_id,0) FROM services WHERE id=$1 FOR UPDATE`, serviceID).Scan(&originalOrder); err != nil {
 		return err
 	}
 	if err := checkFulfillmentRetry(ctx, tx, serviceID); err != nil {
 		return err
+	}
+	if kind == "provision" {
+		if orderID != 0 && orderID != originalOrder {
+			return errors.New("开通重试订单与服务不一致")
+		}
+		orderID = originalOrder
+	} else if (kind != "renew" && kind != "upgrade") || orderID <= 0 {
+		return errors.New("重试任务类型或订单号无效")
 	}
 	if kind == "renew" {
 		if orderID <= 0 {
@@ -224,9 +294,24 @@ func (r *FulfillmentJobs) EnqueueRetry(ctx context.Context, serviceID, orderID i
 		}
 	}
 	key := fmt.Sprintf("retry:%s:%d:%d", kind, serviceID, time.Now().UnixNano())
-	if _, err := tx.ExecContext(ctx,
+	var jobID int64
+	if err := tx.QueryRowContext(ctx,
 		`INSERT INTO fulfillment_jobs(service_id,order_id,kind,cycle,dedupe_key)
-		 VALUES($1,nullif($2,0),$3,$4,$5)`, serviceID, orderID, kind, cycle, key); err != nil {
+		 VALUES($1,nullif($2,0),$3,$4,$5) RETURNING id`, serviceID, orderID, kind, cycle, key).Scan(&jobID); err != nil {
+		return err
+	}
+	history, err := FulfillmentRetryHistoryTx(ctx, tx, jobID)
+	if err != nil {
+		return err
+	}
+	pending, err := PendingFulfillmentJobsTx(ctx, tx, serviceID)
+	if err != nil {
+		return err
+	}
+	if pending != len(history)+1 {
+		return errors.New("该服务还有其他未决履约任务，请先处理，禁止重复入队")
+	}
+	if err := SupersedeFulfillmentHistoryTx(ctx, tx, jobID, history); err != nil {
 		return err
 	}
 	return tx.Commit()

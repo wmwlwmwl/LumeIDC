@@ -342,7 +342,7 @@ func Build(cfg *config.Config, version string) (*App, error) {
 	}
 	fulfillment := service.NewFulfillment(jobs, paymentSvc, lifecycle)
 	// 支付成功立即异步执行履约队列（cron 每 15s 轮询仍兜底），开通不再等轮询周期
-	paymentSvc.TriggerFulfillment = func() { go fulfillment.Drain(context.Background(), 3) }
+	paymentSvc.TriggerFulfillment = func() { fulfillment.TriggerDrain(context.Background(), 3) }
 	cronJobs := &cron.Jobs{DB: database, Fulfillment: fulfillment, Notifier: notifier,
 		Providers: providers, Servers: serversRepo, Products: products, Lifecycle: lifecycle,
 		Gateways: gatewaysRepo, Payment: paymentSvc,

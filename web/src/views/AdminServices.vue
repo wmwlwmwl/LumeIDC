@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount, h } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount, h } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox, ElTag, ElButton } from 'element-plus'
 import type { ColumnOption } from '@/types'
@@ -238,6 +238,7 @@ async function load(silent = false) {
 onMounted(() => load())
 onBeforeUnmount(() => {
   disposed = true
+  recoverGeneration++
   clearTimeout(timer)
   clearTimeout(retryTimer)
 })
@@ -318,6 +319,20 @@ const recoverLoading = ref(false)
 const recoverSubmitting = ref(false)
 const recoverRow = ref<AdminService | null>(null)
 const recoverSummary = ref<RecoverySummary | null>(null)
+let recoverGeneration = 0
+watch(recoverVisible, (visible) => {
+  if (visible) return
+  recoverGeneration++
+  recoverLoading.value = false
+  recoverSubmitting.value = false
+  recoverRow.value = null
+  recoverSummary.value = null
+}, { flush: 'sync' })
+
+function closeRecover() {
+  recoverVisible.value = false
+}
+
 const recoverForm = ref({
   decision: '' as '' | 'confirmed_completed' | 'confirmed_not_executed',
   evidence: '',
@@ -336,8 +351,13 @@ const needHostId = computed(
 )
 
 async function openRecover(row: AdminService) {
-  recoverRow.value = row
+  if (disposed) return
+  const generation = ++recoverGeneration
+  const isCurrent = () => !disposed && generation === recoverGeneration
+  const serviceId = row.id
+  recoverRow.value = { ...row }
   recoverSummary.value = null
+  recoverSubmitting.value = false
   recoverForm.value = {
     decision: '',
     evidence: '',
@@ -349,25 +369,40 @@ async function openRecover(row: AdminService) {
   recoverVisible.value = true
   recoverLoading.value = true
   try {
-    recoverSummary.value = await fetchServiceRecovery(row.id)
+    const summary = await fetchServiceRecovery(serviceId)
+    if (!isCurrent()) return
+    if (summary.service_id !== serviceId) throw new Error('对账摘要与当前服务不一致，请重新打开核对')
+    recoverSummary.value = summary
     // 后端已记录的绑定主机直接预填，减少手抄出错。
-    if (recoverSummary.value.host_id > 0) recoverForm.value.verified_host_id = recoverSummary.value.host_id
+    if (summary.host_id > 0) recoverForm.value.verified_host_id = summary.host_id
   } catch (err: unknown) {
-    recoverVisible.value = false
+    if (!isCurrent()) return
     ElMessage.error((err as Error).message || '未找到可核对的隔离任务')
+    closeRecover()
     await load(true)
   } finally {
-    recoverLoading.value = false
+    if (isCurrent()) recoverLoading.value = false
   }
 }
 
 async function submitRecover() {
-  const row = recoverRow.value
-  const sum = recoverSummary.value
-  if (!row || !sum || sum.block_reason) return
-  const f = recoverForm.value
+  if (disposed || !recoverVisible.value || recoverLoading.value || recoverSubmitting.value) return
+  if (!recoverRow.value || !recoverSummary.value || recoverSummary.value.block_reason) return
+  const row = { ...recoverRow.value }
+  const sum = { ...recoverSummary.value }
+  if (sum.service_id !== row.id) {
+    ElMessage.error('对账摘要与当前服务不一致，请重新打开核对')
+    return
+  }
+  const generation = recoverGeneration
+  const isCurrent = () => !disposed && generation === recoverGeneration
+  const f = { ...recoverForm.value }
   if (f.decision !== 'confirmed_completed' && f.decision !== 'confirmed_not_executed') {
     ElMessage.error('请选择对账决策（上游已生效 / 上游未执行）')
+    return
+  }
+  if (f.decision === 'confirmed_not_executed' && !sum.can_resume) {
+    ElMessage.error(sum.resume_reason || '当前任务不允许重新排队')
     return
   }
   const evidence = f.evidence.trim()
@@ -380,7 +415,7 @@ async function submitRecover() {
     return
   }
   let hostId = 0
-  if (needHostId.value) {
+  if (f.decision === 'confirmed_completed' || sum.kind !== 'provision') {
     hostId = Number(f.verified_host_id)
     if (!Number.isInteger(hostId) || hostId <= 0) {
       ElMessage.error('请填写正整数的核实主机 ID（在上游核实到的实例标识）')
@@ -399,18 +434,22 @@ async function submitRecover() {
       billing_verified: f.billing_verified,
       delivery_verified: f.delivery_verified,
     })
+    if (!isCurrent()) return
     ElMessage.success('对账恢复已提交')
-    recoverVisible.value = false
+    closeRecover()
+    const closedGeneration = recoverGeneration
     await load(true)
-    if (f.decision === 'confirmed_not_executed' && !disposed) {
+    if (f.decision === 'confirmed_not_executed' && !disposed && closedGeneration === recoverGeneration) {
       // 未执行路径会立刻重新入队：3 秒后补刷一次，不用等满 10 秒轮询。
       clearTimeout(retryTimer)
-      retryTimer = setTimeout(() => load(true), 3000)
+      retryTimer = setTimeout(() => {
+        if (!disposed && closedGeneration === recoverGeneration) load(true)
+      }, 3000)
     }
   } catch (err: unknown) {
-    ElMessage.error((err as Error).message || '对账恢复失败')
+    if (isCurrent()) ElMessage.error((err as Error).message || '对账恢复失败')
   } finally {
-    recoverSubmitting.value = false
+    if (isCurrent()) recoverSubmitting.value = false
   }
 }
 
@@ -602,7 +641,8 @@ async function saveEdit() {
     </ElDialog>
 
     <!-- 对账恢复：展示后端白名单证据摘要 + 人工举证表单（决策 / 证据 / 三项确认 / 核实主机 ID） -->
-    <ElDialog v-model="recoverVisible" title="对账恢复" width="620px" append-to-body @closed="recoverSummary = null">
+    <!-- 关闭入口同步失效；不接收动画结束时的模型回写，避免旧动画关闭新会话。 -->
+    <ElDialog :model-value="recoverVisible" :before-close="closeRecover" title="对账恢复" width="620px" append-to-body>
       <div v-if="recoverLoading" class="recover-tip">正在读取隔离任务证据…</div>
       <ElAlert
         v-else-if="recoverSummary?.block_reason"
@@ -671,7 +711,7 @@ async function saveEdit() {
         </ElFormItem>
       </ElForm>
       <template #footer>
-        <ElButton @click="recoverVisible = false">取消</ElButton>
+        <ElButton @click="closeRecover">取消</ElButton>
         <ElButton
           type="primary"
           :loading="recoverSubmitting"

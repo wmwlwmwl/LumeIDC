@@ -19,25 +19,53 @@ type Fulfillment struct {
 	Lifecycle *Lifecycle // renew 用；组合根恒注入，nil 时任务直接报错
 }
 
+// ponytail: 单进程共用 4 个执行槽，按当前 25 连接池预留上游账户锁及结果写回空间；
+// 多副本不共享额度，扩容或缩小连接池时应按池容量调整，并改为跨实例配额。
+// 满额不排队、不领取，持久任务由后续轮询兜底。
+var fulfillmentSlots = make(chan struct{}, 4)
+
+func acquireFulfillment(ctx context.Context) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	select {
+	case fulfillmentSlots <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
 func (f *Fulfillment) ProcessOne(ctx context.Context) (bool, error) {
-	job, err := f.Jobs.Claim(ctx, 3*time.Minute)
+	if !acquireFulfillment(ctx) {
+		return false, ctx.Err()
+	}
+	defer func() { <-fulfillmentSlots }()
+	return f.processOne(ctx)
+}
+
+// processOne 仅由已取得执行槽的入口调用，预算覆盖领取、借连接和上游操作。
+func (f *Fulfillment) processOne(ctx context.Context) (bool, error) {
+	opCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+	job, err := f.Jobs.Claim(opCtx, 3*time.Minute)
 	if err != nil || job == nil {
 		return false, err
 	}
-	_, unlock, err := f.Jobs.TryExecutionLock(ctx, job.ServiceID)
+	conn, unlock, err := f.Jobs.TryExecutionLock(opCtx, job.ServiceID)
 	if err != nil {
 		// 未触及上游，原领取原地延后；不持连接等待执行者退出。
 		if errors.Is(err, repo.ErrFulfillmentBusy) {
-			return true, f.Jobs.RetryLater(ctx, job, err, time.Minute)
+			writeCtx, stop := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+			defer stop()
+			return true, f.Jobs.RetryLater(writeCtx, job, err, time.Minute)
 		}
 		return true, err
 	}
 	defer unlock()
-	if err := f.Jobs.ValidateClaim(ctx, job); err != nil {
+	if err := f.Jobs.ValidateClaim(opCtx, conn, job); err != nil {
 		return true, err
 	}
-	opCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-	defer cancel()
 	switch job.Kind {
 	case "provision":
 		err = f.Payment.provision(opCtx, job.ServiceID, 0, job.Cycle)
@@ -58,7 +86,9 @@ func (f *Fulfillment) ProcessOne(ctx context.Context) (bool, error) {
 	default:
 		err = fmt.Errorf("未知履约任务类型: %s", job.Kind)
 	}
-	// 工作预算短于租约，留出结果落库时间；超时不能证明上游没有执行。
+	// 工作预算短于租约；即使调用方取消，也保留最多 30 秒记录结果，不能把超时当作未执行。
+	ctx, stop := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer stop()
 	if opCtx.Err() != nil || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		return true, f.Jobs.MarkManualReview(ctx, job, repo.ErrFulfillmentRecoveryRequired, true)
 	}
@@ -110,9 +140,28 @@ func (f *Fulfillment) markRetryLater(ctx context.Context, job *repo.FulfillmentJ
 	return f.Jobs.RetryLater(ctx, job, cause, time.Duration(minutes)*time.Minute)
 }
 
+// TriggerDrain 在创建协程前非阻塞取得额度，不为已持久化的积压另建内存队列。
+func (f *Fulfillment) TriggerDrain(ctx context.Context, limit int) {
+	if limit <= 0 || !acquireFulfillment(ctx) {
+		return
+	}
+	go func() {
+		defer func() { <-fulfillmentSlots }()
+		f.drain(ctx, limit)
+	}()
+}
+
 func (f *Fulfillment) Drain(ctx context.Context, limit int) {
-	for i := 0; i < limit; i++ {
-		didWork, err := f.ProcessOne(ctx)
+	if limit <= 0 || !acquireFulfillment(ctx) {
+		return
+	}
+	defer func() { <-fulfillmentSlots }()
+	f.drain(ctx, limit)
+}
+
+func (f *Fulfillment) drain(ctx context.Context, limit int) {
+	for i := 0; i < limit && ctx.Err() == nil; i++ {
+		didWork, err := f.processOne(ctx)
 		if err != nil {
 			log.Printf("[fulfillment] 任务失败: %v", err)
 		}

@@ -5,11 +5,17 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"testing"
+	"testing/fstest"
 	"time"
 
-	_ "github.com/jackc/pgx/v5/stdlib"
+	"lumeidc/internal/db"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/stdlib"
 )
 
 func fulfillmentTestDB(t *testing.T) (*sql.DB, int64) {
@@ -248,6 +254,162 @@ func TestFulfillmentNullLeaseAndKnownReview(t *testing.T) {
 	}
 	if err := jobs.Complete(ctx, job); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestFulfillmentRetryRejectsUnstoppedHistory(t *testing.T) {
+	for _, status := range []string{"queued", "running", "retry", "manual_review", "dead"} {
+		t.Run(status, func(t *testing.T) {
+			d, sid := fulfillmentTestDB(t)
+			id := insertFulfillmentJob(t, d, sid, status)
+			if status == "manual_review" || status == "dead" {
+				if _, err := d.Exec(`UPDATE fulfillment_jobs SET recovery_required=true WHERE id=$1`, id); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := NewFulfillmentJobs(d).EnqueueRetry(context.Background(), sid, 0, "provision", "monthly"); err == nil {
+				t.Fatal("未停止或未知结果任务不能被接替")
+			}
+			var count int
+			if err := d.QueryRow(`SELECT count(*) FROM fulfillment_jobs WHERE service_id=$1 AND superseded_by IS NULL`, sid).Scan(&count); err != nil || count != 1 {
+				t.Fatalf("拒绝必须回滚新任务和历史变更：%d，%v", count, err)
+			}
+		})
+	}
+}
+
+func TestFulfillmentSupersededMigrationUpgrade(t *testing.T) {
+	dsn := os.Getenv("TEST_DATABASE_DSN")
+	if dsn == "" {
+		t.Skip("未设置隔离测试数据库")
+	}
+	cfg, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	admin := stdlib.OpenDB(*cfg)
+	defer admin.Close()
+	schema := "fulfillment_migration_" + fmt.Sprint(time.Now().UnixNano())
+	if _, err := admin.Exec(`CREATE SCHEMA ` + schema); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if _, err := admin.Exec(`DROP SCHEMA ` + schema + ` CASCADE`); err != nil {
+			t.Error(err)
+		}
+	}()
+	cfg.RuntimeParams["search_path"] = schema
+	d := stdlib.OpenDB(*cfg)
+	defer d.Close()
+	ctx := context.Background()
+	files := db.Migrations()
+	names, err := fs.Glob(files, "migrations/*.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := fstest.MapFS{}
+	for _, name := range names {
+		if name >= "migrations/061_" {
+			continue
+		}
+		data, err := fs.ReadFile(files, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		before[name] = &fstest.MapFile{Data: data}
+	}
+	if err := db.Migrate(ctx, d, before); err != nil {
+		t.Fatal(err)
+	}
+	var sid, oldID int64
+	if err := d.QueryRow(`WITH u AS (INSERT INTO users(email,password_hash) VALUES('迁移测试@example.invalid','测试') RETURNING id),
+ p AS (INSERT INTO products(name,stock) VALUES('迁移测试',-1) RETURNING id)
+ INSERT INTO services(user_id,product_id,status) SELECT u.id,p.id,0 FROM u,p RETURNING id`).Scan(&sid); err != nil {
+		t.Fatal(err)
+	}
+	oldID = insertFulfillmentJob(t, d, sid, "manual_review")
+	if _, err := d.Exec(`UPDATE fulfillment_jobs SET last_error='迁移前失败证据' WHERE id=$1`, oldID); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := db.Migrate(ctx, d, files); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var status, message string
+	var by sql.NullInt64
+	if err := d.QueryRow(`SELECT status,last_error,superseded_by FROM fulfillment_jobs WHERE id=$1`, oldID).Scan(&status, &message, &by); err != nil {
+		t.Fatal(err)
+	}
+	if status != "manual_review" || message != "迁移前失败证据" || by.Valid {
+		t.Fatal("迁移不能无证据批量忽略历史失败")
+	}
+	if err := NewFulfillmentJobs(d).EnqueueRetry(ctx, sid, 0, "provision", "monthly"); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.QueryRow(`SELECT superseded_by FROM fulfillment_jobs WHERE id=$1`, oldID).Scan(&by); err != nil || !by.Valid {
+		t.Fatalf("升级后的历史必须可结构化接替：%v，%v", by, err)
+	}
+	if _, err := d.Exec(`DELETE FROM services WHERE id=$1`, sid); err != nil {
+		t.Fatalf("升级后的历史整链清理失败：%v", err)
+	}
+}
+
+func TestFulfillmentSupersededMigrationConstraintsAndCleanup(t *testing.T) {
+	d, sid := fulfillmentTestDB(t)
+	ctx := context.Background()
+	a := insertFulfillmentJob(t, d, sid, "dead")
+	b := insertFulfillmentJob(t, d, sid, "queued")
+	if _, err := d.Exec(`UPDATE fulfillment_jobs SET dedupe_key=$2 WHERE id=$1`, b, fmt.Sprintf("retry:provision:%d:1", sid)); err != nil {
+		t.Fatal(err)
+	}
+	for name, query := range map[string]string{
+		"自引用":     `UPDATE fulfillment_jobs SET superseded_by=id WHERE id=$1`,
+		"不存在的接替者": `UPDATE fulfillment_jobs SET superseded_by=9223372036854775807 WHERE id=$1`,
+		"排队任务":    `UPDATE fulfillment_jobs SET superseded_by=$2,status='queued' WHERE id=$1`,
+		"运行任务":    `UPDATE fulfillment_jobs SET superseded_by=$2,status='running' WHERE id=$1`,
+		"隔离任务":    `UPDATE fulfillment_jobs SET superseded_by=$2,recovery_required=true WHERE id=$1`,
+		"残留租约":    `UPDATE fulfillment_jobs SET superseded_by=$2,lease_until=now() WHERE id=$1`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			args := []any{a}
+			if name != "自引用" && name != "不存在的接替者" {
+				args = append(args, b)
+			}
+			if _, err := d.Exec(query, args...); err == nil {
+				t.Fatal("非法接替关系必须被数据库拒绝")
+			}
+		})
+	}
+	if _, err := d.Exec(`UPDATE fulfillment_jobs SET superseded_by=$2,last_error='原始失败证据' WHERE id=$1`, a, b); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(`DELETE FROM fulfillment_jobs WHERE id=$1`, b); err == nil {
+		t.Fatal("不能单删接替者导致审计关系丢失")
+	}
+	tx, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if count, err := PendingFulfillmentJobsTx(ctx, tx, sid); err != nil || count != 1 {
+		t.Fatalf("结构化关系应消除历史阻断：%d，%v", count, err)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE fulfillment_jobs SET dedupe_key='非人工重试' WHERE id=$1`, b); err != nil {
+		t.Fatal(err)
+	}
+	if count, err := PendingFulfillmentJobsTx(ctx, tx, sid); err != nil || count != 2 {
+		t.Fatalf("不能信任业务不匹配的结构化关系：%d，%v", count, err)
+	}
+	if err := tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(`DELETE FROM services WHERE id=$1`, sid); err != nil {
+		t.Fatalf("服务级联清理不能被自引用外键阻断：%v", err)
+	}
+	var count int
+	if err := d.QueryRow(`SELECT count(*) FROM fulfillment_jobs WHERE id IN ($1,$2)`, a, b).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("整链清理失败：%d，%v", count, err)
 	}
 }
 

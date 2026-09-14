@@ -66,6 +66,7 @@ type recoveryState struct {
  snapshot []byte
  invoiceCount int
  targetServer int64
+ retryHistory []int64
 }
 
 // recoveryStateTx 显式选择白名单证据；密码、密钥和完整检查点永不进入响应。
@@ -85,7 +86,9 @@ func recoveryStateTx(ctx context.Context, tx *sql.Tx, serviceID int64) (*recover
  Scan(&s.JobID,&s.Version,&s.Kind,&s.OrderID,&s.Cycle)
  if err != nil { return nil,ErrRecoveryConflict }
  if s.OrderID==0 && s.Kind=="provision" { s.OrderID=s.originalOrder }
- if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM fulfillment_jobs WHERE service_id=$1 AND status<>'succeeded'`,serviceID).Scan(&s.PendingJobs); err != nil { return nil,err }
+ s.PendingJobs,err=repo.PendingFulfillmentJobsTx(ctx,tx,serviceID);if err!=nil{return nil,err}
+ s.retryHistory,err=repo.FulfillmentRetryHistoryTx(ctx,tx,s.JobID);if err!=nil{return nil,err}
+ s.PendingJobs-=len(s.retryHistory)
  err = tx.QueryRowContext(ctx, `SELECT status,coalesce(service_id,0),user_id,product_id,kind,cycle,amount::text,
  coalesce(target_product_id,0),config_snapshot FROM orders WHERE id=$1`,s.OrderID).
  Scan(&s.OrderStatus,&s.orderService,&s.orderUser,&s.orderProduct,&s.orderKind,&s.orderCycle,&s.Amount,&s.TargetProductID,&s.snapshot)
@@ -172,6 +175,7 @@ func (p *Payment) ConfirmFulfillmentRecovery(ctx context.Context, adminID, servi
   var conflict bool
   if err:=tx.QueryRowContext(ctx,`SELECT EXISTS(SELECT 1 FROM services WHERE id<>$1 AND server_id=$2 AND upstream_host_id=$3)`,serviceID,sid,req.VerifiedHostID).Scan(&conflict);err!=nil{return err};if conflict{return fmt.Errorf("该上游主机已绑定其他服务")}
  }
+ if err:=repo.SupersedeFulfillmentHistoryTx(ctx,tx,state.JobID,state.retryHistory);err!=nil{return err}
  next:="succeeded";if req.Decision=="confirmed_not_executed"{next="queued"}
  res,err:=tx.ExecContext(ctx,`UPDATE fulfillment_jobs SET recovery_required=false,status=$4,lease_until=NULL,last_error='',next_attempt_at=now(),updated_at=now()
  WHERE id=$1 AND service_id=$2 AND claim_version=$3 AND recovery_required AND status='manual_review'`,req.JobID,serviceID,req.ExpectedVersion,next)
