@@ -76,24 +76,39 @@ func (j *Jobs) notifyStaleTickets(ctx context.Context) {
 		log.Printf("[cron] 查询超时工单失败: %v", err)
 		return
 	}
-	defer rows.Close()
-	// 提醒标题为全局设置：循环外一次读取，避免逐行 N+1 查询
+	type ticket struct {
+		id, userID int64
+		subject    string
+	}
+	var tickets []ticket
+	for rows.Next() {
+		var it ticket
+		if err := rows.Scan(&it.id, &it.userID, &it.subject); err != nil {
+			rows.Close()
+			log.Print("读取超时工单失败，稍后重试")
+			return
+		}
+		tickets = append(tickets, it)
+	}
+	rows.Close()
+	if rows.Err() != nil {
+		log.Print("遍历超时工单失败，稍后重试")
+		return
+	}
+	// 查询连接先释放，再保存通知，避免小连接池被占满时等待自身。
 	title, _ := j.Notifier.Settings.Get(ctx, "ticket_notify_timeout_title")
 	if strings.TrimSpace(title) == "" {
 		title = "工单处理提醒"
 	}
 	var notifiedIDs []int64
-	for rows.Next() {
-		var id, userID int64
-		var subject string
-		if err := rows.Scan(&id, &userID, &subject); err != nil {
+	for _, it := range tickets {
+		body := "你的工单「" + it.subject + "」仍在处理中，客服会尽快跟进。"
+		if err := j.Notifier.Notify(ctx, it.userID, title, body); err != nil {
 			continue
 		}
-		body := "你的工单「" + subject + "」仍在处理中，客服会尽快跟进。"
-		j.Notifier.Notify(ctx, userID, title, body)
-		notifiedIDs = append(notifiedIDs, id)
+		notifiedIDs = append(notifiedIDs, it.id)
 	}
-	// 标记合并为单条 UPDATE，避免逐行往返（与 Notify 内部逻辑无先后依赖）。
+	// 仅标记已可靠入队的通知；提交后标记前崩溃可能重复提醒，但不会吞通知。
 	if len(notifiedIDs) > 0 {
 		if _, err := j.DB.ExecContext(ctx, `UPDATE tickets SET timeout_notified_at=now() WHERE id = ANY($1)`, notifiedIDs); err != nil {
 			log.Printf("[cron] 批量更新工单提醒标记失败: %v", err)
@@ -282,7 +297,9 @@ func (j *Jobs) notifyExpiringSoon(ctx context.Context) {
 	var warnedIDs []int64
 	for _, it := range items {
 		body := fmt.Sprintf("您的服务将于 %s 到期，请及时续费以免停机。", it.exp.Format("2006-01-02 15:04"))
-		j.Notifier.Notify(ctx, it.uid, "服务即将到期", body)
+		if err := j.Notifier.Notify(ctx, it.uid, "服务即将到期", body); err != nil {
+			continue
+		}
 		warnedIDs = append(warnedIDs, it.id)
 	}
 	// 标记合并为单条 UPDATE，避免逐行往返。

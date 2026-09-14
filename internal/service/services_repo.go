@@ -32,7 +32,8 @@ type ServiceRow struct {
 	ConfigNote   string    `json:"-"`  // 后台手工填写的配置说明（非空时覆盖自动生成的摘要）
 	DaysLeft     int       `json:"-"`  // 距到期天数
 	// Transition 过渡状态（renew_pending=续费人工处理中）：前台据此提示并禁用再次续费。
-	Transition string `json:"-"`
+	Transition  string `json:"-"`
+	HasUpstream bool   `json:"-"`
 	// 内存计价数据（一次查询带回，避免逐行 N 次远程查询）
 	ConfigSnap        []byte // coalesce(sv.config_snapshot, o.config_snapshot)
 	ConfigOpts        []byte // products.configoption
@@ -54,7 +55,11 @@ func (s *ServicesRepo) ListByUser(ctx context.Context, userID int64) ([]ServiceR
 		        coalesce(p.configoption::text,'[]'),
 		        coalesce(pp.monthly::text,'0'), coalesce(pp.quarterly::text,'0'), coalesce(pp.yearly::text,'0'),
 		        p.profit_type, p.profit_value, coalesce(s.profit_type,0), coalesce(s.profit_value,0),
-		        coalesce(sv.transition_state,'')
+		        coalesce(sv.transition_state,''),
+		        (coalesce(sv.server_id,p.server_id) IS NOT NULL AND coalesce(sv.upstream_host_id,0)>0),
+		        coalesce(sv.host_snapshot->'Detail'->>'IP',''),
+		        coalesce(sv.host_snapshot->'Detail'->>'OSName',''),
+		        coalesce(sv.host_snapshot->'Detail'->>'OSVersion','')
 		 FROM services sv JOIN products p ON p.id=sv.product_id
 		 LEFT JOIN servers s ON s.id=p.server_id
 		 LEFT JOIN orders o ON o.id=sv.order_id
@@ -68,10 +73,15 @@ func (s *ServicesRepo) ListByUser(ctx context.Context, userID int64) ([]ServiceR
 	var out []ServiceRow
 	for rows.Next() {
 		var sr ServiceRow
+		var osVersion string
 		if err := rows.Scan(&sr.ID, &sr.Name, &sr.Status, &sr.ExpiresAt, &sr.ProductID, &sr.Hostname,
 			&sr.ConfigSnap, &sr.ConfigNote, &sr.ConfigOpts, &sr.MonthlyBase, &sr.QuarterlyBase, &sr.YearlyBase,
-			&sr.ProfitType, &sr.ProfitValue, &sr.ServerProfitType, &sr.ServerProfitValue, &sr.Transition); err != nil {
+			&sr.ProfitType, &sr.ProfitValue, &sr.ServerProfitType, &sr.ServerProfitValue, &sr.Transition,
+			&sr.HasUpstream, &sr.IP, &sr.OS, &osVersion); err != nil {
 			return nil, err
+		}
+		if sr.OS != "" && osVersion != "" {
+			sr.OS += "-" + osVersion
 		}
 		out = append(out, sr)
 	}
@@ -313,14 +323,19 @@ func (s *ServicesRepo) OwnsActive(ctx context.Context, serviceID, userID int64) 
 
 // AdminServiceRow 后台服务列表行（SQL 与旧 handler 查询逐字平移；含内存计价所需数据）。
 type AdminServiceRow struct {
-	ID       int64
-	UserID   int64
-	User     string // email
-	Name     string
-	Status   string
-	Expires  string
-	Upstream string // upstream host id
-	ProvErr  string
+	RecoveryRequired bool
+	// RecoveryKind / RecoveryVersion 待对账隔离任务的类型与领取版本（无隔离任务时空串/0），
+	// 前端据此渲染「对账恢复」入口并防并发提交。
+	RecoveryKind    string
+	RecoveryVersion int64
+	ID              int64
+	UserID          int64
+	User            string // email
+	Name            string
+	Status          string
+	Expires         string
+	Upstream        string // upstream host id
+	ProvErr         string
 	// Transition 服务过渡状态（如 upgrading）：后台据此展示"升级中"的操作入口。
 	Transition string
 	Profit     string
@@ -352,7 +367,10 @@ type AdminServiceFilter struct {
 
 // AdminList 后台服务列表（服务端筛选，LIMIT 200 保持）。
 func (s *ServicesRepo) AdminList(ctx context.Context, f AdminServiceFilter) ([]AdminServiceRow, error) {
-	query := `SELECT sv.id, sv.user_id, coalesce(u.email,''), coalesce(sv.name,''),
+	query := `SELECT EXISTS(SELECT 1 FROM fulfillment_jobs WHERE service_id=sv.id AND recovery_required),
+	        coalesce((SELECT min(kind) FROM fulfillment_jobs WHERE service_id=sv.id AND recovery_required),''),
+	        coalesce((SELECT min(claim_version) FROM fulfillment_jobs WHERE service_id=sv.id AND recovery_required),0),
+	        sv.id, sv.user_id, coalesce(u.email,''), coalesce(sv.name,''),
 	        CASE sv.status WHEN 0 THEN '待开通' WHEN 1 THEN '激活' WHEN 2 THEN '已停机' ELSE '已删除' END,
 	        to_char(coalesce(sv.expires_at, sv.created_at),'YYYY-MM-DD'),
 	        coalesce(sv.upstream_host_id::text,''), coalesce(sv.provision_error,''), coalesce(sv.transition_state,''),
@@ -392,7 +410,8 @@ func (s *ServicesRepo) AdminList(ctx context.Context, f AdminServiceFilter) ([]A
 	var out []AdminServiceRow
 	for rows.Next() {
 		var r AdminServiceRow
-		if err := rows.Scan(&r.ID, &r.UserID, &r.User, &r.Name, &r.Status, &r.Expires, &r.Upstream, &r.ProvErr, &r.Transition, &r.Profit,
+		if err := rows.Scan(&r.RecoveryRequired, &r.RecoveryKind, &r.RecoveryVersion,
+			&r.ID, &r.UserID, &r.User, &r.Name, &r.Status, &r.Expires, &r.Upstream, &r.ProvErr, &r.Transition, &r.Profit,
 			&r.ProductID, &r.Hostname, &r.ExpiresAt,
 			&r.RenewM, &r.RenewQ, &r.RenewY, &r.ConfigNote,
 			&r.ConfigSnap, &r.ConfigOpts, &r.MonthlyBase,

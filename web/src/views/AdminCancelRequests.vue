@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useAdminRequest } from '../admin/useAdminTable'
 import { ref, computed, onMounted, h } from 'vue'
 import { ElMessage, ElMessageBox, ElTag } from 'element-plus'
 import type { ColumnOption } from '@/types'
@@ -39,16 +40,20 @@ const statusOptions = [
   { label: '全部', value: '' },
 ]
 
+const startRequest = useAdminRequest()
 async function load() {
+  const isCurrent = startRequest()
+  if (!isCurrent) return
   loading.value = true
   try {
     const res = await fetchAdminCancelRequests(status.value)
+    if (!isCurrent()) return
     list.value = res.list
     pending.value = res.pending
   } catch (err: unknown) {
-    ElMessage.error((err as Error).message || '查询失败')
+    if (isCurrent()) ElMessage.error((err as Error).message || '查询失败')
   } finally {
-    loading.value = false
+    if (isCurrent()) loading.value = false
   }
 }
 onMounted(load)

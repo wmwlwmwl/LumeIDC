@@ -24,8 +24,9 @@ func (c *memCheckpoint) SetCheckpoint(k, v string) error { c.m[k] = v; return ni
 func (c *memCheckpoint) DeleteCheckpoint(k string) error { delete(c.m, k); return nil }
 
 // invoiceResp 构造 /get_invoices_detail 的响应体；total 原样嵌入，便于测字符串/数字两种上游形态。
+// 真实未付账单带 status=Unpaid；状态缺失是另一种异常形态（见 invoice_gone_test）。
 func invoiceResp(total string) string {
-	return `{"status":200,"data":{"detail":{"total":` + total + `}}}`
+	return `{"status":200,"data":{"detail":{"status":"Unpaid","total":` + total + `}}}`
 }
 
 // provisionEnv 起一个能走完「清空购物车 → 取配置 → 加购 → 结算」的假上游。

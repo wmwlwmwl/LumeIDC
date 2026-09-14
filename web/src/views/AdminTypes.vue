@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useAdminRequest } from '../admin/useAdminTable'
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { FolderOpened, Plus } from '@element-plus/icons-vue'
@@ -47,14 +48,18 @@ async function doMove() {
   }
 }
 
+const startRequest = useAdminRequest()
 async function load() {
+  const isCurrent = startRequest()
+  if (!isCurrent) return
   loading.value = true
   try {
-    list.value = await fetchAdminTypes()
+    const data = await fetchAdminTypes()
+    if (isCurrent()) list.value = data
   } catch (err: unknown) {
-    ElMessage.error((err as Error).message || '查询失败')
+    if (isCurrent()) ElMessage.error((err as Error).message || '查询失败')
   } finally {
-    loading.value = false
+    if (isCurrent()) loading.value = false
   }
 }
 onMounted(load)

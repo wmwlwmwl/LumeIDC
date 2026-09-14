@@ -1133,6 +1133,9 @@ func (p *Payment) orderCostAmount(ctx context.Context, serviceID int64) float64 
 // 可重入：以 refunds 表是否已有记录判定。退款成功但关单失败时，重试只补齐关单、不重复退款；
 // 反过来若先关单后退款，退款失败会让用户钱货两空，故顺序固定为"先退后关"。
 func (p *Payment) RefundPendingService(ctx context.Context, adminID, serviceID int64, reason string) error {
+	if err := repo.NewFulfillmentJobs(p.db).CheckRetry(ctx, serviceID); err != nil {
+		return err
+	}
 	var orderID int64
 	var amount string
 	if err := p.db.QueryRowContext(ctx,
@@ -1187,6 +1190,19 @@ func (p *Payment) Refund(ctx context.Context, adminID, orderID int64, amount, re
 		return err
 	}
 	defer tx.Rollback()
+	// 先取服务执行锁再按既有订单/账单顺序加行锁；try 锁避免与恢复相互等待。
+	var serviceID int64
+	if err := tx.QueryRowContext(ctx, `SELECT coalesce(o.service_id,(SELECT id FROM services WHERE order_id=o.id LIMIT 1),0) FROM orders o WHERE o.id=$1`, orderID).Scan(&serviceID); err != nil {
+		return fmt.Errorf("订单不存在")
+	}
+	if serviceID > 0 {
+		var locked bool
+		if err := tx.QueryRowContext(ctx, `SELECT pg_try_advisory_xact_lock(hashtextextended($1,0))`, repo.FulfillmentLockKey(serviceID)).Scan(&locked); err != nil { return err }
+		if !locked { return repo.ErrFulfillmentBusy }
+		var blocked bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM fulfillment_jobs WHERE service_id=$1 AND (recovery_required OR status='running'))`, serviceID).Scan(&blocked); err != nil { return err }
+		if blocked { return repo.ErrFulfillmentRecoveryRequired }
+	}
 	var userID int64
 	var orderAmount string
 	if err := tx.QueryRowContext(ctx, `SELECT user_id, amount FROM orders WHERE id=$1 FOR UPDATE`, orderID).

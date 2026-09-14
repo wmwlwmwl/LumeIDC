@@ -323,22 +323,20 @@ func TestUpgradeFailurePolicy(t *testing.T) {
 		}
 	})
 
-	t.Run("未知错误：回滚退款并解除升级中", func(t *testing.T) {
+	t.Run("未知错误：转人工核对，不退款保持升级中", func(t *testing.T) {
 		reset()
 		before := balance()
 		prov.err = errors.New("上游 500")
-		if err := lc.Upgrade(ctx, svcID, "monthly", orderID); err == nil {
-			t.Fatal("未知错误应返回失败")
+		if err := lc.Upgrade(ctx, svcID, "monthly", orderID); !server.IsManualReview(err) {
+			t.Fatalf("未知结果应转人工核对，实得: %v", err)
 		}
-		if got := balance(); got != before+50 {
-			t.Fatalf("未知错误应退回差价 50，余额 %v → %v", before, got)
+		// 未知结果不能盲目退款：退了用户就没法再按新价"强制开通"，应隔离等对账恢复。
+		if got := balance(); got != before {
+			t.Fatalf("未知结果不应退款，余额 %v → %v", before, got)
 		}
-		tr, _, pd := serviceState()
-		if tr != "" {
-			t.Fatalf("应解除升级中避免服务被锁死，实得 %q", tr)
-		}
-		if !strings.Contains(pd, upgradeDoneCkKey(orderID)) {
-			t.Fatalf("应写入终态检查点防止重试重复退款，实得 %q", pd)
+		tr, _, _ := serviceState()
+		if tr != "upgrading" {
+			t.Fatalf("应保持升级中等待对账恢复，实得 %q", tr)
 		}
 	})
 

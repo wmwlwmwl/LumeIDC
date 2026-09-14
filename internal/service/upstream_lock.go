@@ -24,9 +24,11 @@ func lockUpstreamAccount(ctx context.Context, db *sql.DB, cfg server.Config) (fu
 	}
 	_, _ = h.Write([]byte(normalized + "\x00" + cfg.APIUsername))
 	key := int64(h.Sum64())
-	if _, err := conn.ExecContext(ctx, `SELECT pg_advisory_lock($1)`, key); err != nil {
+	var locked bool
+	if err := conn.QueryRowContext(ctx, `SELECT pg_try_advisory_lock($1)`, key).Scan(&locked); err != nil || !locked {
 		conn.Close()
-		return nil, err
+		if err != nil { return nil, err }
+		return nil, &server.RetryLaterError{Msg: "上游账户正在处理其他开通，请稍后重试"}
 	}
 	return func() {
 		_, _ = conn.ExecContext(context.Background(), `SELECT pg_advisory_unlock($1)`, key)

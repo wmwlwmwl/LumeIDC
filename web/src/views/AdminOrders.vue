@@ -4,6 +4,7 @@ import { ElMessage, ElTag } from 'element-plus'
 import type { ColumnOption } from '@/types'
 import ArtButtonTable from '../components/core/forms/art-button-table/index.vue'
 import { fetchOrders, refundOrder, type OrderItem } from '../admin/api'
+import { useAdminRequest } from '../admin/useAdminTable'
 
 const list = ref<OrderItem[]>([])
 const page = ref(1)
@@ -105,7 +106,10 @@ const refundMethod = ref('balance')
 const refundReason = ref('')
 const refunding = ref(false)
 
+const startRequest = useAdminRequest()
 async function load() {
+  const isCurrent = startRequest()
+  if (!isCurrent) return
   loading.value = true
   try {
     const res = await fetchOrders(
@@ -114,13 +118,14 @@ async function load() {
       sortKey.value || undefined,
       sortKey.value ? sortOrder.value : undefined,
     )
+    if (!isCurrent()) return
     list.value = res.list
     total.value = res.total
     profit.value = res.profit
   } catch (err: unknown) {
-    ElMessage.error((err as Error).message || '查询失败')
+    if (isCurrent()) ElMessage.error((err as Error).message || '查询失败')
   } finally {
-    loading.value = false
+    if (isCurrent()) loading.value = false
   }
 }
 onMounted(load)

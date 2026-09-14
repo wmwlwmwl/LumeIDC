@@ -9,15 +9,19 @@ import (
 )
 
 type FulfillmentJob struct {
-	ID        int64
-	ServiceID int64
-	OrderID   sql.NullInt64
-	Kind      string
-	Cycle     string
-	Attempts  int
+	ID           int64
+	ServiceID    int64
+	OrderID      sql.NullInt64
+	Kind         string
+	Cycle        string
+	Attempts     int
+	ClaimVersion int64
 }
 
 type FulfillmentJobs struct{ db *sql.DB }
+
+var ErrFulfillmentLeaseLost = errors.New("履约任务领取权已失效，结果未写入，请核对上游结果")
+var ErrFulfillmentRecoveryRequired = errors.New("履约任务中断，上游结果未知；请核对上游账单和实例并完成对账，禁止直接重试")
 
 func (r *FulfillmentJobs) EnqueueTx(ctx context.Context, tx *sql.Tx, serviceID, orderID int64, kind, cycle string) error {
 	key := fmt.Sprintf("%s:%d", kind, orderID)
@@ -28,19 +32,97 @@ func (r *FulfillmentJobs) EnqueueTx(ctx context.Context, tx *sql.Tx, serviceID, 
 	return err
 }
 
+// recoverExpired 只隔离，不重放上游操作；空租约的历史 running 同样视为未知。
+// 服务行锁与领取、人工重试共用，隔离状态与后台提示在同一事务提交。
+// ponytail: 每次最多处理 100 个服务；积压由后续轮询恢复，规模扩大时改为独立分批恢复任务。
+func (r *FulfillmentJobs) recoverExpired(ctx context.Context) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	rows, err := tx.QueryContext(ctx, `SELECT s.id FROM services s
+		WHERE EXISTS (SELECT 1 FROM fulfillment_jobs j WHERE j.service_id=s.id
+		 AND j.status='running' AND (j.lease_until IS NULL OR j.lease_until<=now()))
+		ORDER BY s.id FOR UPDATE OF s SKIP LOCKED LIMIT 100`)
+	if err != nil {
+		return err
+	}
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		ids = append(ids, id)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		var kind string
+		err := tx.QueryRowContext(ctx, `SELECT kind FROM fulfillment_jobs
+			WHERE service_id=$1 AND status='running' AND (lease_until IS NULL OR lease_until<=now())
+			ORDER BY id LIMIT 1 FOR UPDATE`, id).Scan(&kind)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE services SET provision_error=$2,
+			transition_state=CASE WHEN coalesce(transition_state,'')='' AND $3='renew' THEN 'renew_pending'
+			 WHEN coalesce(transition_state,'')='' AND $3='upgrade' THEN 'upgrading' ELSE transition_state END
+			WHERE id=$1`, id, ErrFulfillmentRecoveryRequired.Error(), kind); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE fulfillment_jobs SET status='manual_review',recovery_required=true,
+			lease_until=NULL,last_error=$2,updated_at=now()
+			WHERE service_id=$1 AND status='running' AND (lease_until IS NULL OR lease_until<=now())`,
+			id, ErrFulfillmentRecoveryRequired.Error()); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 func (r *FulfillmentJobs) Claim(ctx context.Context, lease time.Duration) (*FulfillmentJob, error) {
+	if lease <= 0 {
+		return nil, errors.New("履约租约时长必须大于零")
+	}
+	if err := r.recoverExpired(ctx); err != nil {
+		return nil, err
+	}
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
+	var serviceID int64
+	err = tx.QueryRowContext(ctx, `SELECT s.id FROM services s
+		WHERE EXISTS (SELECT 1 FROM fulfillment_jobs j WHERE j.service_id=s.id
+		 AND j.status IN ('queued','retry') AND j.next_attempt_at<=now()
+		 AND (j.lease_until IS NULL OR j.lease_until<=now()))
+		AND NOT EXISTS (SELECT 1 FROM fulfillment_jobs j WHERE j.service_id=s.id
+		 AND (j.status='running' OR j.recovery_required))
+		ORDER BY (SELECT min(j.id) FROM fulfillment_jobs j WHERE j.service_id=s.id AND j.status IN ('queued','retry'))
+		FOR UPDATE OF s SKIP LOCKED LIMIT 1`).Scan(&serviceID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	// 锁定服务后用新快照再次判断，避免等待锁期间旧任务刚被领取或隔离。
 	var j FulfillmentJob
-	err = tx.QueryRowContext(ctx,
-		`SELECT id,service_id,order_id,kind,cycle,attempts
-		 FROM fulfillment_jobs
-		 WHERE status IN ('queued','retry') AND next_attempt_at<=now()
-		   AND (lease_until IS NULL OR lease_until<now())
-		 ORDER BY id FOR UPDATE SKIP LOCKED LIMIT 1`).
+	err = tx.QueryRowContext(ctx, `SELECT id,service_id,order_id,kind,cycle,attempts
+		FROM fulfillment_jobs WHERE service_id=$1 AND status IN ('queued','retry') AND next_attempt_at<=now()
+		AND (lease_until IS NULL OR lease_until<=now())
+		AND NOT EXISTS (SELECT 1 FROM fulfillment_jobs x WHERE x.service_id=$1 AND (x.status='running' OR x.recovery_required))
+		ORDER BY id FOR UPDATE SKIP LOCKED LIMIT 1`, serviceID).
 		Scan(&j.ID, &j.ServiceID, &j.OrderID, &j.Kind, &j.Cycle, &j.Attempts)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -48,10 +130,10 @@ func (r *FulfillmentJobs) Claim(ctx context.Context, lease time.Duration) (*Fulf
 	if err != nil {
 		return nil, err
 	}
-	_, err = tx.ExecContext(ctx,
-		`UPDATE fulfillment_jobs SET status='running',attempts=attempts+1,
-		 lease_until=now()+($2 * interval '1 second'),updated_at=now() WHERE id=$1`,
-		j.ID, int64(lease.Seconds()))
+	err = tx.QueryRowContext(ctx,
+		`UPDATE fulfillment_jobs SET status='running',attempts=attempts+1,claim_version=claim_version+1,
+		 lease_until=clock_timestamp()+($2 * interval '1 second'),updated_at=now() WHERE id=$1 RETURNING claim_version`,
+		j.ID, lease.Seconds()).Scan(&j.ClaimVersion)
 	if err != nil {
 		return nil, err
 	}
@@ -62,13 +144,27 @@ func (r *FulfillmentJobs) Claim(ctx context.Context, lease time.Duration) (*Fulf
 	return &j, nil
 }
 
-func (r *FulfillmentJobs) Complete(ctx context.Context, id int64) error {
-	_, err := r.db.ExecContext(ctx,
-		`UPDATE fulfillment_jobs SET status='succeeded',lease_until=NULL,last_error='',updated_at=now() WHERE id=$1`, id)
-	return err
+func fulfillmentWriteResult(res sql.Result, err error) error {
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return ErrFulfillmentLeaseLost
+	}
+	return nil
 }
 
-// HasRunningJob 检查指定服务是否有正在执行的履约任务。
+func (r *FulfillmentJobs) Complete(ctx context.Context, job *FulfillmentJob) error {
+	return fulfillmentWriteResult(r.db.ExecContext(ctx,
+		`UPDATE fulfillment_jobs SET status='succeeded',lease_until=NULL,last_error='',updated_at=now()
+		 WHERE id=$1 AND claim_version=$2 AND status='running' AND lease_until>clock_timestamp() AND NOT recovery_required`, job.ID, job.ClaimVersion))
+}
+
+// HasRunningJob 不把过期任务当作已完成：恢复由 Claim 的隔离事务处理。
 func (r *FulfillmentJobs) HasRunningJob(ctx context.Context, serviceID int64) (bool, error) {
 	var exists bool
 	err := r.db.QueryRowContext(ctx,
@@ -77,71 +173,132 @@ func (r *FulfillmentJobs) HasRunningJob(ctx context.Context, serviceID int64) (b
 	return exists, err
 }
 
-// EnqueueRetry 入队重试任务（管理员手动重试），dedupe key 含时间戳避免与已有任务冲突。
-// orderID 为 0 表示任务不依赖订单（开通）；升级必须带订单号，否则定位不到升级单与检查点。
-func (r *FulfillmentJobs) EnqueueRetry(ctx context.Context, serviceID, orderID int64, kind, cycle string) error {
-	key := fmt.Sprintf("retry:%s:%d:%d", kind, serviceID, time.Now().UnixNano())
-	_, err := r.db.ExecContext(ctx,
-		`INSERT INTO fulfillment_jobs(service_id,order_id,kind,cycle,dedupe_key)
-		 VALUES($1,nullif($2,0),$3,$4,$5)`,
-		serviceID, orderID, kind, cycle, key)
-	return err
+func checkFulfillmentRetry(ctx context.Context, q interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, serviceID int64) error {
+	var running, recovery bool
+	if err := q.QueryRowContext(ctx, `SELECT
+		EXISTS(SELECT 1 FROM fulfillment_jobs WHERE service_id=$1 AND status='running'),
+		EXISTS(SELECT 1 FROM fulfillment_jobs WHERE service_id=$1 AND recovery_required)`, serviceID).Scan(&running, &recovery); err != nil {
+		return err
+	}
+	if recovery {
+		return ErrFulfillmentRecoveryRequired
+	}
+	if running {
+		return errors.New("该服务已有正在执行或等待复核的任务，请等待处理后再试")
+	}
+	return nil
 }
 
-func (r *FulfillmentJobs) Fail(ctx context.Context, id int64, attempts int, cause error) error {
+// CheckRetry 在后台取消操作前拒绝正在执行或未知结果的任务；人工入队另在事务内检查。
+func (r *FulfillmentJobs) CheckRetry(ctx context.Context, serviceID int64) error {
+	return checkFulfillmentRetry(ctx, r.db, serviceID)
+}
+
+// EnqueueRetry 将人工确认及入队一起提交，避免失败时覆盖未知上游结果的提示。
+func (r *FulfillmentJobs) EnqueueRetry(ctx context.Context, serviceID, orderID int64, kind, cycle string) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var id int64
+	if err := tx.QueryRowContext(ctx, `SELECT id FROM services WHERE id=$1 FOR UPDATE`, serviceID).Scan(&id); err != nil {
+		return err
+	}
+	if err := checkFulfillmentRetry(ctx, tx, serviceID); err != nil {
+		return err
+	}
+	if kind == "renew" {
+		if orderID <= 0 {
+			return errors.New("续费任务缺少订单号")
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE services SET provision_data=jsonb_set(coalesce(provision_data,'{}'::jsonb),ARRAY[$2]::text[],'"1"'::jsonb,true) WHERE id=$1`, serviceID, fmt.Sprintf("renew_price_ok_%d", orderID)); err != nil {
+			return err
+		}
+	}
+	if kind == "renew" || kind == "upgrade" {
+		if _, err := tx.ExecContext(ctx, `UPDATE services SET provision_error='' WHERE id=$1`, serviceID); err != nil {
+			return err
+		}
+	}
+	key := fmt.Sprintf("retry:%s:%d:%d", kind, serviceID, time.Now().UnixNano())
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO fulfillment_jobs(service_id,order_id,kind,cycle,dedupe_key)
+		 VALUES($1,nullif($2,0),$3,$4,$5)`, serviceID, orderID, kind, cycle, key); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (r *FulfillmentJobs) Fail(ctx context.Context, job *FulfillmentJob, cause error) error {
 	status := "retry"
-	if attempts >= 8 {
+	if job.Attempts >= 8 {
 		status = "dead"
 	}
-	shift := attempts
-	if shift > 10 {
-		shift = 10
-	}
+	shift := min(max(job.Attempts, 0), 10)
 	delay := time.Duration(1<<shift) * time.Minute
-	msg := "未知错误"
-	if cause != nil {
-		msg = cause.Error()
-	}
-	if len(msg) > 500 {
-		msg = msg[:500]
-	}
-	_, err := r.db.ExecContext(ctx,
-		`UPDATE fulfillment_jobs SET status=$2,lease_until=NULL,last_error=$3,
-		 next_attempt_at=now()+($4 * interval '1 second'),updated_at=now() WHERE id=$1`,
-		id, status, msg, int64(delay.Seconds()))
-	return err
+	return fulfillmentWriteResult(r.db.ExecContext(ctx,
+		`UPDATE fulfillment_jobs SET status=$3,lease_until=NULL,last_error=$4,
+		 next_attempt_at=now()+($5 * interval '1 second'),updated_at=now()
+		 WHERE id=$1 AND claim_version=$2 AND status='running' AND lease_until>clock_timestamp() AND NOT recovery_required`,
+		job.ID, job.ClaimVersion, status, fulfillmentError(cause, "未知错误"), delay.Seconds()))
 }
 
-// RetryLater 保持任务可重试且不消耗重试次数：用于"等上游充值"这类会自愈的失败。
-// attempts 归零，避免累计到 8 次被判 dead——上游充值到账后下一次重试即可成功。
-// ponytail: 代价是这类失败永不放弃。上游若长期欠费，任务会以 interval 为周期一直留在队列里；
-// 账单被删除等真正无解的失败会转 ManualReviewError，不再走这条路径。
-func (r *FulfillmentJobs) RetryLater(ctx context.Context, id int64, cause error, interval time.Duration) error {
-	msg := "等待外部条件"
-	if cause != nil {
-		msg = cause.Error()
-	}
-	if len(msg) > 500 {
-		msg = msg[:500]
-	}
-	_, err := r.db.ExecContext(ctx,
-		`UPDATE fulfillment_jobs SET status='retry',attempts=0,lease_until=NULL,last_error=$2,
-		 next_attempt_at=now()+($3 * interval '1 second'),updated_at=now() WHERE id=$1`,
-		id, msg, int64(interval.Seconds()))
-	return err
+// RetryLater 不消耗重试次数，但领取版本始终单调增加。
+// ponytail: 上游若长期欠费，任务按 interval 一直留队；真正无解的失败应转人工。
+func (r *FulfillmentJobs) RetryLater(ctx context.Context, job *FulfillmentJob, cause error, interval time.Duration) error {
+	return fulfillmentWriteResult(r.db.ExecContext(ctx,
+		`UPDATE fulfillment_jobs SET status='retry',attempts=0,lease_until=NULL,last_error=$3,
+		 next_attempt_at=now()+($4 * interval '1 second'),updated_at=now()
+		 WHERE id=$1 AND claim_version=$2 AND status='running' AND lease_until>clock_timestamp() AND NOT recovery_required`,
+		job.ID, job.ClaimVersion, fulfillmentError(cause, "等待外部条件"), interval.Seconds()))
 }
 
-// MarkManualReview 标记任务为人工复核状态（settle 成功但 checkpoint 未落库等未知窗口）。
-func (r *FulfillmentJobs) MarkManualReview(ctx context.Context, id int64, cause error) error {
-	msg := "需要人工复核"
-	if cause != nil {
-		msg = cause.Error()
+// MarkManualReview 的 recoveryRequired 区分未知结果与已知的价格/余额暂停。
+func (r *FulfillmentJobs) MarkManualReview(ctx context.Context, job *FulfillmentJob, cause error, recoveryRequired bool) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
 	}
+	defer tx.Rollback()
+	var id int64
+	if err := tx.QueryRowContext(ctx, `SELECT id FROM services WHERE id=$1 FOR UPDATE`, job.ServiceID).Scan(&id); err != nil {
+		return err
+	}
+	if err := tx.QueryRowContext(ctx, `SELECT id FROM fulfillment_jobs WHERE id=$1 AND service_id=$3
+		AND claim_version=$2 AND status='running' AND lease_until>clock_timestamp() AND NOT recovery_required FOR UPDATE`,
+		job.ID, job.ClaimVersion, job.ServiceID).Scan(&id); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrFulfillmentLeaseLost
+		}
+		return err
+	}
+	if recoveryRequired {
+		if _, err := tx.ExecContext(ctx, `UPDATE services SET provision_error=$2,
+			transition_state=CASE WHEN coalesce(transition_state,'')='' AND $3='renew' THEN 'renew_pending'
+			 WHEN coalesce(transition_state,'')='' AND $3='upgrade' THEN 'upgrading' ELSE transition_state END WHERE id=$1`,
+			job.ServiceID, ErrFulfillmentRecoveryRequired.Error(), job.Kind); err != nil {
+			return err
+		}
+	}
+	if err := fulfillmentWriteResult(tx.ExecContext(ctx,
+		`UPDATE fulfillment_jobs SET status='manual_review',lease_until=NULL,last_error=$3,recovery_required=$4,updated_at=now()
+		 WHERE id=$1 AND claim_version=$2 AND status='running' AND lease_until>clock_timestamp() AND NOT recovery_required`,
+		job.ID, job.ClaimVersion, fulfillmentError(cause, "需要人工复核"), recoveryRequired)); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func fulfillmentError(cause error, fallback string) string {
+	if cause == nil {
+		return fallback
+	}
+	msg := []rune(cause.Error())
 	if len(msg) > 500 {
 		msg = msg[:500]
 	}
-	_, err := r.db.ExecContext(ctx,
-		`UPDATE fulfillment_jobs SET status='manual_review',lease_until=NULL,last_error=$2,updated_at=now() WHERE id=$1`,
-		id, msg)
-	return err
+	return string(msg)
 }

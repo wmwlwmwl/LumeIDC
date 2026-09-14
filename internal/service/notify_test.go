@@ -2,10 +2,14 @@ package service
 
 import (
 	"bufio"
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -17,6 +21,7 @@ type fakeSMTPServer struct {
 	authMechs  string // 如 "LOGIN PLAIN"
 	rejectAuth bool
 	gotTo      string
+	mu         sync.Mutex
 	done       chan struct{}
 }
 
@@ -88,7 +93,9 @@ func (f *fakeSMTPServer) handle(c net.Conn) {
 			if i := strings.Index(strings.ToUpper(line), "TO:<"); i >= 0 {
 				rest := line[i+4:]
 				if j := strings.Index(rest, ">"); j >= 0 {
+					f.mu.Lock()
 					f.gotTo = rest[:j]
+					f.mu.Unlock()
 				}
 			}
 			send("250 2.1.5 Ok\r\n")
@@ -112,7 +119,143 @@ func (f *fakeSMTPServer) handle(c net.Conn) {
 	}
 }
 
-// TestMailHeaderFrom 发件人显示名：中文按 RFC 2047 编码、ASCII 直出、无站点名时只留地址。
+// startStalledSMTP 接受连接但不发 greeting，取消必须真正关闭连接才能让服务端退出。
+func startStalledSMTP(t *testing.T) (string, int, *atomic.Int32, *atomic.Int32) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var active, peak atomic.Int32
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			n := active.Add(1)
+			for p := peak.Load(); n > p && !peak.CompareAndSwap(p, n); p = peak.Load() {
+			}
+			go func() {
+				defer c.Close()
+				defer active.Add(-1)
+				_ = c.SetDeadline(time.Now().Add(5 * time.Second))
+				_, _ = io.Copy(io.Discard, c)
+			}()
+		}
+	}()
+	t.Cleanup(func() { _ = ln.Close() })
+	host, portText, _ := net.SplitHostPort(ln.Addr().String())
+	var port int
+	_, _ = fmt.Sscanf(portText, "%d", &port)
+	return host, port, &active, &peak
+}
+
+func waitMail(t *testing.T, condition func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for !condition() {
+		if time.Now().After(deadline) {
+			t.Fatal("等待邮件测试条件超时")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func TestSMTPBoundedAndCanceled(t *testing.T) {
+	host, port, active, peak := startStalledSMTP(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	results := make(chan error, 20)
+	for i := 0; i < cap(results); i++ {
+		go func() { results <- smtpDeliver(ctx, host, port, "", "", "from@x.test", "to@x.test", nil) }()
+	}
+	waitMail(t, func() bool { return active.Load() == mailConnections })
+	time.Sleep(30 * time.Millisecond)
+	cancel()
+	for i := 0; i < cap(results); i++ {
+		select {
+		case err := <-results:
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("取消错误丢失：%v", err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("取消未终止实际 SMTP 会话或额度等待")
+		}
+	}
+	waitMail(t, func() bool { return active.Load() == 0 })
+	if peak.Load() != mailConnections || len(smtpSlots) != 0 {
+		t.Fatalf("连接峰值或额度泄漏：%d/%d", peak.Load(), len(smtpSlots))
+	}
+}
+
+func TestMailCancellationDoesNotCooldown(t *testing.T) {
+	host, port, active, _ := startStalledSMTP(t)
+	n := &Notifier{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- n.sendWithAccounts(ctx, []MailAccount{{Enabled: true, Host: host, Port: port, From: "from@x.test"}}, "to@x.test", "测试", "正文")
+	}()
+	waitMail(t, func() bool { return active.Load() == 1 })
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+	if len(n.cooldownUntil) != 0 {
+		t.Fatal("取消请求不应令账号冷却")
+	}
+}
+
+func TestSMTPDeadlineAndHeaderValidation(t *testing.T) {
+	host, port, active, _ := startStalledSMTP(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+	defer cancel()
+	if err := smtpDeliver(ctx, host, port, "", "", "from@x.test", "to@x.test", nil); err == nil {
+		t.Fatal("超时会话未失败")
+	}
+	waitMail(t, func() bool { return active.Load() == 0 })
+	n := &Notifier{}
+	accounts := []MailAccount{{Host: host, Port: port, From: "from@x.test", Enabled: true}}
+	for _, input := range []struct{ to, subject string }{{"to@x.test\r\nBcc: other@x.test", "测试"}, {"to@x.test", "测试\r\nBcc: other@x.test"}} {
+		if err := n.sendAccount(context.Background(), accounts, 0, input.to, input.subject, "正文", false); err == nil {
+			t.Fatal("未拒绝邮件头注入")
+		}
+	}
+	if active.Load() != 0 {
+		t.Fatal("无效邮件不应连接 SMTP")
+	}
+}
+
+func TestMailAccountsFailoverAndCooldown(t *testing.T) {
+	bad := startFakeSMTP(t, "LOGIN", true)
+	good := startFakeSMTP(t, "LOGIN", false)
+	accounts := make([]MailAccount, 2)
+	for i, srv := range []*fakeSMTPServer{bad, good} {
+		host, portText, _ := net.SplitHostPort(srv.addr())
+		var port int
+		_, _ = fmt.Sscanf(portText, "%d", &port)
+		accounts[i] = MailAccount{Enabled: true, Host: host, Port: port, User: "用户", Pass: "密码", From: "from@x.test"}
+	}
+	n := &Notifier{}
+	if err := n.sendWithAccounts(context.Background(), accounts, "to@x.test", "测试", "正文"); err != nil {
+		t.Fatal(err)
+	}
+	if !n.cooldownUntil[0].After(time.Now()) || n.roundRobinCursor != 0 {
+		t.Fatal("失败切换或轮询游标无效")
+	}
+	if err := n.sendWithAccounts(context.Background(), accounts[:1], "to@x.test", "测试", "正文"); err == nil || !strings.Contains(err.Error(), "冷却") {
+		t.Fatal("单账号未遵循故障冷却")
+	}
+}
+
+func TestMailRetryDelay(t *testing.T) {
+	if mailRetryDelay(1) != 30*time.Second || mailRetryDelay(2) != time.Minute || mailRetryDelay(100) != time.Hour || mailLease <= mailSendTimeout+5*time.Second {
+		t.Fatal("退避或租约常量无效")
+	}
+}
+
 func TestMailHeaderFrom(t *testing.T) {
 	if got := mailHeaderFrom("无名云", "admin@x.test"); !strings.HasSuffix(got, "?= <admin@x.test>") || strings.Contains(got, "无名云") {
 		t.Fatalf("中文站点名未按 RFC 2047 编码: %q", got)
@@ -133,9 +276,11 @@ func TestSmtpDeliverAuthLoginSuccess(t *testing.T) {
 	_, _ = fmt.Sscanf(portStr, "%d", &port)
 	msg := buildMailMessage("from@x.test", "to@x.test", "hello", "body")
 
-	if err := smtpDeliver(host, port, "user1", "pass1", "from@x.test", "to@x.test", msg); err != nil {
+	if err := smtpDeliver(context.Background(), host, port, "user1", "pass1", "from@x.test", "to@x.test", msg); err != nil {
 		t.Fatalf("投递失败: %v", err)
 	}
+	srv.mu.Lock()
+	defer srv.mu.Unlock()
 	if srv.gotTo != "to@x.test" {
 		t.Fatalf("未投递到目标收件人，got=%q", srv.gotTo)
 	}
@@ -148,7 +293,7 @@ func TestSmtpDeliverAuthRejected(t *testing.T) {
 	_, _ = fmt.Sscanf(portStr, "%d", &port)
 	msg := buildMailMessage("from@x.test", "to@x.test", "hello", "body")
 
-	err := smtpDeliver(host, port, "user1", "wrong", "from@x.test", "to@x.test", msg)
+	err := smtpDeliver(context.Background(), host, port, "user1", "wrong", "from@x.test", "to@x.test", msg)
 	if err == nil {
 		t.Fatal("期望认证失败但未返回错误")
 	}
@@ -171,7 +316,7 @@ func TestSmtpDeliverConnectionRefusedFast(t *testing.T) {
 	msg := buildMailMessage("from@x.test", "to@x.test", "hello", "body")
 
 	start := time.Now()
-	err = smtpDeliver(host, port, "", "", "from@x.test", "to@x.test", msg)
+	err = smtpDeliver(context.Background(), host, port, "", "", "from@x.test", "to@x.test", msg)
 	if err == nil {
 		t.Fatal("期望连接失败")
 	}

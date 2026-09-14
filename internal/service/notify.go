@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"mime"
@@ -28,6 +29,15 @@ type Notifier struct {
 	mu               sync.Mutex
 	roundRobinCursor int               // 上次成功账号的下一个，用于轮流负载
 	cooldownUntil    map[int]time.Time // 账号索引 -> 冷却截止时间（进程内存，重启归零）
+	initOnce         sync.Once
+	startOnce        sync.Once
+	stopOnce         sync.Once
+	mailCtx          context.Context
+	mailCancel       context.CancelFunc
+	wake             chan struct{}
+	stopped          bool
+	workers          sync.WaitGroup
+	done             chan struct{}
 }
 
 const (
@@ -75,6 +85,9 @@ type SMTPConfig struct {
 
 func (n *Notifier) loadSMTP(ctx context.Context) SMTPConfig {
 	get := func(k string) string {
+		if n.Settings == nil {
+			return ""
+		}
 		v, _ := n.Settings.Get(ctx, k)
 		return v
 	}
@@ -158,80 +171,56 @@ func (n *Notifier) cooldownSeconds(ctx context.Context) int {
 	return sec
 }
 
-// Notify 写站内信；若开启“站内信同步到邮箱”则尝试向用户邮箱发同内容邮件（附站点名）。任何失败仅记日志，不阻断主流程。
-func (n *Notifier) Notify(ctx context.Context, userID int64, title, body string) {
+// Notify 在短事务中一起保存站内信和邮件意图；返回成功才代表可靠入队。
+// 邮件快照不关联站内信外键、不保存 SMTP 凭据；账号在实际发送时读取。
+func (n *Notifier) Notify(ctx context.Context, userID int64, title, body string) (err error) {
 	if n == nil || n.db == nil {
-		return
+		return fmt.Errorf("通知服务不可用")
 	}
-	category := notificationCategory(title)
-	if _, err := n.db.ExecContext(ctx,
-		`INSERT INTO notifications(user_id,title,body,category) VALUES($1,$2,$3,$4)`, userID, title, body, category); err != nil {
-		log.Printf("[notify] 站内信写入失败 user=%d: %v", userID, err)
-	}
-	email, accounts, ok := n.resolveMailTarget(ctx, userID)
-	if !ok {
-		return
-	}
-	// 邮件异步发送：/pay/notify 等回调 HTTP 路径此前同步发信，慢 SMTP（单次最长 25s）
-	// 会拖住回调响应导致网关重发通知。失败仅记日志（保持原有语义）。
-	// ctx 必须脱离请求取消：HTTP handler 返回后原 ctx 即被取消，故用 WithoutCancel。
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				log.Printf("[notify] 邮件发送 panic user=%d: %v", userID, r)
-			}
-		}()
-		mailCtx := context.WithoutCancel(ctx)
-		// 邮件带站点名（标题前缀 + 正文结尾签名），收件人才看得出是哪家站发来的。
-		// 标题/正文已含站点名时不再重复（工单标题可在后台自定义）。
-		subject, text := title, body
-		if site := strings.TrimSpace(n.SiteName(mailCtx)); site != "" {
-			if !strings.Contains(title, site) {
-				subject = site + " " + title
-			}
-			if !strings.Contains(body, site) {
-				text = body + "\r\n\r\n—— " + site
-			}
-		}
-		if err := n.sendWithAccounts(mailCtx, accounts, email, subject, text); err != nil {
-			log.Printf("[notify] 邮件发送失败 user=%d: %v", userID, err)
+	defer func() {
+		if err != nil {
+			log.Printf("通知保存失败，用户编号=%d，请重试", userID)
 		}
 	}()
-}
-
-// resolveMailTarget 判定本次站内信是否需要同步发邮件，返回收件邮箱与已加载账号。
-// 此前 notifyEmailEnabled + hasEnabledAccount + sendWithChannels 各自读一轮设置，
-// 同一批键最多重复 5+ 条 SQL；现用 GetMany 一次读齐（cron 逐行调用时的行级放大点）。
-func (n *Notifier) resolveMailTarget(ctx context.Context, userID int64) (string, []MailAccount, bool) {
-	if n.Settings == nil {
-		return "", nil, false
-	}
-	vals, err := n.Settings.GetMany(ctx, "notify_email_forward_enabled", keySMTPAccounts)
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	tx, err := n.db.BeginTx(ctx, nil)
 	if err != nil {
-		log.Printf("[notify] 读取通知设置失败: %v", err)
-		return "", nil, false
+		return fmt.Errorf("无法开启通知事务")
 	}
-	// 开关为唯一依据：此前回退旧键 notify_email_enabled，而后台只读写新键，
-	// 旧版遗留的 "1" 会让「显示关闭」的开关实际仍在发信。
-	if vals["notify_email_forward_enabled"] != "1" {
-		return "", nil, false
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx,
+		`INSERT INTO notifications(user_id,title,body,category) VALUES($1,$2,$3,$4)`, userID, title, body, notificationCategory(title)); err != nil {
+		return fmt.Errorf("站内通知保存失败")
 	}
-	accounts := n.parseAccounts(vals[keySMTPAccounts], ctx)
-	enabled := false
-	for _, a := range accounts {
-		if a.Enabled && strings.TrimSpace(a.Host) != "" {
-			enabled = true
-			break
+	var enabled, site, email string
+	if err = tx.QueryRowContext(ctx, `SELECT
+		coalesce((SELECT value FROM settings WHERE key='notify_email_forward_enabled'),''),
+		coalesce((SELECT value FROM settings WHERE key='site_name'),''),
+		coalesce((SELECT email FROM users WHERE id=$1),'')`, userID).Scan(&enabled, &site, &email); err != nil {
+		return fmt.Errorf("读取通知设置或收件地址失败")
+	}
+	if enabled == "1" && strings.TrimSpace(email) != "" {
+		site = strings.TrimSpace(site)
+		if site == "" {
+			site = DefaultSiteName
+		}
+		subject, text := title, body
+		if !strings.Contains(title, site) {
+			subject = site + " " + title
+		}
+		if !strings.Contains(body, site) {
+			text += "\r\n\r\n—— " + site
+		}
+		if _, err = tx.ExecContext(ctx, `INSERT INTO mail_outbox(recipient,subject,body) VALUES($1,$2,$3)`, email, subject, text); err != nil {
+			return fmt.Errorf("待发邮件保存失败")
 		}
 	}
-	if !enabled {
-		return "", nil, false
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("通知事务提交失败")
 	}
-	var email sql.NullString
-	if err := n.db.QueryRowContext(ctx, `SELECT email FROM users WHERE id=$1`, userID).Scan(&email); err != nil || !email.Valid || email.String == "" {
-		return "", nil, false
-	}
-	return email.String, accounts, true
+	n.wakeMail()
+	return nil
 }
 
 // TicketNotify renders the configurable ticket message template before delivery.
@@ -295,7 +284,10 @@ type loginAuth struct {
 	user, pass string
 }
 
-func (a *loginAuth) Start(*smtp.ServerInfo) (string, []byte, error) {
+func (a *loginAuth) Start(info *smtp.ServerInfo) (string, []byte, error) {
+	if !info.TLS && info.Name != "localhost" && !net.ParseIP(info.Name).IsLoopback() {
+		return "", nil, fmt.Errorf("禁止通过未加密连接发送邮箱凭据")
+	}
 	return "LOGIN", nil, nil
 }
 func (a *loginAuth) Next(fromServer []byte, more bool) ([]byte, error) {
@@ -347,69 +339,124 @@ func smtpAuth(c *smtp.Client, host, user, pass string) error {
 
 // smtpDeliver 发送一封邮件：465 端口走隐式 TLS（SMTPS），其余端口按需 STARTTLS。
 // 带 10s 连接与 25s 会话超时，避免主机不可达/无响应时无限阻塞。
-func smtpDeliver(host string, port int, user, pass, from, to string, msg []byte) error {
-	if host == "" {
-		return fmt.Errorf("SMTP 主机为空")
+func smtpDeliver(ctx context.Context, host string, port int, user, pass, from, to string, msg []byte) (err error) {
+	defer func() {
+		if err == nil {
+			return // DATA 已确认接收，不因随后取消而误报失败。
+		}
+		if ctx.Err() != nil {
+			err = mailContextError{ctx.Err()}
+		} else if deadline, ok := ctx.Deadline(); ok && !time.Now().Before(deadline) {
+			err = mailContextError{context.DeadlineExceeded}
+		}
+	}()
+	select {
+	case smtpSlots <- struct{}{}:
+		defer func() { <-smtpSlots }()
+	case <-ctx.Done():
+		return mailContextError{ctx.Err()}
+	}
+	if ctx.Err() != nil {
+		return mailContextError{ctx.Err()}
+	}
+	if host == "" || port < 1 || port > 65535 {
+		return fmt.Errorf("SMTP 主机或端口无效")
 	}
 	addr := net.JoinHostPort(host, strconv.Itoa(port))
-	conn, err := net.DialTimeout("tcp", addr, 10*time.Second)
+	conn, err := (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, "tcp", addr)
 	if err != nil {
-		return fmt.Errorf("无法连接 %s: %w", addr, err)
+		return fmt.Errorf("无法连接邮件服务器，请检查主机和端口")
 	}
 	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(25 * time.Second))
-	defer conn.SetDeadline(time.Time{})
+	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	defer stop()
+	deadline := time.Now().Add(25 * time.Second)
+	if parentDeadline, ok := ctx.Deadline(); ok && parentDeadline.Before(deadline) {
+		deadline = parentDeadline
+	}
+	_ = conn.SetDeadline(deadline)
 
 	var c *smtp.Client
 	if port == 465 {
 		tc := tls.Client(conn, &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12})
-		if err := tc.Handshake(); err != nil {
-			return fmt.Errorf("TLS 握手失败（端口 %d）: %w", port, err)
+		if err := tc.HandshakeContext(ctx); err != nil {
+			return fmt.Errorf("邮件加密握手失败，请检查证书和端口")
 		}
 		c, err = smtp.NewClient(tc, host)
 	} else {
 		c, err = smtp.NewClient(conn, host)
 	}
 	if err != nil {
-		return fmt.Errorf("建立 SMTP 会话失败: %w", err)
+		return fmt.Errorf("建立邮件会话失败")
 	}
-	defer func() { _ = c.Quit() }()
+	defer c.Close()
 
 	if port != 465 {
 		if ok, _ := c.Extension("STARTTLS"); ok {
 			if err := c.StartTLS(&tls.Config{ServerName: host, MinVersion: tls.VersionTLS12}); err != nil {
-				return fmt.Errorf("STARTTLS 升级失败: %w", err)
+				return fmt.Errorf("邮件加密升级失败，请检查服务器证书")
 			}
 		}
 	}
 	if user != "" || pass != "" {
 		if err := smtpAuth(c, host, user, pass); err != nil {
-			return fmt.Errorf("SMTP 认证失败: %w", err)
+			return fmt.Errorf("邮件认证失败，请检查用户名/密码及服务器加密设置")
 		}
 	}
 	if err := c.Mail(from); err != nil {
-		return fmt.Errorf("MAIL FROM 被拒绝: %w", err)
+		return fmt.Errorf("发件地址被拒绝")
 	}
 	if err := c.Rcpt(to); err != nil {
-		return fmt.Errorf("RCPT TO 被拒绝（收件地址或发送权限问题）: %w", err)
+		return fmt.Errorf("收件地址被拒绝，请检查地址或发送权限")
 	}
 	w, err := c.Data()
 	if err != nil {
-		return fmt.Errorf("进入 DATA 阶段失败: %w", err)
+		return fmt.Errorf("邮件服务器拒绝接收内容")
 	}
 	if _, err := w.Write(msg); err != nil {
-		_ = w.Close()
-		return fmt.Errorf("写入邮件内容失败: %w", err)
+		return fmt.Errorf("写入邮件内容失败")
 	}
 	if err := w.Close(); err != nil {
-		return fmt.Errorf("邮件投递被服务器拒绝: %w", err)
+		return fmt.Errorf("邮件投递未获服务器确认")
 	}
 	return nil
 }
 
 // SendMail 发送纯文本邮件（自动走多账号轮流负载/失败切换）。
 func (n *Notifier) SendMail(ctx context.Context, to, subject, body string) error {
+	ctx, done, err := n.beginMail(ctx, mailSendTimeout)
+	if err != nil {
+		return err
+	}
+	defer done()
 	return n.sendWithChannels(ctx, to, subject, body)
+}
+
+type mailContextError struct{ cause error }
+
+func (e mailContextError) Error() string {
+	if errors.Is(e.cause, context.DeadlineExceeded) {
+		return "邮件发送超时，请稍后重试"
+	}
+	return "邮件发送已取消"
+}
+func (e mailContextError) Unwrap() error { return e.cause }
+
+func (n *Notifier) beginMail(ctx context.Context, timeout time.Duration) (context.Context, func(), error) {
+	if n == nil {
+		return nil, nil, fmt.Errorf("邮件服务不可用")
+	}
+	n.initMail()
+	n.mu.Lock()
+	if n.stopped {
+		n.mu.Unlock()
+		return nil, nil, fmt.Errorf("邮件服务正在停止")
+	}
+	n.workers.Add(1)
+	n.mu.Unlock()
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	stop := context.AfterFunc(n.mailCtx, cancel)
+	return ctx, func() { stop(); cancel(); n.workers.Done() }, nil
 }
 
 // sendWithChannels 多账号轮流负载发送（调用时自行加载账号配置）。
@@ -429,10 +476,9 @@ func (n *Notifier) sendWithAccounts(ctx context.Context, accounts []MailAccount,
 	if len(accounts) == 0 {
 		return fmt.Errorf("尚未配置 SMTP 账号，请先在「系统设置-邮件服务」填写并保存")
 	}
-	if len(accounts) == 1 {
-		return n.sendAccount(ctx, accounts, 0, to, subject, body, false)
+	if ctx.Err() != nil {
+		return mailContextError{ctx.Err()}
 	}
-
 	cooldown := n.cooldownSeconds(ctx)
 	total := len(accounts)
 
@@ -462,6 +508,12 @@ func (n *Notifier) sendWithAccounts(ctx context.Context, accounts []MailAccount,
 	var lastErr error
 	for _, idx := range candidates {
 		if err := n.sendAccount(ctx, accounts, idx, to, subject, body, false); err != nil {
+			if ctx.Err() != nil {
+				return mailContextError{ctx.Err()}
+			}
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return err
+			}
 			lastErr = err
 			n.mu.Lock()
 			n.cooldownUntil[idx] = time.Now().Add(time.Duration(cooldown) * time.Second)
@@ -499,8 +551,17 @@ func (n *Notifier) sendAccount(ctx context.Context, accounts []MailAccount, idx 
 	if from == "" {
 		return fmt.Errorf("账号 #%d「%s」未填写用户名/发件人", idx+1, acct.accountName())
 	}
+	for _, address := range []string{from, to} {
+		parsed, err := mail.ParseAddress(address)
+		if err != nil || parsed.Address != address || strings.ContainsAny(address, "\r\n") {
+			return fmt.Errorf("发件或收件邮箱格式无效")
+		}
+	}
+	if strings.ContainsAny(subject, "\r\n") {
+		return fmt.Errorf("邮件标题不能包含换行")
+	}
 	msg := buildMailMessage(mailHeaderFrom(n.SiteName(ctx), from), to, subject, body)
-	if err := smtpDeliver(host, acct.Port, acct.User, acct.Pass, from, to, msg); err != nil {
+	if err := smtpDeliver(ctx, host, acct.Port, acct.User, acct.Pass, from, to, msg); err != nil {
 		return fmt.Errorf("账号 #%d「%s」发送失败: %w", idx+1, acct.accountName(), err)
 	}
 	return nil
@@ -511,23 +572,15 @@ func (n *Notifier) runSendTest(ctx context.Context, idx int, to, subject, body s
 	if n == nil || n.db == nil || n.Settings == nil {
 		return fmt.Errorf("邮件服务不可用")
 	}
-	type result struct{ err error }
-	done := make(chan result, 1)
-	go func() {
-		if idx >= 0 {
-			done <- result{n.sendAccount(ctx, n.loadAccounts(ctx), idx, to, subject, body, true)}
-			return
-		}
-		done <- result{n.sendWithChannels(ctx, to, subject, body)}
-	}()
-	select {
-	case r := <-done:
-		return r.err
-	case <-time.After(15 * time.Second):
-		return fmt.Errorf("发送超时（15 秒未响应）：请检查 SMTP 主机、端口是否可达，账号密码是否允许外部应用发信")
-	case <-ctx.Done():
-		return ctx.Err()
+	ctx, done, err := n.beginMail(ctx, 15*time.Second)
+	if err != nil {
+		return err
 	}
+	defer done()
+	if idx >= 0 {
+		return n.sendAccount(ctx, n.loadAccounts(ctx), idx, to, subject, body, true)
+	}
+	return n.sendWithChannels(ctx, to, subject, body)
 }
 
 // SendTestMail 测试整条发送链路（轮流负载 + 失败切换）。

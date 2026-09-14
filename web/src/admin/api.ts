@@ -254,6 +254,12 @@ export interface AdminService {
   transition: string
   /** 上游改价导致的待处理：点「重试」前需二次确认（按新价继续会少赚） */
   price_changed: boolean
+  /** 存在"上游结果未知"的隔离履约任务：需管理员对账后恢复（不调上游、不动资金） */
+  recovery?: boolean
+  /** 隔离任务类型：provision/renew/upgrade（executed 恢复时 provision 需补填上游主机 ID） */
+  recovery_kind?: string
+  /** 隔离任务的领取版本，提交恢复时回传防并发 */
+  recovery_version?: number
   profit: string
   hostname: string
   config_desc: string
@@ -280,6 +286,69 @@ export async function fetchAdminServices(f: { q?: string; status?: string; produ
 // 编辑服务：换归属用户 / 到期时间 / 固定续费价（空串=清除覆盖恢复跟随产品价；未传字段=不修改）
 export async function updateAdminService(id: number, data: Record<string, string>) {
   await http.post(`/services/${id}/edit`, data)
+}
+
+// ---- 服务对账恢复（"上游结果未知"隔离任务的人工核对恢复；不调上游、不动资金） ----
+/** 对账恢复摘要：后端白名单证据（密码、密钥和完整检查点不返回） */
+export interface RecoverySummary {
+  service_id: number
+  /** 隔离任务 ID 与领取版本（提交时回传防并发） */
+  job_id: number
+  version: number
+  /** 履约类型：provision / renew / upgrade */
+  kind: string
+  order_id: number
+  cycle: string
+  provider: string
+  server_id: number
+  /** 上游账户名（服务器名 / 用户名） */
+  account: string
+  /** 服务当前绑定的上游主机 ID（0=未绑定） */
+  host_id: number
+  /** 本地检查点里记录的主机 ID（空=未记录） */
+  checkpoint_host: string
+  /** 本地检查点里记录的上游账单号（空=未记录） */
+  upstream_invoice: string
+  invoice_id: number
+  invoice_status: number
+  order_status: number
+  amount: string
+  paid_amount: string
+  refunded: string
+  /** 周期授权条数 */
+  grants: number
+  /** 未决任务数（含隔离任务自身） */
+  pending_jobs: number
+  target_product_id: number
+  target_pid: number
+  /** 是否允许"上游未执行"续跑（false 时该决策禁用） */
+  can_resume: boolean
+  resume_reason: string
+  /** 非空=存在证据冲突或不一致，禁止解除隔离 */
+  block_reason: string
+}
+
+/** 对账恢复提交体：字段名必须与后端 RecoveryConfirmation 的 JSON tag 精确一致（DisallowUnknownFields） */
+export interface RecoveryConfirmation {
+  job_id: number
+  expected_version: number
+  decision: 'confirmed_completed' | 'confirmed_not_executed'
+  evidence: string
+  verified_host_id: number
+  remote_stable: boolean
+  billing_verified: boolean
+  delivery_verified: boolean
+}
+
+/** 读取服务的对账恢复摘要；服务无可核对的隔离任务时后端返回 409 */
+export async function fetchServiceRecovery(id: number): Promise<RecoverySummary> {
+  const res = await http.get<{ ok: number; recovery?: RecoverySummary }>(`/services/${id}/recovery`)
+  return res.recovery as unknown as RecoverySummary
+}
+
+/** 提交对账恢复确认；核对未通过或有并发操作时后端返回 409 中文消息 */
+export async function confirmServiceRecovery(id: number, body: RecoveryConfirmation): Promise<void> {
+  await http.post(`/services/${id}/recovery`, body as unknown as Record<string, unknown>)
 }
 
 // ---- 停用申请 ----

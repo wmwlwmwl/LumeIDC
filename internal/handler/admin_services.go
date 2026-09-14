@@ -34,6 +34,10 @@ type adminServiceRow struct {
 	RenewM     string // 固定续费价覆盖（空=跟随产品价）
 	RenewQ     string
 	RenewY     string
+	// "上游结果未知"隔离任务标志（透传给列表 JSON）
+	Recovery        bool
+	RecoveryKind    string
+	RecoveryVersion int64
 }
 
 // ServicesList GET /admin/services — 全部服务列表（服务端筛选）。
@@ -61,7 +65,8 @@ func (m *AdminManage) ServicesList(w http.ResponseWriter, r *http.Request) {
 	for _, svc := range list {
 		row := adminServiceRow{ID: svc.ID, A: svc.User, B: svc.Name, C: svc.Status, D: svc.Expires,
 			Upstream: svc.Upstream, ProvErr: svc.ProvErr, Transition: svc.Transition, Profit: svc.Profit, Hostname: svc.Hostname,
-			UserID: svc.UserID, RenewM: svc.RenewM, RenewQ: svc.RenewQ, RenewY: svc.RenewY}
+			UserID: svc.UserID, RenewM: svc.RenewM, RenewQ: svc.RenewQ, RenewY: svc.RenewY,
+			Recovery: svc.RecoveryRequired, RecoveryKind: svc.RecoveryKind, RecoveryVersion: svc.RecoveryVersion}
 		// 配置摘要 + 月价：全部用主查询带回的数据在内存计算（不逐行查库；IP/系统留详情页）
 		// 后台手工填写的配置说明优先（手工上架/迁移服务无法由产品配置项推导）
 		row.ConfigDesc, row.Monthly = rowPricing(svc.ConfigSnap, svc.ConfigOpts, svc.MonthlyBase,
@@ -83,7 +88,11 @@ func (m *AdminManage) ServicesList(w http.ResponseWriter, r *http.Request) {
 			"upstream": svc.Upstream, "prov_err": svc.ProvErr, "transition": svc.Transition, "profit": svc.Profit,
 			// 上游改价导致的待处理：前端据此在点「重试」时弹二次确认（按新价继续会少赚）。
 			"price_changed": strings.Contains(svc.ProvErr, server.PriceChangedPrefix),
-			"hostname":      svc.Hostname, "config_desc": svc.ConfigDesc, "monthly": svc.Monthly,
+			// "上游结果未知"隔离任务：前端据此显示「对账恢复」入口（对账不调上游、不动资金）。
+			"recovery":         svc.Recovery,
+			"recovery_kind":    svc.RecoveryKind,
+			"recovery_version": svc.RecoveryVersion,
+			"hostname":         svc.Hostname, "config_desc": svc.ConfigDesc, "monthly": svc.Monthly,
 			"days_left":     svc.DaysLeft,
 			"renew_monthly": svc.RenewM, "renew_quarterly": svc.RenewQ, "renew_yearly": svc.RenewY,
 		})

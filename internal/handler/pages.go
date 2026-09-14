@@ -38,6 +38,9 @@ type Pages struct {
 	CancelReqs    *repo.CancelRequests // 用户停用申请
 	Payment       *service.Payment     // 降级 0 元单余额核销用
 	*Deps
+	// 仅服务列表补全共享额度，不限制详情页、电源等操作。
+	serviceListOnce  sync.Once
+	serviceListSlots chan struct{}
 }
 
 func (h *Pages) Register(mux *http.ServeMux) {
@@ -694,7 +697,6 @@ func (h *Pages) myServices(w http.ResponseWriter, r *http.Request) {
 	}
 	statusText := map[int16]string{0: "待开通", 1: "激活", 2: "已停机"}
 	soon := time.Now().AddDate(0, 0, 14)
-	var wg sync.WaitGroup
 	for i := range list {
 		svc := &list[i]
 		svc.StatusText = statusText[svc.Status]
@@ -708,14 +710,35 @@ func (h *Pages) myServices(w http.ResponseWriter, r *http.Request) {
 		if svc.ConfigNote != "" { // 后台手工填写的配置说明优先
 			svc.ConfigDesc = svc.ConfigNote
 		}
-		// 上游实时 IP/系统：仅激活/停机服务 best-effort 并行拉取（缩短超时；待开通/本地跳过）
-		if svc.Status == 1 || svc.Status == 2 {
-			wg.Add(1)
-			go func(svc *service.ServiceRow) {
-				defer wg.Done()
-				cctx, cancel := context.WithTimeout(r.Context(), 2500*time.Millisecond)
-				defer cancel()
-				if d, derr := h.Console.HostDetail(cctx, userID, svc.ID); derr == nil {
+	}
+	// ponytail: 单 Pages 实例跨请求共用 8 个列表额度；多进程独立计数，需集群限流时改共享配额。
+	h.serviceListOnce.Do(func() { h.serviceListSlots = make(chan struct{}, 8) })
+	// 排队、取额度、查库和上游请求共用整个补全阶段的预算，失败保留安全快照投影。
+	cctx, cancel := context.WithTimeout(r.Context(), 2500*time.Millisecond)
+	defer cancel()
+	jobs := make(chan *service.ServiceRow)
+	var wg sync.WaitGroup
+	for range min(4, len(list)) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for svc := range jobs {
+				if cctx.Err() != nil {
+					return
+				}
+				select {
+				case h.serviceListSlots <- struct{}{}:
+				case <-cctx.Done():
+					return
+				}
+				// 同时就绪时 select 可能选中额度，调用前再次检查取消。
+				if cctx.Err() != nil {
+					<-h.serviceListSlots
+					return
+				}
+				d, derr := h.Console.HostDetail(cctx, userID, svc.ID)
+				<-h.serviceListSlots
+				if derr == nil {
 					svc.IP = d.IP
 					if d.OSName != "" {
 						svc.OS = d.OSName
@@ -724,9 +747,25 @@ func (h *Pages) myServices(w http.ResponseWriter, r *http.Request) {
 						}
 					}
 				}
-			}(svc)
+			}
+		}()
+	}
+dispatch:
+	for i := range list {
+		if cctx.Err() != nil {
+			break
+		}
+		svc := &list[i]
+		if !svc.HasUpstream || (svc.Status != 1 && svc.Status != 2) {
+			continue
+		}
+		select {
+		case jobs <- svc:
+		case <-cctx.Done():
+			break dispatch
 		}
 	}
+	close(jobs)
 	wg.Wait()
 	out := make([]map[string]any, 0, len(list))
 	for i := range list {

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useAdminRequest } from '../admin/useAdminTable'
 import { ref, computed, onMounted, watch, h } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElTag } from 'element-plus'
@@ -54,28 +55,26 @@ const columns = ref<ColumnOption[]>([
   },
 ])
 
-// 请求序号：丢弃慢到的过期响应，防止切换服务器/并发刷新时旧数据覆盖新数据
-let reqSeq = 0
+const startRequest = useAdminRequest()
 
 async function load(fresh = false) {
   // 路由离开时 params.id 变 undefined → NaN，直接跳过，避免发出 /servers/NaN 请求
-  if (!Number.isFinite(serverId.value)) return
-  const reqId = ++reqSeq
+  const isCurrent = startRequest()
+  if (!isCurrent || !Number.isFinite(serverId.value)) return
   loading.value = true
   errMsg.value = ''
   try {
     const d = await fetchServerCatalog(serverId.value, fresh)
-    if (reqId !== reqSeq) return
+    if (!isCurrent()) return
     serverName.value = d.server.name
     rows.value = d.rows
     types.value = d.types
     errMsg.value = d.error || ''
     selected.value = []
   } catch (err: unknown) {
-    if (reqId !== reqSeq) return
-    ElMessage.error((err as Error).message || '拉取目录失败')
+    if (isCurrent()) ElMessage.error((err as Error).message || '拉取目录失败')
   } finally {
-    if (reqId === reqSeq) loading.value = false
+    if (isCurrent()) loading.value = false
   }
 }
 onMounted(() => load())

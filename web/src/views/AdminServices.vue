@@ -4,8 +4,18 @@ import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox, ElTag, ElButton } from 'element-plus'
 import type { ColumnOption } from '@/types'
 import ArtButtonTable from '../components/core/forms/art-button-table/index.vue'
-import { fetchAdminServices, fetchUsers, updateAdminService, type AdminService, type AdminProductOption } from '../admin/api'
+import {
+  fetchAdminServices,
+  fetchUsers,
+  updateAdminService,
+  fetchServiceRecovery,
+  confirmServiceRecovery,
+  type AdminService,
+  type AdminProductOption,
+  type RecoverySummary,
+} from '../admin/api'
 import { http } from '../http/index'
+import { useAdminRequest } from '../admin/useAdminTable'
 
 const list = ref<AdminService[]>([])
 const router = useRouter()
@@ -17,7 +27,10 @@ const searchForm = ref<{ q: string; status: string; product_id: number | '' }>({
   status: '',
   product_id: '',
 })
-let timer: ReturnType<typeof setInterval> | null = null
+let timer: ReturnType<typeof setTimeout> | undefined
+let retryTimer: ReturnType<typeof setTimeout> | undefined
+let disposed = false
+let inFlight = 0
 
 const searchItems = computed(() => [
   { label: '关键词', key: 'q', type: 'input', placeholder: '搜索用户 / 服务名 / 产品', clearable: true },
@@ -160,6 +173,17 @@ const columns = ref<ColumnOption[]>([
           }),
         )
       }
+      // "上游结果未知"的隔离任务：需管理员在上游核对后走对账恢复对话框（不调上游、不动资金）
+      if (row.recovery && row.prov_err) {
+        buttons.push(
+          h(ArtButtonTable, {
+            icon: 'ri:shield-check-line',
+            iconClass: 'bg-theme/12 text-theme',
+            title: '对账恢复（上游结果未知，请先在上游核对账单与实例）',
+            onClick: () => openRecover(row),
+          }),
+        )
+      }
       if (statusValueOf(row) === '激活') {
         buttons.push(
           h(ArtButtonTable, {
@@ -186,7 +210,12 @@ const columns = ref<ColumnOption[]>([
   },
 ])
 
+const startRequest = useAdminRequest()
 async function load(silent = false) {
+  const isCurrent = startRequest()
+  if (!isCurrent) return
+  clearTimeout(timer)
+  inFlight++
   if (!silent) loading.value = true
   try {
     const res = await fetchAdminServices({
@@ -194,21 +223,23 @@ async function load(silent = false) {
       status: searchForm.value.status,
       product_id: searchForm.value.product_id === '' ? undefined : Number(searchForm.value.product_id),
     })
+    if (!isCurrent()) return
     list.value = res.list
     products.value = res.products
   } catch (err: unknown) {
-    if (!silent) ElMessage.error((err as Error).message || '查询失败')
+    if (isCurrent() && !silent) ElMessage.error((err as Error).message || '查询失败')
   } finally {
-    loading.value = false
+    if (isCurrent()) loading.value = false
+    inFlight--
+    // 所有在途查询结束后再等 10 秒；用户搜索不受轮询锁限制。
+    if (!disposed && inFlight === 0) timer = setTimeout(() => load(true), 10000)
   }
 }
-onMounted(() => {
-  load()
-  // 每 10 秒轮询上游开通状态
-  timer = setInterval(() => load(true), 10000)
-})
+onMounted(() => load())
 onBeforeUnmount(() => {
-  if (timer) clearInterval(timer)
+  disposed = true
+  clearTimeout(timer)
+  clearTimeout(retryTimer)
 })
 
 function handleSearch() {
@@ -280,6 +311,109 @@ const ACTIONS: Record<string, { label: string; confirm?: (row: AdminService) => 
   terminate: { label: '删除', confirm: (row) => `确认删除服务 #${row.id}？已绑定上游时会同步销毁，操作不可恢复。` },
 }
 
+// ---------- 对账恢复（重引擎）：展示后端白名单证据 + 人工举证表单，解除任务隔离 ----------
+// 全程不调上游、不动资金；提交体字段与后端 RecoveryConfirmation 一一对应。
+const recoverVisible = ref(false)
+const recoverLoading = ref(false)
+const recoverSubmitting = ref(false)
+const recoverRow = ref<AdminService | null>(null)
+const recoverSummary = ref<RecoverySummary | null>(null)
+const recoverForm = ref({
+  decision: '' as '' | 'confirmed_completed' | 'confirmed_not_executed',
+  evidence: '',
+  remote_stable: false,
+  billing_verified: false,
+  delivery_verified: false,
+  verified_host_id: '' as number | '',
+})
+const RECOVERY_KIND_LABELS: Record<string, string> = { provision: '开通', renew: '续费', upgrade: '升级' }
+
+// 需要填写"核实的主机 ID"的口径与后端校验一致：确认已生效，或开通以外的类型（续费/升级）。
+const needHostId = computed(
+  () =>
+    recoverForm.value.decision === 'confirmed_completed' ||
+    (recoverSummary.value?.kind ?? '') !== 'provision',
+)
+
+async function openRecover(row: AdminService) {
+  recoverRow.value = row
+  recoverSummary.value = null
+  recoverForm.value = {
+    decision: '',
+    evidence: '',
+    remote_stable: false,
+    billing_verified: false,
+    delivery_verified: false,
+    verified_host_id: '',
+  }
+  recoverVisible.value = true
+  recoverLoading.value = true
+  try {
+    recoverSummary.value = await fetchServiceRecovery(row.id)
+    // 后端已记录的绑定主机直接预填，减少手抄出错。
+    if (recoverSummary.value.host_id > 0) recoverForm.value.verified_host_id = recoverSummary.value.host_id
+  } catch (err: unknown) {
+    recoverVisible.value = false
+    ElMessage.error((err as Error).message || '未找到可核对的隔离任务')
+    await load(true)
+  } finally {
+    recoverLoading.value = false
+  }
+}
+
+async function submitRecover() {
+  const row = recoverRow.value
+  const sum = recoverSummary.value
+  if (!row || !sum || sum.block_reason) return
+  const f = recoverForm.value
+  if (f.decision !== 'confirmed_completed' && f.decision !== 'confirmed_not_executed') {
+    ElMessage.error('请选择对账决策（上游已生效 / 上游未执行）')
+    return
+  }
+  const evidence = f.evidence.trim()
+  if (evidence.length < 10) {
+    ElMessage.error('请填写至少十字的核对证据（勿含密码）')
+    return
+  }
+  if (!f.remote_stable || !f.billing_verified || !f.delivery_verified) {
+    ElMessage.error('请逐项勾选确认：远端已稳定、账单已核对、交付已核对')
+    return
+  }
+  let hostId = 0
+  if (needHostId.value) {
+    hostId = Number(f.verified_host_id)
+    if (!Number.isInteger(hostId) || hostId <= 0) {
+      ElMessage.error('请填写正整数的核实主机 ID（在上游核实到的实例标识）')
+      return
+    }
+  }
+  recoverSubmitting.value = true
+  try {
+    await confirmServiceRecovery(row.id, {
+      job_id: sum.job_id,
+      expected_version: sum.version,
+      decision: f.decision,
+      evidence,
+      verified_host_id: hostId,
+      remote_stable: f.remote_stable,
+      billing_verified: f.billing_verified,
+      delivery_verified: f.delivery_verified,
+    })
+    ElMessage.success('对账恢复已提交')
+    recoverVisible.value = false
+    await load(true)
+    if (f.decision === 'confirmed_not_executed' && !disposed) {
+      // 未执行路径会立刻重新入队：3 秒后补刷一次，不用等满 10 秒轮询。
+      clearTimeout(retryTimer)
+      retryTimer = setTimeout(() => load(true), 3000)
+    }
+  } catch (err: unknown) {
+    ElMessage.error((err as Error).message || '对账恢复失败')
+  } finally {
+    recoverSubmitting.value = false
+  }
+}
+
 async function act(row: AdminService, do_: keyof typeof ACTIONS) {
   const def = ACTIONS[do_]
   // confirm 返回空串表示这次不需要确认（如普通的重试，价格没变就直接提交）
@@ -299,7 +433,10 @@ async function act(row: AdminService, do_: keyof typeof ACTIONS) {
     await load(true)
     // 带 done 文案的都是"入队即返回"的异步动作：服务端入队后会立刻催一次队列，
     // 3 秒后补刷一次，省得等满 10 秒的轮询才看到结果。
-    if (def.done) window.setTimeout(() => load(true), 3000)
+    if (def.done && !disposed) {
+      clearTimeout(retryTimer)
+      retryTimer = setTimeout(() => load(true), 3000)
+    }
   } catch (err: unknown) {
     ElMessage.error((err as Error).message || `${def.label}失败`)
   }
@@ -463,6 +600,88 @@ async function saveEdit() {
         <ElButton type="primary" :loading="savingEdit" @click="saveEdit">保存</ElButton>
       </template>
     </ElDialog>
+
+    <!-- 对账恢复：展示后端白名单证据摘要 + 人工举证表单（决策 / 证据 / 三项确认 / 核实主机 ID） -->
+    <ElDialog v-model="recoverVisible" title="对账恢复" width="620px" append-to-body @closed="recoverSummary = null">
+      <div v-if="recoverLoading" class="recover-tip">正在读取隔离任务证据…</div>
+      <ElAlert
+        v-else-if="recoverSummary?.block_reason"
+        type="error"
+        :closable="false"
+        show-icon
+        :title="recoverSummary.block_reason"
+        description="证据存在冲突或不一致，禁止解除隔离；请先处理对应问题，再回来重新核对。"
+      />
+      <ElForm v-else-if="recoverSummary" label-width="130px" @submit.prevent>
+        <ElAlert
+          v-if="!recoverSummary.can_resume"
+          type="warning"
+          :closable="false"
+          show-icon
+          :title="recoverSummary.resume_reason"
+          class="recover-alert"
+        />
+        <ElFormItem label="任务类型">
+          {{ RECOVERY_KIND_LABELS[recoverSummary.kind] || recoverSummary.kind }}
+          <span class="recover-muted">（任务 #{{ recoverSummary.job_id }} / 版本 {{ recoverSummary.version }}）</span>
+        </ElFormItem>
+        <ElFormItem label="订单号">
+          #{{ recoverSummary.order_id }}（{{ recoverSummary.cycle }}）
+        </ElFormItem>
+        <ElFormItem label="账单状态">
+          <template v-if="recoverSummary.invoice_status === 1">已支付 ￥{{ recoverSummary.amount }}</template>
+          <template v-else>未支付（账单状态 {{ recoverSummary.invoice_status }}）</template>
+          <span v-if="recoverSummary.upstream_invoice" class="recover-muted">（上游账单：{{ recoverSummary.upstream_invoice }}）</span>
+        </ElFormItem>
+        <ElFormItem label="上游主机">
+          {{ recoverSummary.host_id > 0 ? `#${recoverSummary.host_id}` : '未绑定' }}
+          <span v-if="recoverSummary.checkpoint_host" class="recover-muted">（检查点：{{ recoverSummary.checkpoint_host }}）</span>
+        </ElFormItem>
+        <ElFormItem label="上游账户">{{ recoverSummary.account || '-' }}</ElFormItem>
+        <ElFormItem label="未决任务数">{{ recoverSummary.pending_jobs }}</ElFormItem>
+        <ElFormItem label="对账决策">
+          <ElRadioGroup v-model="recoverForm.decision">
+            <ElRadio value="confirmed_completed">上游已生效（补记本地终态）</ElRadio>
+            <ElRadio value="confirmed_not_executed" :disabled="!recoverSummary.can_resume">上游未执行（任务重新排队）</ElRadio>
+          </ElRadioGroup>
+        </ElFormItem>
+        <ElFormItem v-if="needHostId" label="核实的主机 ID">
+          <ElInput
+            v-model="recoverForm.verified_host_id"
+            placeholder="在上游核实到的主机 / 站点 ID（正整数）"
+            style="width: 260px"
+          />
+        </ElFormItem>
+        <ElFormItem label="核对证据">
+          <ElInput
+            v-model="recoverForm.evidence"
+            type="textarea"
+            :autosize="{ minRows: 3, maxRows: 6 }"
+            :maxlength="2000"
+            show-word-limit
+            placeholder="填写在上游核对到的证据（至少 10 字，如账单号、实例 ID、站点状态）。请勿包含密码等敏感信息。"
+          />
+        </ElFormItem>
+        <ElFormItem label="人工确认">
+          <div class="recover-checks">
+            <ElCheckbox v-model="recoverForm.remote_stable">远端已稳定（实例 / 续费状态不再变动）</ElCheckbox>
+            <ElCheckbox v-model="recoverForm.billing_verified">账单已核对（无待付账单与退款冲突）</ElCheckbox>
+            <ElCheckbox v-model="recoverForm.delivery_verified">交付已核对（用户可正常使用）</ElCheckbox>
+          </div>
+        </ElFormItem>
+      </ElForm>
+      <template #footer>
+        <ElButton @click="recoverVisible = false">取消</ElButton>
+        <ElButton
+          type="primary"
+          :loading="recoverSubmitting"
+          :disabled="recoverLoading || !recoverSummary || !!recoverSummary.block_reason"
+          @click="submitRecover"
+        >
+          提交对账恢复
+        </ElButton>
+      </template>
+    </ElDialog>
   </div>
 </template>
 
@@ -473,5 +692,21 @@ async function saveEdit() {
 }
 .admin-count b {
   color: var(--theme-color-deep);
+}
+.recover-tip {
+  color: var(--art-gray-600);
+  padding: 8px 0;
+}
+.recover-alert {
+  margin-bottom: 12px;
+}
+.recover-muted {
+  color: var(--art-gray-600);
+  font-size: 12px;
+}
+.recover-checks {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 </style>

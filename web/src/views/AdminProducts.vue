@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useAdminRequest } from '../admin/useAdminTable'
 import { ref, computed, onMounted, h } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox, ElTag, ElButton } from 'element-plus'
@@ -130,14 +131,18 @@ const columns = ref<ColumnOption[]>([
   },
 ])
 
+const startRequest = useAdminRequest()
 async function load() {
+  const isCurrent = startRequest()
+  if (!isCurrent) return
   loading.value = true
   try {
-    list.value = await fetchAdminProducts()
+    const data = await fetchAdminProducts()
+    if (isCurrent()) list.value = data
   } catch (err: unknown) {
-    ElMessage.error((err as Error).message || '查询失败')
+    if (isCurrent()) ElMessage.error((err as Error).message || '查询失败')
   } finally {
-    loading.value = false
+    if (isCurrent()) loading.value = false
   }
 }
 onMounted(load)

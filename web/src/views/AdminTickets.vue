@@ -19,6 +19,8 @@ import {
   uploadAdminTicketAttachment,
 } from '../admin/api'
 
+import { useAdminRequest } from '../admin/useAdminTable'
+
 type TicketDetail = AdminTicket & { body: string; assignee_id?: number; assignee_name?: string }
 const list = ref<AdminTicket[]>([])
 const selected = ref<TicketDetail | null>(null)
@@ -231,7 +233,10 @@ const columns = ref<ColumnOption[]>([
 
 const pagination = computed(() => ({ current: page.value, size: 25, total: total.value }))
 
+const startRequest = useAdminRequest()
 async function load() {
+  const isCurrent = startRequest()
+  if (!isCurrent) return
   loading.value = true
   try {
     const data = await fetchAdminTickets({
@@ -247,13 +252,15 @@ async function load() {
       sort: sortKey.value || undefined,
       order: sortKey.value ? sortOrder.value : undefined,
     })
+    if (!isCurrent()) return
     list.value = data.list
     total.value = data.total
-    stats.value = await fetchAdminTicketStats()
+    const dataStats = await fetchAdminTicketStats()
+    if (isCurrent()) stats.value = dataStats
   } catch (err: unknown) {
-    ElMessage.error((err as Error).message || '读取工单失败')
+    if (isCurrent()) ElMessage.error((err as Error).message || '读取工单失败')
   } finally {
-    loading.value = false
+    if (isCurrent()) loading.value = false
   }
 }
 async function loadAssignees() {

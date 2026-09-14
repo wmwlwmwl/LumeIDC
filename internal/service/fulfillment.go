@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -22,6 +23,18 @@ func (f *Fulfillment) ProcessOne(ctx context.Context) (bool, error) {
 	job, err := f.Jobs.Claim(ctx, 3*time.Minute)
 	if err != nil || job == nil {
 		return false, err
+	}
+	_, unlock, err := f.Jobs.TryExecutionLock(ctx, job.ServiceID)
+	if err != nil {
+		// 未触及上游，原领取原地延后；不持连接等待执行者退出。
+		if errors.Is(err, repo.ErrFulfillmentBusy) {
+			return true, f.Jobs.RetryLater(ctx, job, err, time.Minute)
+		}
+		return true, err
+	}
+	defer unlock()
+	if err := f.Jobs.ValidateClaim(ctx, job); err != nil {
+		return true, err
 	}
 	opCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
@@ -45,10 +58,15 @@ func (f *Fulfillment) ProcessOne(ctx context.Context) (bool, error) {
 	default:
 		err = fmt.Errorf("未知履约任务类型: %s", job.Kind)
 	}
+	// 工作预算短于租约，留出结果落库时间；超时不能证明上游没有执行。
+	if opCtx.Err() != nil || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return true, f.Jobs.MarkManualReview(ctx, job, repo.ErrFulfillmentRecoveryRequired, true)
+	}
 	if err != nil {
 		// 检查是否为人工复核错误
 		if server.IsManualReview(err) {
-			if ferr := f.Jobs.MarkManualReview(ctx, job.ID, err); ferr != nil {
+			var unknown *server.ManualReviewError
+			if ferr := f.Jobs.MarkManualReview(ctx, job, err, errors.As(err, &unknown)); ferr != nil {
 				return true, fmt.Errorf("标记人工复核失败: %w", ferr)
 			}
 			return true, err
@@ -60,12 +78,12 @@ func (f *Fulfillment) ProcessOne(ctx context.Context) (bool, error) {
 			}
 			return true, err
 		}
-		if ferr := f.Jobs.Fail(ctx, job.ID, job.Attempts, err); ferr != nil {
+		if ferr := f.Jobs.Fail(ctx, job, err); ferr != nil {
 			return true, fmt.Errorf("记录履约失败结果: %w", ferr)
 		}
 		return true, err
 	}
-	return true, f.Jobs.Complete(ctx, job.ID)
+	return true, f.Jobs.Complete(ctx, job)
 }
 
 // markRetryLater 处理"等外部条件"类失败：按该服务所属上游的配置，
@@ -84,12 +102,12 @@ func (f *Fulfillment) markRetryLater(ctx context.Context, job *repo.FulfillmentJ
 	}
 	// 该上游关掉了自动等待：立即转人工，由管理员充值后手动重试。
 	if !enabled {
-		return f.Jobs.MarkManualReview(ctx, job.ID, cause)
+		return f.Jobs.MarkManualReview(ctx, job, cause, false)
 	}
 	if minutes <= 0 { // 边界防护：间隔被写成 0/负数会变成高频空转
 		minutes = repo.DefaultRetryLaterMinutes
 	}
-	return f.Jobs.RetryLater(ctx, job.ID, cause, time.Duration(minutes)*time.Minute)
+	return f.Jobs.RetryLater(ctx, job, cause, time.Duration(minutes)*time.Minute)
 }
 
 func (f *Fulfillment) Drain(ctx context.Context, limit int) {

@@ -112,7 +112,7 @@ func (p Provider) Upgrade(ctx context.Context, cfg server.Config, upstreamHostID
 	}, &map[string]any{}); err != nil {
 		// 账单已失效（被删除/作废）→ 重试永远付不掉：清掉检查点让重试时重新结算，并转人工。
 		if unusable, perr := upstreamInvoiceUnusable(ctx, cfg, invoiceID); perr != nil {
-			log.Printf("[zjmf] 查询上游升级账单 %s 状态失败: %v", invoiceID, perr)
+			return &server.ManualReviewError{Msg: "上游升级账单已付或状态不明确，保留检查点，请核对", UpstreamInvoiceID: invoiceID}
 		} else if unusable {
 			if ck != nil {
 				if derr := ck.DeleteCheckpoint(ckKey); derr != nil {

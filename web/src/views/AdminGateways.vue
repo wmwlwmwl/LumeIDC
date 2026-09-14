@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useAdminRequest } from '../admin/useAdminTable'
 import { ref, reactive, computed, onMounted, h } from 'vue'
 import { ElMessage, ElMessageBox, ElTag, ElButton } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
@@ -194,14 +195,18 @@ const secretConfigured = computed(() => {
   return { key: !!g.has_key, private_key: !!g.has_private_key, public_key: !!g.has_public_key }
 })
 
+const startRequest = useAdminRequest()
 async function load() {
+  const isCurrent = startRequest()
+  if (!isCurrent) return
   loading.value = true
   try {
-    list.value = await fetchAdminGateways()
+    const data = await fetchAdminGateways()
+    if (isCurrent()) list.value = data
   } catch (err: unknown) {
-    ElMessage.error((err as Error).message || '查询失败')
+    if (isCurrent()) ElMessage.error((err as Error).message || '查询失败')
   } finally {
-    loading.value = false
+    if (isCurrent()) loading.value = false
   }
 }
 onMounted(load)

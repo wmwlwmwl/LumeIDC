@@ -39,21 +39,36 @@ type App struct {
 	Server     *http.Server
 	DB         *sql.DB
 	Cron       *robfigcron.Cron
+	Notifier   *service.Notifier
 	listenAddr string        // 当前实际监听地址（启动或热切换后），供同址幂等比较
 	stopped    chan struct{} // 第一次关闭后关闭，供 SwitchListen 热替换后等待新服务
 	stopOnce   sync.Once
 }
 
-// Shutdown 优雅关闭：停止 cron、关闭 HTTP、关闭 DB。
+// Shutdown 限时停止邮件领取和发送，再关闭数据库；未完成邮件保留到下次启动。
 func (a *App) Shutdown(ctx context.Context) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	var cronDone context.Context
 	if a.Cron != nil {
-		a.Cron.Stop()
+		cronDone = a.Cron.Stop()
+	}
+	if err := a.Notifier.StopMail(ctx); err != nil {
+		log.Print("等待邮件服务停止超时，未完成任务将由租约回收")
 	}
 	a.mu.Lock()
 	srv := a.Server
 	a.mu.Unlock()
 	if srv != nil {
-		srv.Shutdown(ctx)
+		if err := srv.Shutdown(ctx); err != nil {
+			_ = srv.Close()
+		}
+	}
+	if cronDone != nil {
+		select {
+		case <-cronDone.Done():
+		case <-ctx.Done():
+		}
 	}
 	if a.DB != nil {
 		a.DB.Close()
@@ -332,6 +347,7 @@ func Build(cfg *config.Config, version string) (*App, error) {
 		Providers: providers, Servers: serversRepo, Products: products, Lifecycle: lifecycle,
 		Gateways: gatewaysRepo, Payment: paymentSvc,
 		OrderQueriers: orderQueriers}
+	notifier.StartMail()
 	cronRef := cronJobs.Start()
 	app := &App{
 		Server: &http.Server{
@@ -342,9 +358,10 @@ func Build(cfg *config.Config, version string) (*App, error) {
 			WriteTimeout:      60 * time.Second,
 			IdleTimeout:       120 * time.Second,
 		},
-		DB:      database,
-		Cron:    cronRef,
-		stopped: make(chan struct{}),
+		DB:       database,
+		Notifier: notifier,
+		Cron:     cronRef,
+		stopped:  make(chan struct{}),
 	}
 	app.listenAddr = addr
 	adminHandler.ListenSwitcher = app.SwitchListen // 后台修改监听端口后立即生效
@@ -382,6 +399,8 @@ func registerAdminRoutes(mux *http.ServeMux, adminVerification *handler.AdminVer
 	mux.HandleFunc("GET /admin/services/status", mng.ServicesStatusJSON)
 	mux.HandleFunc("POST /admin/services/{id}/action", mng.ServiceAction)
 	mux.HandleFunc("POST /admin/services/{id}/edit", mng.ServiceEdit)
+	mux.HandleFunc("GET /admin/services/{id}/recovery", mng.ServiceRecovery)
+	mux.HandleFunc("POST /admin/services/{id}/recovery", mng.ServiceRecovery)
 	mux.HandleFunc("GET /admin/service-cancel-requests", mng.CancelRequestsList)
 	mux.HandleFunc("POST /admin/service-cancel-requests/{id}/handle", mng.CancelRequestHandle)
 	mux.HandleFunc("POST /admin/orders/{id}/refund", mng.OrderRefund)

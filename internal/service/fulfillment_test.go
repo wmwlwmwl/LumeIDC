@@ -23,8 +23,8 @@ func setupFulfillment(t *testing.T, d *sql.DB, retryEnabled bool, retryMinutes i
 		t.Fatal(err)
 	}
 	var uid int64
-	if err := d.QueryRowContext(ctx, `SELECT id FROM users LIMIT 1`).Scan(&uid); err != nil {
-		t.Skip("库中暂无用户，跳过")
+	if err := d.QueryRowContext(ctx, `INSERT INTO users(email,password_hash) VALUES($1,'测试') RETURNING id`, "fulfillment-policy-"+time.Now().Format("150405.000000000")+"@example.invalid").Scan(&uid); err != nil {
+		t.Fatal(err)
 	}
 	var pid int64
 	if err := d.QueryRowContext(ctx,
@@ -38,8 +38,8 @@ func setupFulfillment(t *testing.T, d *sql.DB, retryEnabled bool, retryMinutes i
 		t.Fatal(err)
 	}
 	if err := d.QueryRowContext(ctx,
-		`INSERT INTO fulfillment_jobs(service_id,kind,cycle,status,attempts,dedupe_key)
-		 VALUES($1,'provision','monthly','running',3,$2) RETURNING id`,
+		`INSERT INTO fulfillment_jobs(service_id,kind,cycle,status,attempts,dedupe_key,lease_until)
+		 VALUES($1,'provision','monthly','running',3,$2,now()+interval '3 minutes') RETURNING id`,
 		serviceID, "svc-retry-test:"+time.Now().Format("150405.000000000")).Scan(&jobID); err != nil {
 		t.Fatal(err)
 	}
@@ -53,6 +53,7 @@ func setupFulfillment(t *testing.T, d *sql.DB, retryEnabled bool, retryMinutes i
 			{`DELETE FROM services WHERE id=$1`, serviceID}, // 级联删任务
 			{`DELETE FROM products WHERE id=$1`, pid},
 			{`DELETE FROM servers WHERE id=$1`, serverID},
+			{`DELETE FROM users WHERE id=$1`, uid},
 		} {
 			if _, err := d.ExecContext(ctx, s.q, s.arg); err != nil {
 				t.Errorf("清理测试数据失败(%s): %v", s.q, err)
@@ -112,6 +113,80 @@ func TestMarkRetryLaterFollowsServerPolicy(t *testing.T) {
 			t.Fatalf("关闭自动重试后应转 manual_review，实得 %q", status)
 		}
 	})
+}
+
+type interruptedRenewProvider struct{ server.Provider }
+
+func (interruptedRenewProvider) Code() string { return "fake-upgrade" }
+func (interruptedRenewProvider) Renew(context.Context, server.Config, int64, string, server.CheckpointStore) error {
+	return context.DeadlineExceeded
+}
+
+func TestFulfillmentInterruptedOperationIsQuarantined(t *testing.T) {
+	d := testDB(t)
+	ctx := context.Background()
+	fx := setupRenewFixture(t, d)
+	if _, err := d.Exec(`UPDATE services SET upstream_provider='fake-upgrade' WHERE id=$1`, fx.svcID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(`UPDATE fulfillment_jobs SET status='queued' WHERE service_id=$1`, fx.svcID); err != nil {
+		t.Fatal(err)
+	}
+	registry := server.NewRegistry()
+	registry.Register(interruptedRenewProvider{})
+	jobs := repo.NewFulfillmentJobs(d)
+	ff := &Fulfillment{Jobs: jobs, Lifecycle: &Lifecycle{db: d, Providers: registry, Servers: repo.NewServers(d), Provisions: repo.NewProvisionRepo(d)}}
+	if worked, err := ff.ProcessOne(ctx); err != nil || !worked {
+		t.Fatalf("中断任务应被安全隔离：%v，%v", worked, err)
+	}
+	var state string
+	var recovery bool
+	if err := d.QueryRow(`SELECT status,recovery_required FROM fulfillment_jobs WHERE service_id=$1`, fx.svcID).Scan(&state, &recovery); err != nil || state != "manual_review" || !recovery {
+		t.Fatalf("超时不能自动重放：%s，%v，%v", state, recovery, err)
+	}
+}
+
+func TestRecoveredFulfillmentBlocksAdminWrites(t *testing.T) {
+	d := testDB(t)
+	ctx := context.Background()
+	fx := setupRenewFixture(t, d)
+	jobs := repo.NewFulfillmentJobs(d)
+	provisions := repo.NewProvisionRepo(d)
+	pay := &Payment{db: d, Jobs: jobs, Provisions: provisions}
+	if err := provisions.SetCheckpoint(ctx, fx.svcID, server.CheckpointRenewInvoice, "保留原账单"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(`UPDATE fulfillment_jobs SET status='running',lease_until=now()-interval '1 second' WHERE service_id=$1`, fx.svcID); err != nil {
+		t.Fatal(err)
+	}
+	if job, err := jobs.Claim(ctx, time.Minute); err != nil || job != nil {
+		t.Fatalf("恢复只应隔离：%+v，%v", job, err)
+	}
+	for name, action := range map[string]func() error{
+		"重试续费":  func() error { return pay.RetryRenew(ctx, fx.svcID) },
+		"取消续费":  func() error { return pay.RefundRenew(ctx, fx.userID, fx.svcID, "未知结果") },
+		"取消升级":  func() error { return pay.RefundUpgrade(ctx, fx.userID, fx.svcID, "未知结果") },
+		"取消开通":  func() error { return pay.RefundPendingService(ctx, fx.userID, fx.svcID, "未知结果") },
+		"覆写检查点": func() error { return provisions.SetCheckpoint(ctx, fx.svcID, renewDoneCkKey(fx.orderID), "refunded") },
+		"删除检查点": func() error { return provisions.DeleteCheckpoint(ctx, fx.svcID, server.CheckpointRenewInvoice) },
+	} {
+		if err := action(); err == nil {
+			t.Fatalf("%s不能绕过未知结果隔离", name)
+		}
+	}
+	if v, ok, err := provisions.GetCheckpoint(ctx, fx.svcID, server.CheckpointRenewInvoice); err != nil || !ok || v != "保留原账单" {
+		t.Fatalf("不能丢失账单证据：%q，%v，%v", v, ok, err)
+	}
+	if _, ok, err := provisions.GetCheckpoint(ctx, fx.svcID, renewPriceOkKey(fx.orderID)); err != nil || ok {
+		t.Fatalf("拒绝重试不能写入价格确认：%v，%v", ok, err)
+	}
+	var count int
+	if err := d.QueryRow(`SELECT count(*) FROM fulfillment_jobs WHERE service_id=$1`, fx.svcID).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("不能添加额外任务：%d，%v", count, err)
+	}
+	if err := d.QueryRow(`SELECT count(*) FROM refunds WHERE order_id=$1`, fx.orderID).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("隔离任务不能自动进入退款处置：%d，%v", count, err)
+	}
 }
 
 // 查不到服务器（本地服务/服务不存在）时用默认策略，而不是报错——否则失败处理本身会挂。

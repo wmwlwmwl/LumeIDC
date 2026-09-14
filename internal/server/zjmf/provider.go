@@ -820,7 +820,7 @@ func (p Provider) Provision(ctx context.Context, cfg server.Config, req server.P
 			// 先看账单是否还能付：失效（被删除/作废）就去重新结算，可付则是上游余额不足。
 			unusable, probeErr := upstreamInvoiceUnusable(ctx, cfg, invoiceID)
 			if probeErr != nil {
-				log.Printf("[zjmf] 查询上游账单 %s 状态失败: %v", invoiceID, probeErr)
+				return server.ProvisionResult{}, &server.ManualReviewError{Msg: "上游账单已支付或状态无法确认，保留检查点，请人工核对", UpstreamInvoiceID: invoiceID}
 			} else if unusable {
 				if round == 0 {
 					// 账单已失效：清掉检查点，本轮自动重新结算（含付款前比价），无需人工重置。
@@ -913,15 +913,17 @@ func upstreamInvoiceUnusable(ctx context.Context, cfg server.Config, invoiceID s
 		} `json:"data"`
 	}
 	if err := getJSON(ctx, cfg, "/get_invoices_detail?id="+invoiceID, &inv); err != nil {
-		if isBizError(err) {
+		if isBizError(err) && (strings.Contains(err.Error(), "账单不存在") || strings.Contains(err.Error(), "未找到账单")) {
 			return true, nil
 		}
 		return false, err
 	}
 	status := strings.TrimSpace(string(inv.Data.Detail.Status))
-	if status == "" || strings.EqualFold(status, "Unpaid") {
+	if strings.EqualFold(status, "Unpaid") {
 		return false, nil
 	}
-	log.Printf("[zjmf] 上游账单 %s 状态 %q 已不可支付", invoiceID, status)
-	return true, nil
+	if strings.EqualFold(status, "Cancelled") {
+		return true, nil
+	}
+	return false, &server.ManualReviewError{Msg: "上游账单已付或状态不明确，禁止重建", UpstreamInvoiceID: invoiceID}
 }

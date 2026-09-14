@@ -2,6 +2,7 @@ package zjmf
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"testing"
 
@@ -47,15 +48,17 @@ func TestUpstreamInvoiceUnusableCancelled(t *testing.T) {
 	}
 }
 
-// 状态字段缺失（上游版本差异/字段异常）：按仍可支付处理，不能把可付账单判死。
+// 状态字段缺失（上游版本差异/字段异常）：结果未知，转人工核对而不是冒险重复付款。
+// 与"把可付账单判死"的旧语义相反：未知状态继续自动付款可能在已付账单上重复扣款。
 func TestUpstreamInvoiceUnusableMissingStatus(t *testing.T) {
 	cfg := invoiceProbeEnv(t, `{"status":200,"data":{"detail":{"total":"12.00"}}}`)
 	unusable, err := upstreamInvoiceUnusable(context.Background(), cfg, "9001")
-	if err != nil {
-		t.Fatalf("不应报错: %v", err)
+	var mre *server.ManualReviewError
+	if !errors.As(err, &mre) {
+		t.Fatalf("状态缺失应返回 ManualReviewError，实得: unusable=%v, err=%v", unusable, err)
 	}
 	if unusable {
-		t.Fatal("状态字段缺失时应保守按可付处理")
+		t.Fatal("未知状态不得判为失效重建（会重复下单）")
 	}
 }
 

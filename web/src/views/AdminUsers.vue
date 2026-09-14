@@ -5,6 +5,7 @@ import { ElMessage, ElMessageBox, ElTag, ElDropdown, ElDropdownMenu, ElDropdownI
 import type { ColumnOption } from '@/types'
 import ArtButtonTable from '../components/core/forms/art-button-table/index.vue'
 import { fetchUsers, setUserStatus, rechargeUser, refundUser, type AdminUser } from '../admin/api'
+import { useAdminRequest } from '../admin/useAdminTable'
 
 const router = useRouter()
 const loading = ref(false)
@@ -133,7 +134,10 @@ const filtered = computed(() => {
   return list.value.filter((u) => (st === 'disabled' ? u.disabled : !u.disabled))
 })
 
+const startRequest = useAdminRequest()
 async function load() {
+  const isCurrent = startRequest()
+  if (!isCurrent) return
   loading.value = true
   try {
     const res = await fetchUsers(
@@ -142,12 +146,13 @@ async function load() {
       sortKey.value || undefined,
       sortKey.value ? sortOrder.value : undefined,
     )
+    if (!isCurrent()) return
     list.value = res.list
     total.value = res.total
   } catch (err: unknown) {
-    ElMessage.error((err as Error).message || '查询失败')
+    if (isCurrent()) ElMessage.error((err as Error).message || '查询失败')
   } finally {
-    loading.value = false
+    if (isCurrent()) loading.value = false
   }
 }
 onMounted(load)
