@@ -458,7 +458,8 @@ function selectTop(c: Category) {
 
 @media (max-width: 520px) {
   .catalog-product-grid {
-    grid-template-columns: 1fr;
+    /* minmax(0,1fr)：轨道可收缩，卡片内容（上游描述 HTML）的 min-content 不会撑出横向滚动 */
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .catalog-main__head {

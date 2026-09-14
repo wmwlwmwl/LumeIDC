@@ -120,7 +120,7 @@ const tabs = computed(() => [
 
 <template>
   <div class="zjmf-panel">
-    <div class="zjmf-shell">
+    <div class="zjmf-shell art-card">
       <nav class="zjmf-tabs" aria-label="实例功能">
       <button
         v-for="tab in tabs"
@@ -136,7 +136,7 @@ const tabs = computed(() => [
 
       <div v-if="activeView === 'overview'" class="zjmf-primary-grid">
       <!-- ========== 实例控制台 ========== -->
-      <section class="zjmf-card zjmf-card--console">
+      <section class="zjmf-card zjmf-card--console art-card">
         <div class="zjmf-card__header">
           <div class="zjmf-card__title">
             <h2>实例控制台</h2>
@@ -222,6 +222,7 @@ const tabs = computed(() => [
     <!-- ========== 监控 ========== -->
       <ZjmfMetrics
         v-if="activeView === 'overview' && hasInstance"
+        class="zjmf-metrics"
         :service-id="serviceId"
         :has-instance="hasInstance"
         :usage="usage"
@@ -267,33 +268,27 @@ const tabs = computed(() => [
   margin-top: 16px;
 }
 
-/* --- 主布局网格：左控制台 + 右实例信息 --- */
+/* --- 主布局网格：左控制台 + 右实例信息（内容区与页签栏脱开，四周留白） --- */
 .zjmf-primary-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.1fr) minmax(320px, 0.9fr);
   gap: 16px;
   align-items: stretch;
+  padding: 16px;
 }
 
 .zjmf-shell {
   overflow: hidden;
-  background: var(--default-box-color);
-  border: 1px solid var(--art-card-border);
-  border-radius: var(--custom-radius);
-  box-shadow: 0 1px 3px rgba(34, 48, 83, 0.04), 0 1px 2px rgba(34, 48, 83, 0.02);
 }
 
-/* --- 卡片基底 --- */
+/* --- 卡片基底：盒样式（背景/描边/圆角/阴影）交由全局 art-card 按 data-box-mode 接管 --- */
 .zjmf-card {
-  background: var(--default-box-color);
-  border: 1px solid var(--art-card-border);
-  border-radius: var(--custom-radius);
   padding: 20px 22px;
-  box-shadow: 0 1px 3px rgba(34, 48, 83, 0.04), 0 1px 2px rgba(34, 48, 83, 0.02);
-  transition: box-shadow 0.2s ease;
 }
-.zjmf-card:hover {
-  box-shadow: 0 4px 12px rgba(34, 48, 83, 0.06), 0 2px 4px rgba(34, 48, 83, 0.03);
+
+/* 监控子卡片：与主网格（padding-bottom 已提供上间距）及壳边缘的间距 */
+.zjmf-metrics {
+  margin: 0 16px 16px;
 }
 
 /* --- 卡片头部 --- */
@@ -318,39 +313,39 @@ const tabs = computed(() => [
   font-size: 11.5px;
 }
 
-/* --- 顶部功能导航 --- */
+/* --- 顶部功能导航（分段控件式：页签浮于灰条上，与内容区脱开） --- */
 .zjmf-tabs {
   display: flex;
   align-items: center;
   gap: 4px;
   min-height: 51px;
-  padding: 8px 12px 0;
+  padding: 8px 12px;
   background: var(--art-gray-50);
   border-bottom: 1px solid var(--art-card-border);
   overflow-x: auto;
 }
 .zjmf-tab {
   flex: 0 0 auto;
-  height: 42px;
-  padding: 0 18px;
+  height: 34px;
+  padding: 0 16px;
   color: var(--art-gray-500);
   font-size: 12px;
   font-weight: 500;
   background: transparent;
   border: 0;
-  border-radius: 7px 7px 0 0;
+  border-radius: 7px;
   cursor: pointer;
-  transition: color 0.2s ease, background-color 0.2s ease, box-shadow 0.2s ease;
+  transition: color 0.2s ease, background-color 0.2s ease, border-color 0.2s ease;
 }
 .zjmf-tab:hover {
   color: var(--theme-color-deep);
-  background: var(--art-gray-50);
+  background: var(--art-hover-color);
 }
 .zjmf-tab.is-active {
   color: var(--theme-color-deep);
   font-weight: 600;
   background: var(--default-box-color);
-  box-shadow: 0 -1px 0 var(--art-card-border), 1px 0 0 var(--art-card-border), -1px 0 0 var(--art-card-border);
+  border: 1px solid var(--art-card-border);
 }
 
 /* --- 状态标签 --- */
@@ -456,7 +451,12 @@ const tabs = computed(() => [
   border-radius: 8px;
 }
 
-/* --- 上游模块间距 --- */
+/* 账单视图：插槽内容在 ServiceDetail.vue 挂 art-card 成浮卡，此处与概要视图一致留白 */
+.zjmf-invoices {
+  margin: 16px;
+}
+
+/* 上游模块为自带内边距的无壳内容区，直接贴合壳内（自带 padding 已与页签栏留出间隔） */
 .zjmf-blocks {
   margin-top: 0;
 }

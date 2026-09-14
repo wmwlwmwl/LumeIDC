@@ -4,7 +4,7 @@
  * 自含指标时间窗与图表拉取（含请求代次防竞态），服务切换时自动重载。
  */
 import { computed, onMounted, ref, watch } from 'vue'
-import LineChart from '../../LineChart.vue'
+import ArtLineChart from '../../core/charts/art-line-chart/index.vue'
 import { fetchChart, type UsageInfo, type TrafficDay, type ChartSeries } from '../../../api/user'
 
 const props = defineProps<{
@@ -78,13 +78,37 @@ function changeMetricWindow(value: [Date, Date] | null) {
   void loadMetrics()
 }
 
+// 四宫格图表数据：无数据时传空数组，由 ArtLineChart 自行显示「暂无数据」
+const metricCharts = computed(() =>
+  Object.fromEntries(
+    metrics.map((m) => {
+      const s = metricSeries.value[m.key]
+      return [
+        m.key,
+        {
+          labels: s?.lines[0]?.points.map((p) => p.time) ?? [],
+          data: (s?.lines ?? []).map((l) => ({
+            name: l.label || m.label,
+            data: l.points.map((p) => p.value),
+          })),
+        },
+      ]
+    }),
+  ),
+)
+
+const trafficSeries = computed(() => [
+  { name: '入站', data: props.trafficDays.map((d) => d.in) },
+  { name: '出站', data: props.trafficDays.map((d) => d.out) },
+])
+
 onMounted(loadMetrics)
 watch(() => props.serviceId, loadMetrics)
 watch(() => props.hasInstance, loadMetrics)
 </script>
 
 <template>
-  <section class="zjmf-card zjmf-card--monitor">
+  <section class="zjmf-card zjmf-card--monitor art-card">
     <div class="zjmf-card__header">
       <div class="zjmf-card__title">
         <h2>资源监控</h2>
@@ -133,43 +157,38 @@ watch(() => props.hasInstance, loadMetrics)
         <div class="zjmf-metric-head">
           <span class="zjmf-metric-label">{{ m.label }}</span>
         </div>
-        <LineChart
-          v-if="metricSeries[m.key]"
-          :labels="metricSeries[m.key]!.lines[0].points.map((p) => p.time)"
-          :series="
-            metricSeries[m.key]!.lines.map((l) => ({
-              name: l.label || m.label,
-              data: l.points.map((p) => p.value),
-            }))
-          "
-          :unit="metricSeries[m.key]!.unit"
+        <!-- ponytail: ArtLineChart 的 tooltip 不支持单位格式化（如 MB/s），悬浮只显示数值； -->
+        <!-- 若要恢复需给 Art 组件加 formatter prop，目前先接受。 -->
+        <ArtLineChart
+          :data="metricCharts[m.key].data"
+          :xAxisData="metricCharts[m.key].labels"
+          :showLegend="metricCharts[m.key].data.length > 1"
+          legendPosition="top"
+          :showAxisLine="false"
+          height="13rem"
         />
-        <el-empty v-else description="暂无数据" :image-size="40" />
       </div>
     </div>
 
     <!-- 每日流量 -->
     <div v-if="trafficDays.length" class="zjmf-traffic-daily">
       <p class="zjmf-section-label">每日流量（入站 / 出站）</p>
-      <LineChart
-        :labels="trafficDays.map((d) => d.time)"
-        :series="[
-          { name: '入站', data: trafficDays.map((d) => d.in) },
-          { name: '出站', data: trafficDays.map((d) => d.out) },
-        ]"
-        unit="GB"
+      <ArtLineChart
+        :data="trafficSeries"
+        :xAxisData="trafficDays.map((d) => d.time)"
+        :showLegend="true"
+        legendPosition="top"
+        :showAxisLine="false"
+        height="13rem"
       />
     </div>
   </section>
 </template>
 
 <style scoped>
+/* 盒样式（背景/描边/圆角/阴影）交由全局 art-card 按 data-box-mode 接管 */
 .zjmf-card {
-  background: var(--default-box-color);
-  border: 1px solid var(--art-card-border);
-  border-radius: var(--custom-radius);
   padding: 20px 22px;
-  box-shadow: 0 1px 3px rgba(34, 48, 83, 0.04), 0 1px 2px rgba(34, 48, 83, 0.02);
 }
 .zjmf-card__header {
   display: flex;

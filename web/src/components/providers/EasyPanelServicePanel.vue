@@ -60,14 +60,14 @@ async function resetPassword() {
 }
 </script>
 <template>
-  <div class="easypanel-shell">
+  <div class="easypanel-shell art-card">
     <nav class="easypanel-tabs" aria-label="实例功能">
       <button type="button" :class="{ 'is-active': activeView === 'overview' }" @click="activeView = 'overview'">概要</button>
       <button v-if="slots.invoices" type="button" :class="{ 'is-active': activeView === 'invoices' }" @click="activeView = 'invoices'">账单记录</button>
     </nav>
 
     <div v-if="activeView === 'overview'" class="easypanel-body">
-      <section v-if="!data.host" class="easypanel-card">
+      <section v-if="!data.host" class="easypanel-card art-card">
         <div class="easypanel-card__header">
           <div class="easypanel-card__title">
             <h2>站点信息</h2>
@@ -82,7 +82,7 @@ async function resetPassword() {
       </section>
 
       <div v-else class="easypanel-grid">
-        <section class="easypanel-card">
+        <section class="easypanel-card art-card">
           <div class="easypanel-card__header">
             <div class="easypanel-card__title">
               <h2>账户信息</h2>
@@ -120,7 +120,7 @@ async function resetPassword() {
           </div>
         </section>
 
-        <section class="easypanel-card">
+        <section class="easypanel-card art-card">
           <div class="easypanel-card__header">
             <div class="easypanel-card__title">
               <h2>空间与数据库</h2>
@@ -165,7 +165,7 @@ async function resetPassword() {
         </section>
       </div>
     </div>
-    <section v-if="activeView === 'invoices'" class="art-card sd-panel easypanel-invoices">
+    <section v-if="activeView === 'invoices'" class="easypanel-invoices">
       <slot name="invoices" />
     </section>
   </div>
@@ -174,46 +174,46 @@ async function resetPassword() {
 .easypanel-shell {
   margin-top: 16px;
   overflow: hidden;
-  background: var(--default-box-color);
-  border: 1px solid var(--art-card-border);
-  border-radius: var(--custom-radius);
-  box-shadow: 0 1px 3px rgba(34, 48, 83, 0.04), 0 1px 2px rgba(34, 48, 83, 0.02);
 }
 .easypanel-tabs {
   display: flex;
   align-items: center;
   gap: 4px;
   min-height: 51px;
-  padding: 8px 12px 0;
+  padding: 8px 12px;
   background: var(--art-gray-50);
   border-bottom: 1px solid var(--art-card-border);
   overflow-x: auto;
 }
 .easypanel-tabs button {
   flex: 0 0 auto;
-  height: 42px;
-  padding: 0 18px;
+  height: 34px;
+  padding: 0 16px;
   color: var(--art-gray-500);
   font-size: 12px;
   font-weight: 500;
   background: transparent;
   border: 0;
-  border-radius: 7px 7px 0 0;
+  border-radius: 7px;
   cursor: pointer;
-  transition: color 0.2s ease, background-color 0.2s ease, box-shadow 0.2s ease;
+  transition: color 0.2s ease, background-color 0.2s ease, border-color 0.2s ease;
 }
 .easypanel-tabs button:hover {
   color: var(--theme-color-deep);
-  background: var(--art-gray-50);
+  background: var(--art-hover-color);
 }
 .easypanel-tabs button.is-active {
   color: var(--theme-color-deep);
   font-weight: 600;
   background: var(--default-box-color);
-  box-shadow: 0 -1px 0 var(--art-card-border), 1px 0 0 var(--art-card-border), -1px 0 0 var(--art-card-border);
+  border: 1px solid var(--art-card-border);
 }
 .easypanel-body {
-  padding: 19px;
+  padding: 16px;
+}
+/* 账单视图：插槽内容在 ServiceDetail.vue 挂 art-card 成浮卡，与内容区一致留白 */
+.easypanel-invoices {
+  margin: 16px;
 }
 .easypanel-grid {
   display: grid;
@@ -221,15 +221,12 @@ async function resetPassword() {
   gap: 16px;
   align-items: stretch;
 }
+/* 盒样式（背景/描边/圆角/阴影）交由全局 art-card 按 data-box-mode 接管 */
 .easypanel-card {
   display: flex;
   flex-direction: column;
   min-width: 0;
   padding: 20px 22px;
-  background: var(--default-box-color);
-  border: 1px solid var(--art-card-border);
-  border-radius: var(--custom-radius);
-  box-shadow: 0 1px 3px rgba(34, 48, 83, 0.04), 0 1px 2px rgba(34, 48, 83, 0.02);
 }
 .easypanel-card__header {
   display: flex;
@@ -314,12 +311,6 @@ async function resetPassword() {
 }
 .easypanel-panel-link:hover {
   text-decoration: underline;
-}
-.easypanel-invoices {
-  margin: 0;
-  border: 0;
-  border-radius: 0;
-  box-shadow: none;
 }
 @media (max-width: 820px) {
   .easypanel-grid {

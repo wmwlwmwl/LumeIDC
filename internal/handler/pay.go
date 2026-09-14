@@ -84,10 +84,35 @@ func (h *Pay) localCheckoutPage(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	dataURI := "data:image/png;base64," + base64.StdEncoding.EncodeToString(pngBytes)
-	if _, err := fmt.Fprintf(w, `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>%s扫码支付</title><style>body{font-family:system-ui,sans-serif;background:#f6f8fb;color:#182230;text-align:center;padding:40px 16px}.card{max-width:440px;margin:auto;padding:32px 24px;background:#fff;border-radius:18px;box-shadow:0 10px 30px #12263d12}img{width:320px;max-width:100%%;height:auto}.amount{font-size:28px;font-weight:700;margin:12px}</style></head><body><main class="card"><h1>%s扫码支付</h1><p>账单号：%s</p><p class="amount">应付金额：￥%s</p><p>账单金额：￥%s</p><img src="%s" alt="支付二维码"><p id="message" role="status">支付完成后页面会自动检查到账状态</p><p><a href="/pay/%d">返回账单页</a></p></main><script>(function(){var message=document.getElementById('message');function check(){fetch('/pay/%d/status',{credentials:'same-origin',headers:{'Accept':'application/json'}}).then(function(response){if(!response.ok)throw new Error();return response.json()}).then(function(data){if(data.paid){message.textContent='支付成功，正在返回账单页';location.href='/pay/%d';return}if(data.expired){message.textContent='账单已过期，请返回重新下单';return}setTimeout(check,4000)}).catch(function(){message.textContent='状态检查失败，正在重试';setTimeout(check,5000)})}check()})();</script></body></html>`, template.HTMLEscapeString(brand), template.HTMLEscapeString(brand), template.HTMLEscapeString(no), attempt.Amount, baseAmount, dataURI, id, id, id); err != nil {
+	if _, err := fmt.Fprintf(w, qrPageHTML, artStyleTag,
+		template.HTMLEscapeString(brand), attempt.Amount, template.HTMLEscapeString(no), baseAmount, dataURI, id, id, id); err != nil {
 		log.Printf("[template] 二维码结算页输出失败: %v", err)
 	}
 }
+
+// qrPageHTML 本地扫码结算页；artStyleTag 对齐 Art Design Pro（templates/artpage.css），
+// 样式含系统暗色跟随。参数：1 样式 2 品牌(已转义) 3 应付金额 4 账单号(已转义)
+// 5 账单金额 6 二维码 dataURI 7 账单 ID（结算页链接与轮询）。
+const qrPageHTML = `<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>%[2]s扫码支付</title>%[1]s</head>
+<body>
+<main class="art-card">
+  <div class="art-card__body">
+    <div class="art-brand"><span class="art-brand__name">%[2]s</span><small>扫码支付</small></div>
+    <p class="art-amount">￥%[3]s</p>
+    <div class="art-meta">
+      <div class="art-meta__row"><span>账单号</span><b>%[4]s</b></div>
+      <div class="art-meta__row"><span>账单金额</span><b>￥%[5]s</b></div>
+    </div>
+    <img class="art-qr" src="%[6]s" alt="支付二维码">
+    <p class="art-muted" id="message" role="status">支付完成后页面会自动检查到账状态</p>
+    <div class="art-actions"><a class="art-btn art-btn--outline" href="/pay/%[7]d">返回账单页</a></div>
+  </div>
+</main>
+<script>(function(){var message=document.getElementById('message');function check(){fetch('/pay/%[7]d/status',{credentials:'same-origin',headers:{'Accept':'application/json'}}).then(function(response){if(!response.ok)throw new Error();return response.json()}).then(function(data){if(data.paid){message.textContent='支付成功，正在返回账单页';location.href='/pay/%[7]d';return}if(data.expired){message.textContent='账单已过期，请返回重新下单';return}setTimeout(check,4000)}).catch(function(){message.textContent='状态检查失败，正在重试';setTimeout(check,5000)})}check()})();</script>
+</body>
+</html>`
 
 func (h *Pay) paymentStatus(w http.ResponseWriter, r *http.Request) {
 	userID, ok := middleware.RequireUser(w, r)
@@ -662,17 +687,36 @@ func (h *Pay) mockPayPage(w http.ResponseWriter, r *http.Request) {
 	}
 	cs := h.pageCSRF(w, r)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprintf(w, `<!doctype html><html><head><meta charset="utf-8"><title>模拟支付</title></head>
-<body style="font-family:system-ui;padding:40px">
-<h2>模拟支付（测试网关）</h2>
-<p>账单号：%s</p><p>账单金额：¥%s</p><p>手续费：¥%s</p><p>应付金额：¥%s</p>
-<form method="post" action="/mock/pay/%s">
-<input type="hidden" name="_csrf" value="%s">
-<button type="submit" style="padding:8px 20px">确认到账</button>
-</form>
-<p style="color:#888;font-size:13px">该网关仅用于测试，不会产生真实交易。</p>
-</body></html>`, no, amount, attempt.FeeAmount, attempt.Amount, no, cs)
+	escNo := template.HTMLEscapeString(no)
+	fmt.Fprintf(w, mockPayPageHTML, artStyleTag, escNo, amount, attempt.FeeAmount, attempt.Amount, cs)
 }
+
+// mockPayPageHTML 模拟支付确认页（测试网关）。参数：1 样式 2 账单号(已转义)
+// 3 账单金额 4 手续费 5 应付金额 6 CSRF 令牌。
+const mockPayPageHTML = `<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>模拟支付</title>%[1]s</head>
+<body>
+<main class="art-card">
+  <div class="art-card__body">
+    <div class="art-result">
+      <h1>模拟支付</h1>
+      <p>测试网关，仅用于联调，不会产生真实交易。</p>
+    </div>
+    <div class="art-meta">
+      <div class="art-meta__row"><span>账单号</span><b>%[2]s</b></div>
+      <div class="art-meta__row"><span>账单金额</span><b>￥%[3]s</b></div>
+      <div class="art-meta__row"><span>手续费</span><b>￥%[4]s</b></div>
+      <div class="art-meta__row"><span>应付金额</span><b>￥%[5]s</b></div>
+    </div>
+    <form method="post" action="/mock/pay/%[2]s">
+      <input type="hidden" name="_csrf" value="%[6]s">
+      <div class="art-actions"><button type="submit" class="art-btn art-btn--primary">确认到账</button></div>
+    </form>
+  </div>
+</main>
+</body>
+</html>`
 
 // mockConfirm POST /mock/pay/{no} — 确认模拟支付，核销账单（受全局 CSRF 中间件保护）。
 func (h *Pay) mockConfirm(w http.ResponseWriter, r *http.Request) {

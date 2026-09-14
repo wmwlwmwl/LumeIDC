@@ -5,7 +5,6 @@ import (
 	"embed"
 	"encoding/base64"
 	"fmt"
-	"html/template"
 	"log"
 	"net/http"
 	"net/url"
@@ -127,7 +126,7 @@ allow_insecure_db: true
 	if wantsJSON(r) {
 		writeJSON(w, map[string]any{"ok": 1, "msg": "安装完成"})
 	} else {
-		tpl, _ := template.ParseFS(tplFS, "templates/done.html")
+		tpl, _ := parseArtTemplate("templates/done.html")
 		tpl.Execute(w, nil)
 		if f, ok := w.(http.Flusher); ok {
 			f.Flush() // 先让浏览器收到成功页，再切换服务
@@ -151,7 +150,7 @@ func listenEnv() string {
 
 func renderInstallError(w http.ResponseWriter, msg string) {
 	w.WriteHeader(http.StatusBadRequest)
-	tpl, _ := template.ParseFS(tplFS, "templates/error.html")
+	tpl, _ := parseArtTemplate("templates/error.html")
 	tpl.Execute(w, map[string]string{"Message": msg})
 }
 

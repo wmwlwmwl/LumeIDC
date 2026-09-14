@@ -1,0 +1,160 @@
+/* artpage.css — 独立 SSR 页共享样式（扫码支付 / 模拟支付 / 安装结果）。
+   这些页面不走 SPA 构建产物，无法引用构建期变量，故按字面量对齐
+   web/src/assets/styles/core/tailwind.css 的 Art Design Pro 令牌 +
+   style.css 的对比度校准值；调整 Art 令牌时需同步本文件。
+   亮/暗色跟随系统 prefers-color-scheme（应用内手动切换不在此作用域）。 */
+:root {
+  --ap-bg: #fafbfc;        /* --default-bg-color */
+  --ap-box: #ffffff;       /* --default-box-color */
+  --ap-border: rgba(0, 0, 0, 0.08);
+  --ap-text: #323251;      /* --art-gray-900 */
+  --ap-text-2: #667085;    /* --art-gray-500（style.css 校准值） */
+  --ap-text-3: #8b95a6;    /* --art-gray-400（style.css 校准值） */
+  --ap-primary: #5D87FF;   /* Art 默认主色 */
+  --ap-primary-deep: #4a70e6;
+  --ap-primary-soft: #eef3ff;
+  --ap-success: #529b2e;   /* el-color-success dark-2 */
+  --ap-success-bg: #f0f9eb;
+  --ap-danger: #c45656;    /* el-color-danger dark-2 */
+  --ap-danger-bg: #fef0f0;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ap-bg: #070707;
+    --ap-box: #161618;
+    --ap-border: rgba(255, 255, 255, 0.08);
+    --ap-text: #e3e3e8;
+    --ap-text-2: #a8b1c0;
+    --ap-text-3: #8b95a6;
+    --ap-primary-soft: rgba(93, 135, 255, 0.16);
+    --ap-success-bg: rgba(103, 194, 58, 0.15);
+    --ap-danger-bg: rgba(245, 108, 108, 0.15);
+  }
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 16px;
+  font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  color: var(--ap-text);
+  background: var(--ap-bg);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+a { color: inherit; text-decoration: none; }
+
+/* 全局键盘焦点环，对齐 style.css 的焦点可见性 */
+:where(a, button):focus-visible {
+  outline: 2px solid var(--ap-primary);
+  outline-offset: 2px;
+  border-radius: 8px;
+}
+
+.art-card {
+  width: 100%;
+  max-width: 520px;
+  background: var(--ap-box);
+  border: 1px solid var(--ap-border);
+  border-radius: 8px; /* calc(--custom-radius/2+2px)，与 art-card 一致 */
+}
+.art-card__body { padding: 24px; }
+
+.art-brand { text-align: center; margin-bottom: 16px; }
+.art-brand__name {
+  display: block;
+  overflow: hidden;
+  font-size: 20px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.art-brand small {
+  display: block;
+  margin-top: 2px;
+  color: var(--ap-text-2);
+  font-size: 12px;
+}
+
+.art-result { text-align: center; }
+.art-result h1 { margin: 0 0 6px; font-size: 22px; }
+.art-result p { color: var(--ap-text-2); font-size: 14px; }
+.art-result__icon {
+  width: 64px;
+  height: 64px;
+  margin: 0 auto 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  font-size: 28px;
+}
+.art-result__icon--success { background: var(--ap-success-bg); color: var(--ap-success); }
+.art-result__icon--danger { background: var(--ap-danger-bg); color: var(--ap-danger); }
+
+.art-alert {
+  margin: 12px 0 4px;
+  padding: 12px 16px;
+  border-radius: 8px;
+  font-size: 14px;
+  text-align: left;
+  word-break: break-word;
+}
+.art-alert--danger { background: var(--ap-danger-bg); color: var(--ap-danger); }
+
+.art-amount {
+  margin: 4px 0 14px;
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  text-align: center;
+}
+.art-meta { margin-bottom: 14px; display: flex; flex-direction: column; gap: 8px; }
+.art-meta__row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--ap-text-2);
+  font-size: 13.5px;
+}
+.art-meta__row b {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ap-text);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.art-qr { display: block; width: 280px; max-width: 100%; height: auto; margin: 0 auto 14px; }
+.art-muted { color: var(--ap-text-3); font-size: 12.5px; text-align: center; }
+
+.art-actions { margin-top: 20px; display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
+.art-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 9px 20px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  text-align: center;
+  cursor: pointer;
+}
+.art-btn--primary { background: var(--ap-primary); border-color: var(--ap-primary); color: #fff; }
+.art-btn--primary:hover { background: var(--ap-primary-deep); border-color: var(--ap-primary-deep); }
+.art-btn--outline { background: transparent; border-color: var(--ap-border); color: var(--ap-text-2); }
+.art-btn--outline:hover { color: var(--ap-primary); border-color: var(--ap-primary); background: var(--ap-primary-soft); }
+
+@media (max-width: 640px) {
+  body { padding: 16px 12px; }
+  .art-card { max-width: 100%; }
+}

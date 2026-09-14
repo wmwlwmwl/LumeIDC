@@ -99,7 +99,6 @@ declare module 'vue' {
     ExternalCaptcha: typeof import('./../../components/ExternalCaptcha.vue')['default']
     HeaderMegaMenu: typeof import('./../../components/public/layout/HeaderMegaMenu.vue')['default']
     HorizontalSubmenu: typeof import('./../../components/core/layouts/art-menus/art-horizontal-menu/widget/HorizontalSubmenu.vue')['default']
-    LineChart: typeof import('./../../components/LineChart.vue')['default']
     LoginLeftView: typeof import('./../../components/core/views/login/LoginLeftView.vue')['default']
     MenuLayoutSettings: typeof import('./../../components/core/layouts/art-settings-panel/widget/MenuLayoutSettings.vue')['default']
     MenuStyleSettings: typeof import('./../../components/core/layouts/art-settings-panel/widget/MenuStyleSettings.vue')['default']

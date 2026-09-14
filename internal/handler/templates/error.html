@@ -1,36 +1,17 @@
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>安装失败</title>
-<style>
-*{margin:0;padding:0;box-sizing:border-box}
-body{font-family:"HarmonyOS Sans SC","MiSans","PingFang SC","Microsoft YaHei",ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;background:#f3f6fb;color:#26303f;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:1.5rem}
-.fx-pay-card{width:100%;max-width:520px}
-.auth-brand{text-align:center;margin-bottom:1rem}
-.auth-brand-name{display:block;font-size:1.35rem;font-weight:700;color:#101828}
-.auth-brand small{display:block;color:#94a0b2;font-size:.78rem;margin-top:.1rem}
-.card{background:#fff;border:1px solid #e7edf5;border-radius:.85rem;box-shadow:0 20px 60px rgba(22,60,160,.14)}
-.card-body{padding:1.5rem}
-.result-card{text-align:center;padding:1rem 0}
-.result-card h1{font-size:1.4rem;margin:0 0 .5rem}
-.result-icon{width:64px;height:64px;margin:0 auto 1rem;display:flex;align-items:center;justify-content:center;border-radius:50%;background:#fee4e2;color:#b42318;font-size:2rem;box-shadow:0 10px 26px rgba(16,24,40,.08)}
-.alert{padding:.75rem 1rem;border-radius:.6rem;margin:0 0 .5rem;text-align:left;font-size:.9rem}
-.alert-danger{background:#fdecec;color:#b42318}
-.btn{display:inline-block;padding:.5rem 1.25rem;border-radius:.5rem;font-weight:600;font-size:.9rem;text-decoration:none;cursor:pointer;border:1px solid transparent;text-align:center;margin-top:.5rem}
-.btn-primary{background:#5D87FF;color:#fff;border-color:#5D87FF}
-.btn-primary:hover{background:#4a70e6;border-color:#4a70e6}
-</style>
-</head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>安装失败</title>{{artStyle}}</head>
 <body>
-<main class="fx-pay-card">
-  <div class="auth-brand"><span class="auth-brand-name">LumeIDC</span><small>安装</small></div>
-  <div class="card">
-    <div class="card-body">
-      <div class="result-card">
-        <div class="result-icon" aria-hidden="true">!</div>
-        <h1>安装失败</h1>
-        <div class="alert alert-danger" role="alert">{{.Message}}</div>
-        <a class="btn btn-primary" href="/install">返回重试 <span aria-hidden="true">→</span></a>
-      </div>
+<main class="art-card">
+  <div class="art-card__body">
+    <div class="art-brand"><span class="art-brand__name">LumeIDC</span><small>安装</small></div>
+    <div class="art-result">
+      <div class="art-result__icon art-result__icon--danger" aria-hidden="true">!</div>
+      <h1>安装失败</h1>
+    </div>
+    <div class="art-alert art-alert--danger" role="alert">{{.Message}}</div>
+    <div class="art-actions">
+      <a class="art-btn art-btn--primary" href="/install">返回重试 <span aria-hidden="true">→</span></a>
     </div>
   </div>
 </main>

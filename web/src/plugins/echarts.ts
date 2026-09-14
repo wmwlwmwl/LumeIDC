@@ -2,40 +2,18 @@
  * ECharts 插件配置
  *
  * 按需导入 ECharts 图表和组件，减小打包体积。
- * 只注册项目中实际使用的图表类型和组件。
- *
- * @module plugins/echarts
- * @author Art Design Pro Team
+ * 项目实际只用折线/柱状两类图表（art-line-chart / art-bar-chart），
+ * 新增其他图表时在这里补注册即可。
  */
 
 // ECharts 按需导入配置
 import * as echarts from 'echarts/core'
 
 // 导入图表类型
-import {
-  BarChart,
-  LineChart,
-  PieChart,
-  ScatterChart,
-  RadarChart,
-  MapChart,
-  CandlestickChart
-} from 'echarts/charts'
+import { BarChart, LineChart } from 'echarts/charts'
 
 // 导入组件
-import {
-  TitleComponent,
-  TooltipComponent,
-  GridComponent,
-  LegendComponent,
-  DataZoomComponent,
-  MarkPointComponent,
-  MarkLineComponent,
-  ToolboxComponent,
-  BrushComponent,
-  GeoComponent,
-  VisualMapComponent
-} from 'echarts/components'
+import { TooltipComponent, GridComponent, LegendComponent } from 'echarts/components'
 
 // 导入渲染器
 import { CanvasRenderer } from 'echarts/renderers'
@@ -45,24 +23,11 @@ echarts.use([
   // 图表类型
   BarChart,
   LineChart,
-  PieChart,
-  ScatterChart,
-  RadarChart,
-  MapChart,
-  CandlestickChart,
 
   // 组件
-  TitleComponent,
   TooltipComponent,
   GridComponent,
   LegendComponent,
-  DataZoomComponent,
-  MarkPointComponent,
-  MarkLineComponent,
-  ToolboxComponent,
-  BrushComponent,
-  GeoComponent,
-  VisualMapComponent,
 
   // 渲染器
   CanvasRenderer

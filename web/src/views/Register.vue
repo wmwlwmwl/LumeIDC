@@ -266,11 +266,12 @@ async function submit() {
           </el-input>
         </el-form-item>
         <el-form-item label="显示名称（选填）">
+          <!-- nickname 为 HTML 规范 autofill 令牌，EP 2.11 引用的 TS AutoFill 联合类型未收录 -->
           <el-input
             v-model="form.name"
             size="large"
             placeholder="请输入显示名称"
-            autocomplete="nickname"
+            :autocomplete="('nickname' as any)"
             :disabled="loading"
           >
             <template #prefix><el-icon><User /></el-icon></template>

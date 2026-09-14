@@ -321,10 +321,10 @@ function openUpgrade() {
       </section>
 
       <ZjmfServicePanel v-if="data.svc.provider === 'zjmf'" :data="data" @refresh="load">
-        <template #invoices><ServiceInvoices :loading="invoicesLoading" :invoices="serviceInvoices" @pay="onPayInvoice" /></template>
+        <template #invoices><ServiceInvoices class="art-card" :loading="invoicesLoading" :invoices="serviceInvoices" @pay="onPayInvoice" /></template>
       </ZjmfServicePanel>
       <EasyPanelServicePanel v-else-if="data.svc.provider === 'easypanel'" :data="data" @refresh="load">
-        <template #invoices><ServiceInvoices :loading="invoicesLoading" :invoices="serviceInvoices" @pay="onPayInvoice" /></template>
+        <template #invoices><ServiceInvoices class="art-card" :loading="invoicesLoading" :invoices="serviceInvoices" @pay="onPayInvoice" /></template>
       </EasyPanelServicePanel>
 
       <div class="sd-grid sd-grid--footer">

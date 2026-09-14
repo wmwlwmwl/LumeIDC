@@ -30,7 +30,7 @@ async function refreshHost() {
 </script>
 
 <template>
-  <section class="zjmf-card">
+  <section class="zjmf-card art-card">
     <div class="zjmf-card__header">
       <div class="zjmf-card__title">
         <h2>实例信息</h2>
@@ -95,12 +95,9 @@ async function refreshHost() {
 </template>
 
 <style scoped>
+/* 盒样式（背景/描边/圆角/阴影）交由全局 art-card 按 data-box-mode 接管 */
 .zjmf-card {
-  background: var(--default-box-color);
-  border: 1px solid var(--art-card-border);
-  border-radius: var(--custom-radius);
   padding: 20px 22px;
-  box-shadow: 0 1px 3px rgba(34, 48, 83, 0.04), 0 1px 2px rgba(34, 48, 83, 0.02);
 }
 .zjmf-card__header {
   display: flex;
