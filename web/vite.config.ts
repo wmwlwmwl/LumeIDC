@@ -18,7 +18,7 @@ const GO_TARGET = process.env.LUME_DEV_API || 'http://localhost:8080'
 const ADMIN_BASE = '/admin'
 
 function resolvePath(p: string): string {
-  return path.resolve(__dirname, p)
+  return path.resolve(import.meta.dirname, p)
 }
 
 // 开发期：让 Vite 在 /admin 下提供 admin.html（后台入口的 SPA fallback）。
@@ -85,7 +85,7 @@ export default defineConfig(({ mode }) => {
       outDir: '../internal/handler/webui/dist',
       assetsDir: 'app',
       chunkSizeWarningLimit: 2000,
-      rollupOptions: {
+      rolldownOptions: {
         input: {
           store: fileURLToPath(new URL('./index.html', import.meta.url)),
           admin: fileURLToPath(new URL('./admin.html', import.meta.url)),
