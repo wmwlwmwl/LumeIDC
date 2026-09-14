@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
+import { ref, computed, onBeforeUnmount, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Check, Wallet, CreditCard, Warning } from '@element-plus/icons-vue'
@@ -8,13 +8,17 @@ import { formatMoney } from '@/utils/format'
 import PublicContainer from '@/components/public/PublicContainer.vue'
 
 const route = useRoute()
-const invoiceId = ref(Number(route.params.id))
+const invoiceId = computed(() => Number(route.params.id))
 const data = ref<PayData | null>(null)
 const loading = ref(true)
 const loadError = ref(false)
 const chosen = ref('')
 const busy = ref(false)
-let timer: ReturnType<typeof setInterval> | null = null
+let timer: ReturnType<typeof setTimeout> | null = null
+let redirectTimer: ReturnType<typeof setTimeout> | null = null
+let generation = 0
+let disposed = false
+let polling = false
 const gatewayList = computed(() => (Array.isArray(data.value?.gateways) ? data.value.gateways : []))
 
 // 组合支付：余额先抵扣，剩余本金走在线支付，手续费只按在线本金收取。
@@ -45,114 +49,171 @@ function gatewayPayable(g: { fee_percent: string }): string {
   return formatMoney((Math.round(onlineAmount.value * 100) + gatewayFeeCents(g)) / 100)
 }
 
-async function load() {
-  loadError.value = false
-  try {
-    data.value = await fetchPay(invoiceId.value)
-    useBalance.value = Number(data.value.invoice.credit || 0) > 0
-    if (!chosen.value && gatewayList.value.length) chosen.value = gatewayList.value[0].code
-  } catch (err: unknown) {
-    data.value = null
-    loadError.value = true
-    ElMessage.error((err as Error).message || '账单读取失败')
-  } finally {
-    loading.value = false
-  }
-}
-
-async function pollPaid() {
-  try {
-    const status = await payStatus(invoiceId.value)
-    if (status.expired) {
-      stopPolling()
-      await load()
-      ElMessage.warning('账单已过期，请重新下单')
-      return
-    }
-    if (status.paid) {
-      if (timer) clearInterval(timer)
-      ElMessage.success(data.value?.invoice.recharge ? '充值成功，余额已到账' : '订单支付成功')
-      setTimeout(() => {
-        location.href = data.value?.invoice.recharge ? '/user/recharge' : '/services'
-      }, 800)
-    }
-  } catch {
-    /* ignore */
-  }
+function isCurrent(id: number, version: number) {
+  return !disposed && id === invoiceId.value && version === generation
 }
 
 function stopPolling() {
-  if (timer) {
-    clearInterval(timer)
+  if (timer !== null) clearTimeout(timer)
+  timer = null
+}
+
+function clearRedirect() {
+  if (redirectTimer !== null) clearTimeout(redirectTimer)
+  redirectTimer = null
+}
+
+function schedulePolling(id: number, version: number) {
+  if (!isCurrent(id, version) || loading.value || busy.value || !data.value || data.value.paid || data.value.expired) return
+  stopPolling()
+  timer = setTimeout(() => {
     timer = null
+    void pollPaid(id, version)
+  }, 4000)
+}
+
+async function load() {
+  if (disposed) return false
+  const id = invoiceId.value
+  const version = ++generation
+  stopPolling()
+  clearRedirect()
+  loading.value = true
+  loadError.value = false
+  data.value = null
+  chosen.value = ''
+  useBalance.value = false
+  busy.value = false
+  try {
+    const result = await fetchPay(id)
+    if (!isCurrent(id, version)) return false
+    data.value = result
+    useBalance.value = Number(result.invoice.credit || 0) > 0
+    if (gatewayList.value.length) chosen.value = gatewayList.value[0].code
+  } catch (err: unknown) {
+    if (!isCurrent(id, version)) return false
+    loadError.value = true
+    ElMessage.error((err as Error).message || '账单读取失败')
+  } finally {
+    if (isCurrent(id, version)) {
+      loading.value = false
+      schedulePolling(id, version)
+    }
+  }
+  return isCurrent(id, version)
+}
+
+async function pollPaid(id: number, version: number) {
+  if (!isCurrent(id, version)) return
+  // 切换账单后仍等待旧状态请求结束，避免跨代次请求重叠。
+  if (polling) {
+    schedulePolling(id, version)
+    return
+  }
+  polling = true
+  try {
+    const status = await payStatus(id)
+    if (!isCurrent(id, version)) return
+    if (status.expired) {
+      const refreshedVersion = generation + 1
+      if (await load() && isCurrent(id, refreshedVersion)) ElMessage.warning('账单已过期，请重新下单')
+      return
+    }
+    if (status.paid && data.value) {
+      data.value.paid = true
+      const recharge = data.value.invoice.recharge
+      ElMessage.success(recharge ? '充值成功，余额已到账' : '订单支付成功')
+      redirectTimer = setTimeout(() => {
+        redirectTimer = null
+        if (isCurrent(id, version)) location.href = recharge ? '/user/recharge' : '/services'
+      }, 800)
+    }
+  } catch {
+    /* 下次轮询重试 */
+  } finally {
+    polling = false
+    schedulePolling(id, version)
   }
 }
 
-onMounted(async () => {
-  await load()
-  if (data.value && !data.value.paid && !data.value.expired) timer = setInterval(pollPaid, 4000)
+onBeforeUnmount(() => {
+  disposed = true
+  generation++
+  stopPolling()
+  clearRedirect()
 })
-onBeforeUnmount(stopPolling)
-watch(
-  () => route.params.id,
-  async () => {
-    stopPolling()
-    invoiceId.value = Number(route.params.id)
-    chosen.value = ''
-    loading.value = true
-    await load()
-    if (data.value && !data.value.paid && !data.value.expired) timer = setInterval(pollPaid, 4000)
-  },
-)
+watch(() => route.params.id, () => { void load() }, { immediate: true, flush: 'sync' })
 
 async function chooseGateway() {
+  if (disposed || loading.value || busy.value || !data.value || data.value.paid || data.value.expired) return
   if (!chosen.value) {
     ElMessage.warning('请选择支付方式')
     return
   }
+  const id = invoiceId.value
+  const version = ++generation
+  stopPolling()
   busy.value = true
+  let redirected = false
   try {
-    const res = await startPay(invoiceId.value, chosen.value, showDeductToggle.value && useBalance.value)
+    const res = await startPay(id, chosen.value, showDeductToggle.value && useBalance.value)
+    if (!isCurrent(id, version)) return
     if (res.paid && res.redirect) {
+      redirected = true
       location.href = res.redirect
       return
     }
     if (res.url) {
+      redirected = true
       location.href = res.url
       return
     }
     // 网关未返回跳转地址：明确提示而非静默结束
     ElMessage.error('未获取到支付跳转地址，请稍后重试')
   } catch (err: unknown) {
-    ElMessage.error((err as Error).message || '发起支付失败')
+    if (isCurrent(id, version)) ElMessage.error((err as Error).message || '发起支付失败')
   } finally {
-    busy.value = false
+    if (isCurrent(id, version)) {
+      busy.value = false
+      if (!redirected) schedulePolling(id, version)
+    }
   }
 }
 
 async function payBalance() {
-  try {
-    await ElMessageBox.confirm(
-      `将使用余额 ￥${formatMoney(amountNum.value)} 完成支付，确认继续？`,
-      '余额支付确认',
-      { type: 'warning', confirmButtonText: '确认支付', cancelButtonText: '取消' },
-    )
-  } catch {
-    return
-  }
+  if (disposed || loading.value || busy.value || !data.value || data.value.paid || data.value.expired) return
+  const id = invoiceId.value
+  const version = ++generation
+  stopPolling()
   busy.value = true
+  let redirected = false
   try {
-    const res = await payByBalance(invoiceId.value)
+    try {
+      await ElMessageBox.confirm(
+        `将使用余额 ￥${formatMoney(amountNum.value)} 完成支付，确认继续？`,
+        '余额支付确认',
+        { type: 'warning', confirmButtonText: '确认支付', cancelButtonText: '取消' },
+      )
+    } catch {
+      return
+    }
+    if (!isCurrent(id, version)) return
+    const res = await payByBalance(id)
+    if (!isCurrent(id, version)) return
     if (String(res.ok) === '1') {
       ElMessage.success('余额支付成功')
+      redirected = true
       location.href = res.redirect || '/services'
     } else {
       ElMessage.error(res.msg || '余额支付失败')
     }
   } catch (err: unknown) {
-    ElMessage.error((err as Error).message || '余额支付失败')
+    if (isCurrent(id, version)) ElMessage.error((err as Error).message || '余额支付失败')
   } finally {
-    busy.value = false
+    if (isCurrent(id, version)) {
+      busy.value = false
+      if (!redirected) schedulePolling(id, version)
+    }
   }
 }
 

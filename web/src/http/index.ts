@@ -145,7 +145,7 @@ async function request<T = ApiResult>(path: string, opts: RequestOptions = {}): 
     // 重新获取 /session 会让 Go 下发新 Cookie 和 CSRF，再只重试当前请求一次。
     try {
       const { loadSession } = await import('./session')
-      await loadSession({ force: true })
+      await loadSession()
       return request<T>(path, { ...opts, retriedAfterSessionRefresh: true })
     } catch {
       // 恢复失败时继续走统一 401 处理，避免吞掉原始错误。

@@ -571,13 +571,23 @@ func (h *Pages) productListPage(w http.ResponseWriter, r *http.Request, _ string
 						http.Error(w, "读取产品失败", 500)
 						return
 					}
+					ids := make([]int64, len(list))
+					for i, p := range list {
+						ids[i] = p.ID
+					}
 					psID, _ := h.Products.DefaultPricesetID(r.Context())
+					prices := h.Products.PricesByProduct(r.Context(), psID, ids)
+					optsBy := h.Products.ConfigOptionsByProducts(r.Context(), ids)
+					fallbacks := h.Products.ServerProfitFallbacks(r.Context(), ids)
 					for _, p := range list {
 						m := "-"
-						if pr, perr := h.Products.Price(r.Context(), p.ID, psID); perr == nil {
-							opts, _ := h.Products.GetConfigOptions(r.Context(), p.ID)
-							eType, eVal := productProfitType(r.Context(), h.Products, p.ProfitType, p.ProfitValue, p.ID), productProfitValue(r.Context(), h.Products, p.ProfitType, p.ProfitValue, p.ID)
-							m = fmt.Sprintf("%.2f", service.DisplayStartPrice(priceVal(pr.Monthly), opts, eType, eVal, "monthly"))
+						if pr, ok := prices[p.ID]; ok {
+							eType, eVal := p.ProfitType, p.ProfitValue
+							if p.ProfitValue <= 0 {
+								fb := fallbacks[p.ID]
+								eType, eVal = fb.Type, fb.Value
+							}
+							m = fmt.Sprintf("%.2f", service.DisplayStartPrice(priceVal(pr.Monthly), optsBy[p.ID], eType, eVal, "monthly"))
 						}
 						views = append(views, productView{ID: p.ID, Name: p.Name, Desc: p.Description, Monthly: m, Stock: p.Stock})
 					}

@@ -346,7 +346,11 @@ func (p *Payment) PrepareOnline(ctx context.Context, invoiceID, userID int64, ga
 			return OnlinePrep{}, err
 		}
 	}
-	remainingCents := amountCents - creditCents
+	// 旧抵扣已退回，本次必须从完整账单本金重新计算。
+	remainingCents := amountCents
+	if _, err := tx.ExecContext(ctx, `UPDATE payment_attempts SET status=2 WHERE invoice_id=$1 AND status=0`, invoiceID); err != nil {
+		return OnlinePrep{}, err
+	}
 	var applyCents int64
 	if useBalance && remainingCents > 0 {
 		balanceCents := int64(0)
@@ -378,9 +382,6 @@ func (p *Payment) PrepareOnline(ctx context.Context, invoiceID, userID int64, ga
 	if ferr != nil {
 		return OnlinePrep{}, fmt.Errorf("支付网关手续费配置无效")
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE payment_attempts SET status=2 WHERE invoice_id=$1 AND status=0`, invoiceID); err != nil {
-		return OnlinePrep{}, err
-	}
 	var attemptID int64
 	if err := tx.QueryRowContext(ctx,
 		`INSERT INTO payment_attempts(invoice_id,gateway_code,amount,fee_percent,fee_amount) VALUES($1,$2,$3,$4,$5) RETURNING id`,
@@ -407,11 +408,25 @@ func (p *Payment) ReleaseInvoiceCredit(ctx context.Context, invoiceID, attemptID
 		return err
 	}
 	defer tx.Rollback()
-	var no, credit string
+	var no, credit, gateway string
 	var userID int64
+	var status int16
+	// 与准备支付、核销一致，先锁账单再检查尝试，避免迟到清理退掉新抵扣。
 	if err := tx.QueryRowContext(ctx,
-		`SELECT no,user_id,coalesce(credit,0)::text FROM invoices WHERE id=$1 FOR UPDATE`, invoiceID).
-		Scan(&no, &userID, &credit); err != nil {
+		`SELECT no,user_id,coalesce(credit,0)::text,status,gateway FROM invoices WHERE id=$1 FOR UPDATE`, invoiceID).
+		Scan(&no, &userID, &credit, &status, &gateway); err != nil {
+		return err
+	}
+	if status != 0 {
+		return nil
+	}
+	var activeID int64
+	if err := tx.QueryRowContext(ctx,
+		`SELECT id FROM payment_attempts WHERE id=$1 AND invoice_id=$2 AND gateway_code=$3 AND status=0 FOR UPDATE`,
+		attemptID, invoiceID, gateway).Scan(&activeID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil // 旧尝试、其他账单或已结束的尝试均无需清理。
+		}
 		return err
 	}
 	if _, cents, perr := money.ParseNonNegative(credit, 999999999999); perr == nil && cents > 0 {
@@ -422,10 +437,8 @@ func (p *Payment) ReleaseInvoiceCredit(ctx context.Context, invoiceID, attemptID
 	if _, err := tx.ExecContext(ctx, `UPDATE invoices SET credit=0 WHERE id=$1`, invoiceID); err != nil {
 		return err
 	}
-	if attemptID > 0 {
-		if _, err := tx.ExecContext(ctx, `UPDATE payment_attempts SET status=2 WHERE id=$1 AND status=0`, attemptID); err != nil {
-			return err
-		}
+	if _, err := tx.ExecContext(ctx, `UPDATE payment_attempts SET status=2 WHERE id=$1 AND status=0`, activeID); err != nil {
+		return err
 	}
 	return tx.Commit()
 }

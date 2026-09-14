@@ -34,7 +34,7 @@ interface AuthFlags {
 }
 
 export interface SessionLoadOptions {
-  /** 强制绕过前端的节流语义，重新向 Go 获取 Cookie/CSRF。 */
+  /** 认证完成后使用：等待已有请求结束，再发起新请求，不复用认证前的结果。 */
   force?: boolean
 }
 
@@ -97,6 +97,7 @@ export function clearCurrentUser(): void {
 
 const SESSION_PATH = import.meta.env.DEV ? '/__api/session' : '/session'
 let pendingLoad: Promise<void> | null = null
+let loadGeneration = 0
 let lastFocusRefresh = 0
 const FOCUS_REFRESH_INTERVAL = 30_000
 
@@ -108,11 +109,15 @@ export const useSession = (): SessionState => state
  * 开发环境必须走 Vite 的 /__api 代理，否则浏览器拿不到 Go 设置的
  * lume_session Cookie 和 CSRF；生产环境则直接请求同源 /session。
  */
-export const loadSession = async (_options: SessionLoadOptions = {}): Promise<void> => {
-  // 多个 401 或页面焦点事件可能同时触发恢复，只保留一个请求，避免互相覆盖 Cookie/CSRF。
-  if (pendingLoad) return pendingLoad
+export const loadSession = async (options: SessionLoadOptions = {}): Promise<void> => {
+  // 普通刷新和并发 401 共用请求；认证后 force 必须在旧请求结束后重新获取。
+  if (pendingLoad && !options.force) return pendingLoad
+  const previousLoad = pendingLoad
+  const generation = ++loadGeneration
 
-  pendingLoad = (async () => {
+  const load = (async () => {
+    // 串行接续，避免 /session 响应互相覆盖 Cookie/CSRF；旧请求失败也要继续。
+    if (previousLoad) await previousLoad.catch(() => undefined)
     try {
       const res = await fetch(SESSION_PATH, {
         credentials: 'same-origin',
@@ -128,6 +133,7 @@ export const loadSession = async (_options: SessionLoadOptions = {}): Promise<vo
         msg?: string
       }
       if (!res.ok) throw new Error(data?.msg || `会话获取失败（${res.status}）`)
+      if (generation !== loadGeneration) return
       state.csrf = data.csrf || ''
       state.site = { ...state.site, ...(data.site || {}) }
       // 服务重启后 Go 会用新匿名会话响应，此处必须覆盖旧的前端 user 状态。
@@ -137,18 +143,19 @@ export const loadSession = async (_options: SessionLoadOptions = {}): Promise<vo
       state.auth = { ...defaultAuth, ...(data.auth || {}) }
       state.error = null
     } catch (err) {
-      state.error = err instanceof Error ? err : new Error('会话获取失败')
-      console.error('loadSession failed', err)
-      throw state.error
+      const error = err instanceof Error ? err : new Error('会话获取失败')
+      if (generation === loadGeneration) state.error = error
+      throw error
     } finally {
-      state.loaded = true
+      if (generation === loadGeneration) state.loaded = true
     }
   })()
+  pendingLoad = load
 
   try {
-    await pendingLoad
+    await load
   } finally {
-    pendingLoad = null
+    if (pendingLoad === load) pendingLoad = null
   }
 }
 
@@ -165,7 +172,7 @@ export function installSessionRefresh(
     if (now - lastFocusRefresh < FOCUS_REFRESH_INTERVAL) return
     lastFocusRefresh = now
     const wasAuthenticated = Boolean(currentUser())
-    void loadSession({ force: true })
+    void loadSession()
       .then(() => onRefresh?.(wasAuthenticated))
       .catch(() => undefined)
   }

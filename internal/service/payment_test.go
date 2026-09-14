@@ -27,6 +27,146 @@ func testDB(t *testing.T) *sql.DB {
 	return d
 }
 
+// setupOnlinePayment 仅使用显式 TEST_DATABASE_DSN 指向的已迁移测试库。
+func setupOnlinePayment(t *testing.T, balance string) (*Payment, *payFixture, int64) {
+	t.Helper()
+	d := testDB(t)
+	f := setupPayFixture(t, d, "100.00", sql.NullString{}, 1)
+	var invoiceID int64
+	if err := d.QueryRow(`UPDATE invoices SET status=0 WHERE order_id=$1 RETURNING id`, f.orderID).Scan(&invoiceID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(`UPDATE users SET balance=$2 WHERE id=$1`, f.userID, balance); err != nil {
+		t.Fatal(err)
+	}
+	return &Payment{db: d, Jobs: repo.NewFulfillmentJobs(d)}, f, invoiceID
+}
+
+func TestPrepareOnlineReplacesCredit(t *testing.T) {
+	for _, tc := range []struct {
+		name, balance, online, credit, fee, payable string
+		useBalance, fullyCovered                    bool
+	}{
+		{"重复抵扣", "30.00", "70.00", "30.00", "1.40", "71.40", true, false},
+		{"重复抵扣不能误判全额覆盖", "70.00", "30.00", "70.00", "0.60", "30.60", true, false},
+		{"取消余额抵扣", "30.00", "100.00", "0.00", "2.00", "102.00", false, false},
+		{"补足余额后全额覆盖", "100.00", "", "", "", "", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p, f, invID := setupOnlinePayment(t, "30.00")
+			ctx := context.Background()
+			first, err := p.PrepareOnline(ctx, invID, f.userID, "old", "0", true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.db.Exec(`UPDATE users SET balance=$2::numeric-30 WHERE id=$1`, f.userID, tc.balance); err != nil {
+				t.Fatal(err)
+			}
+			got, err := p.PrepareOnline(ctx, invID, f.userID, "new", "2", tc.useBalance)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.FullyCovered != tc.fullyCovered || got.Online != tc.online || got.Credit != tc.credit || got.FeeAmount != tc.fee || got.Payable != tc.payable {
+				t.Fatalf("重新发起金额不符：得到 %+v，期望在线本金 %s、抵扣 %s、应付 %s、全额覆盖 %v", got, tc.online, tc.credit, tc.payable, tc.fullyCovered)
+			}
+			var conserved bool
+			if err := f.db.QueryRow(`SELECT u.balance+i.credit=$2::numeric FROM invoices i JOIN users u ON u.id=i.user_id WHERE i.id=$1`, invID, tc.balance).Scan(&conserved); err != nil || !conserved {
+				t.Fatalf("余额与抵扣不守恒：%v", err)
+			}
+			if tc.fullyCovered {
+				var pending int
+				if err := f.db.QueryRow(`SELECT count(*) FROM payment_attempts WHERE invoice_id=$1 AND status=0`, invID).Scan(&pending); err != nil || pending != 0 {
+					t.Fatalf("归还抵扣后不应保留可核销的旧尝试：待支付 %d，错误 %v", pending, err)
+				}
+				return
+			}
+			var valid bool
+			if err := f.db.QueryRow(`SELECT a.amount-a.fee_amount+i.credit=i.amount AND a.status=0 AND old.status=2
+				FROM invoices i JOIN payment_attempts a ON a.invoice_id=i.id JOIN payment_attempts old ON old.id=$3
+				WHERE i.id=$1 AND a.id=$2`, invID, got.AttemptID, first.AttemptID).Scan(&valid); err != nil || !valid {
+				t.Fatalf("本金核销或新旧尝试状态不符：%v", err)
+			}
+		})
+	}
+}
+
+func TestReleaseInvoiceCreditAttemptOwnership(t *testing.T) {
+	for _, name := range []string{"当前尝试及重复释放", "旧尝试迟到失败", "已支付后迟到失败", "已支付账单残留待支付尝试", "已取消账单", "已过期账单", "其他账单尝试", "零尝试", "不存在的尝试"} {
+		t.Run(name, func(t *testing.T) {
+			p, f, invID := setupOnlinePayment(t, "30.00")
+			ctx := context.Background()
+			prep, err := p.PrepareOnline(ctx, invID, f.userID, "test", "0", true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			attemptID := prep.AttemptID
+			switch name {
+			case "旧尝试迟到失败":
+				if _, err := p.PrepareOnline(ctx, invID, f.userID, "new", "0", true); err != nil {
+					t.Fatal(err)
+				}
+			case "已支付后迟到失败":
+				if _, err := f.db.Exec(`UPDATE orders SET status=0,service_id=$2 WHERE id=$1`, f.orderID, f.serviceID); err != nil {
+					t.Fatal(err)
+				}
+				var no string
+				if err := f.db.QueryRow(`SELECT no FROM invoices WHERE id=$1`, invID).Scan(&no); err != nil {
+					t.Fatal(err)
+				}
+				if err := p.MarkPaid(ctx, no, no, "test", attemptID); err != nil {
+					t.Fatal(err)
+				}
+			case "已支付账单残留待支付尝试", "已取消账单", "已过期账单":
+				status := map[string]int{"已支付账单残留待支付尝试": 1, "已取消账单": 2, "已过期账单": 3}[name]
+				if _, err := f.db.Exec(`UPDATE invoices SET status=$2 WHERE id=$1`, invID, status); err != nil {
+					t.Fatal(err)
+				}
+			case "其他账单尝试":
+				other, of, oid := setupOnlinePayment(t, "30.00")
+				otherPrep, err := other.PrepareOnline(ctx, oid, of.userID, "test", "0", true)
+				if err != nil {
+					t.Fatal(err)
+				}
+				attemptID = otherPrep.AttemptID
+			case "零尝试":
+				attemptID = 0
+			case "不存在的尝试":
+				attemptID = -1
+			}
+			snapshot := func() string {
+				t.Helper()
+				var state string
+				if err := f.db.QueryRow(`SELECT json_build_array(u.balance,i.credit,i.status,
+					(SELECT json_agg(row(a.id,a.status) ORDER BY a.id) FROM payment_attempts a WHERE a.invoice_id=i.id OR a.id=$2),
+					(SELECT count(*) FROM balance_logs WHERE user_id=u.id))::text
+					FROM invoices i JOIN users u ON u.id=i.user_id WHERE i.id=$1`, invID, attemptID).Scan(&state); err != nil {
+					t.Fatal(err)
+				}
+				return state
+			}
+			before := snapshot()
+			if err := p.ReleaseInvoiceCredit(ctx, invID, attemptID); err != nil {
+				t.Fatal(err)
+			}
+			if name == "当前尝试及重复释放" {
+				var valid bool
+				if err := f.db.QueryRow(`SELECT u.balance=30 AND i.credit=0 AND a.status=2
+					FROM invoices i JOIN users u ON u.id=i.user_id JOIN payment_attempts a ON a.invoice_id=i.id
+					WHERE i.id=$1 AND a.id=$2`, invID, attemptID).Scan(&valid); err != nil || !valid {
+					t.Fatalf("当前尝试释放不完整：%v", err)
+				}
+				before = snapshot()
+				if err := p.ReleaseInvoiceCredit(ctx, invID, attemptID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if after := snapshot(); after != before {
+				t.Fatalf("无效或重复清理不应改变账务：原状态 %s，现状态 %s", before, after)
+			}
+		})
+	}
+}
+
 // payFixture 一套「用户 + 产品 + 已付订单/账单 + 服务」的自建自删测试数据。
 type payFixture struct {
 	db        *sql.DB
