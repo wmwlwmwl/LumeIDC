@@ -11,6 +11,7 @@ import {
   type NotificationItem,
 } from '../api/user'
 import PublicPageHead from '@/components/public/PublicPageHead.vue'
+import { refreshUnreadNotifications } from '@/components/public/useUnreadNotifications'
 
 const list = ref<NotificationItem[]>([])
 const categories = ref<{ key: string; label: string }[]>([])
@@ -57,6 +58,8 @@ async function markRead(item: NotificationItem) {
     await markNotificationRead(item.id)
     item.read = true
     unreadCount.value = Math.max(0, unreadCount.value - 1)
+    // 顶栏角标取的是「全部未读」，分类/关键词筛选下不等于本页的未读数，只能重新取。
+    void refreshUnreadNotifications()
   } catch (err: unknown) {
     ElMessage.error((err as Error).message || '操作失败')
   }
@@ -67,6 +70,7 @@ async function markAllRead() {
     await markAllNotificationsRead()
     list.value.forEach((item) => (item.read = true))
     unreadCount.value = 0
+    void refreshUnreadNotifications()
   } catch (err: unknown) {
     ElMessage.error((err as Error).message || '操作失败')
   }
@@ -76,6 +80,7 @@ async function remove(item: NotificationItem) {
   try {
     await deleteNotification(item.id)
     await load()
+    void refreshUnreadNotifications()
   } catch (err: unknown) {
     ElMessage.error((err as Error).message || '删除失败')
   }
@@ -91,6 +96,7 @@ async function removeAll() {
   try {
     await deleteAllNotifications()
     await load()
+    void refreshUnreadNotifications()
   } catch (err: unknown) {
     ElMessage.error((err as Error).message || '删除失败')
   }

@@ -1,4 +1,5 @@
 import { reactive } from 'vue'
+import { getAppRouter } from '@/router/registry'
 
 // 全局会话状态：mount 前由 /session 填充，供路由守卫与请求头使用。
 interface SiteInfo {
@@ -200,9 +201,13 @@ export function installSessionRefresh(
 
   window.addEventListener('focus', refresh)
   document.addEventListener('visibilitychange', onVisibilityChange)
+  // 切换页面时同样校验（共用上面的节流窗口）：Go 重启/会话过期后浏览器仍有旧
+  // Cookie，只靠 focus 触发的话，用户不发起任何接口就会一直看到旧登录态。
+  const removeRouteHook = getAppRouter().afterEach(() => refresh())
   return () => {
     window.removeEventListener('focus', refresh)
     document.removeEventListener('visibilitychange', onVisibilityChange)
+    removeRouteHook()
   }
 }
 

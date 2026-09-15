@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   ArrowDown,
@@ -14,7 +14,10 @@ import {
 } from '@element-plus/icons-vue'
 import { useSession } from '@/http/session'
 import { http } from '@/http'
-import { fetchUnreadNotificationCount } from '@/api/user'
+import {
+  unreadNotifications,
+  refreshUnreadNotifications,
+} from '@/components/public/useUnreadNotifications'
 import { togglePublicTheme, isPublicDark } from '@/components/public/usePublicTheme'
 import PublicContainer from '@/components/public/PublicContainer.vue'
 import HeaderMegaMenu from './HeaderMegaMenu.vue'
@@ -30,7 +33,6 @@ const dark = computed(() => isPublicDark())
 const activeMenu = ref<'' | 'products' | 'notices' | 'other'>('')
 const userMenuOpen = ref(false)
 const mobileOpen = ref(false)
-const unreadCount = ref(0)
 
 let closeTimer: ReturnType<typeof setTimeout> | null = null
 function openMenu(menu: 'products' | 'notices' | 'other') {
@@ -55,23 +57,14 @@ watch(
     activeMenu.value = ''
     userMenuOpen.value = false
     mobileOpen.value = false
+    // 切页面时重取未读数：其它页面（消息中心）可能刚把消息标记为已读。
+    void refreshUnreadNotifications()
   },
 )
 
-function toggleTheme() {
-  togglePublicTheme()
-}
-
-async function refreshUnreadCount() {
-  if (!session.user) {
-    unreadCount.value = 0
-    return
-  }
-  try {
-    unreadCount.value = await fetchUnreadNotificationCount()
-  } catch {
-    unreadCount.value = 0
-  }
+function toggleTheme(e: MouseEvent) {
+  // 传事件：以点击位置为圆心做圆形扩散过渡，与登录页顶栏一致
+  togglePublicTheme(e)
 }
 
 async function doLogout() {
@@ -96,12 +89,20 @@ function onUserCommand(cmd: string) {
   if (map[cmd]) router.push(map[cmd])
 }
 
+const onWindowFocus = () => void refreshUnreadNotifications()
+
 if (typeof window !== 'undefined') {
   window.addEventListener('scroll', onScroll, { passive: true })
   onScroll()
 }
-onMounted(() => void refreshUnreadCount())
-watch(() => session.user?.id, () => void refreshUnreadCount())
+onMounted(() => {
+  // 回到窗口时重取：离开期间可能已收到新消息，也可能已掉线（此时未读数归 0）。
+  window.addEventListener('focus', onWindowFocus)
+  void refreshUnreadNotifications()
+})
+onUnmounted(() => window.removeEventListener('focus', onWindowFocus))
+// 登录/退出（含会话掉线后被置空）都重取未读数，避免残留上一身份的角标。
+watch(() => session.user?.id, () => void refreshUnreadNotifications())
 </script>
 
 <template>
@@ -150,7 +151,7 @@ watch(() => session.user?.id, () => void refreshUnreadCount())
         </button>
         <RouterLink v-if="session.user" to="/notifications" class="icon-btn notification-link" title="消息中心">
           <el-icon><Bell /></el-icon>
-          <b v-if="unreadCount" class="notification-badge">{{ unreadCount > 99 ? '99+' : unreadCount }}</b>
+          <b v-if="unreadNotifications" class="notification-badge">{{ unreadNotifications > 99 ? '99+' : unreadNotifications }}</b>
         </RouterLink>
 
         <div v-if="session.user" class="user-menu">

@@ -39,6 +39,9 @@ async function bootstrap() {
   })
 
   const app = createApp(App)
+  // 前台刻意不复用后台那份带持久化插件的 pinia（store/index.ts 的 store）：
+  // 前台是独立公开站，避免后台的边框模式/圆角/容器宽度等设置串进前台。
+  // 需要跨刷新的前台偏好（明暗）单独落 localStorage，见 components/public/usePublicTheme.ts。
   app.use(createPinia())
   app.use(router)
   app.use(language)

@@ -695,7 +695,7 @@ async function submit() {
   flex: 1;
   height: 34px;
   color: var(--art-gray-600);
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 500;
   background: transparent;
   border: 0;
@@ -714,7 +714,7 @@ async function submit() {
   margin-bottom: 18px;
   padding: 10px 12px;
   color: var(--theme-color);
-  font-size: 13px;
+  font-size: 14px;
   background: var(--theme-color-soft);
   border-radius: var(--radius-md);
 }
@@ -822,7 +822,7 @@ async function submit() {
   gap: 4px;
   padding: 11px;
   color: var(--theme-color);
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
   background: var(--theme-color-soft);
   border-radius: var(--radius-md);

@@ -32,7 +32,7 @@
   .auth-title {
     margin: 0;
     color: var(--art-gray-900);
-    font-size: 22px;
+    font-size: 30px;
     font-weight: 700;
     letter-spacing: -0.03em;
   }
@@ -40,7 +40,7 @@
   .auth-subtitle {
     margin: 8px 0 0;
     color: var(--art-gray-500);
-    font-size: 13px;
+    font-size: 14px;
   }
 
   .auth-body {
@@ -50,6 +50,10 @@
   @media (max-width: 640px) {
     .auth-main {
       padding: 28px 20px 24px;
+    }
+
+    .auth-title {
+      font-size: 26px;
     }
   }
 </style>

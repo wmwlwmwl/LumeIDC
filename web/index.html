@@ -4,6 +4,29 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>LumeIDC</title>
+    <style>
+      /* 首帧底色：明暗要等 JS 挂载时才判定，先在根元素铺底，
+         否则深色用户整页刷新/退出登录时会先闪一下浅色（#fafbfc 与 .dark 的 #070707 同令牌值）。 */
+      html {
+        background: #fafbfc;
+      }
+      html.dark {
+        background: #070707;
+      }
+    </style>
+    <script>
+      /* 与 usePublicTheme 的 installPublicTheme 判定保持一致：有上次选择（sys-theme）按它，
+         没有则跟随系统偏好，避免首帧与挂载后的主题对不上。 */
+      try {
+        var savedTheme = localStorage.getItem('sys-theme')
+        if (
+          savedTheme === 'dark' ||
+          (savedTheme !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches)
+        ) {
+          document.documentElement.classList.add('dark')
+        }
+      } catch (e) {}
+    </script>
   </head>
   <body>
     <div id="app"></div>

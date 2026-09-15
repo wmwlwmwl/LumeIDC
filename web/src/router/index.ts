@@ -4,6 +4,11 @@ import { setPageTitle } from '../utils/router'
 
 const router = createRouter({
   history: createWebHistory('/'),
+  // 前台滚动容器是窗口：不配置 scrollBehavior 时浏览器会沿用上一页的滚动位置，
+  // 导致「切到新页面还停在原来的位置」。新页面回到顶部，浏览器前进/后退恢复原位置。
+  scrollBehavior(_to, _from, savedPosition) {
+    return savedPosition ?? { top: 0 }
+  },
   routes: [
     { path: '/install', name: 'install', component: () => import('../views/Install.vue'), meta: { bare: true, title: '安装向导' } },
     { path: '/', name: 'home', component: () => import('../views/Home.vue'), meta: { title: '首页' } },

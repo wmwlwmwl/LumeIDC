@@ -11,7 +11,7 @@ defineOptions({ name: 'PublicAuthLayout' })
     <LoginLeftView />
 
     <div class="public-auth__right">
-      <AuthTopBar />
+      <AuthTopBar hide-palette hide-language />
       <RouterView />
     </div>
   </div>

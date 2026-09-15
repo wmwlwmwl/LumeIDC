@@ -325,7 +325,7 @@ onBeforeUnmount(() => {
   flex: 1;
   height: 34px;
   color: var(--art-gray-600);
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 500;
   background: transparent;
   border: 0;
