@@ -33,7 +33,7 @@ func (h *Session) get(w http.ResponseWriter, r *http.Request) {
 			"hours":       si.ServiceHours,
 		},
 		"user":  nil, // 匿名会话返回 null，前端统一判空
-		"admin": map[string]any{"path": "/admin", "user": nil},
+		"admin": h.adminBlock(r),
 		// 认证配置：前端据此决定登录/注册页要展示哪些方式（验证码/邮箱验证码/手机验证码登录）。
 		"auth": h.authFlags(r),
 	}
@@ -55,21 +55,31 @@ func (h *Session) get(w http.ResponseWriter, r *http.Request) {
 		out["user"] = user
 	}
 
-	// 管理员通道独立于普通用户通道（各自 cookie），二者可在同一浏览器同时登录。
-	admin := map[string]any{"path": "/admin", "user": nil}
+	writeJSON(w, out)
+}
+
+// adminBlock 组装管理员通道信息：身份始终返回（仅反映本浏览器 cookie 状态），
+// 自定义路径只对开发代理请求下发（见上方注释）。
+func (h *Session) adminBlock(r *http.Request) map[string]any {
+	// 路径按需下发：自定义后台路径是隐藏入口，不能经前台 /session 泄漏给匿名探测者
+	// （curl /session 即可枚举）。生产环境后台 SPA 从自身 location 推导基址——
+	// 能打开后台登录页的人必然已知道路径；开发期由 Vite 代理头放行保持旧行为。
+	adminPath := "/admin"
 	if h.AdminPathCfg != nil {
 		if v := h.AdminPathCfg.Get(); v != "" {
-			admin["path"] = v
+			adminPath = v
 		}
 	}
+	if adminPath != "/admin" && !middleware.IsDevProxy(r) {
+		adminPath = ""
+	}
+	admin := map[string]any{"path": adminPath, "user": nil}
 	if h.AdminStore != nil {
 		if as := h.AdminStore.GetAdmin(r); as != nil && as.UserID > 0 {
 			admin["user"] = map[string]any{"id": as.UserID, "isAdmin": true}
 		}
 	}
-	out["admin"] = admin
-
-	writeJSON(w, out)
+	return admin
 }
 
 // authFlags 汇总认证相关开关（登录/注册页据此决定展示哪些方式）。

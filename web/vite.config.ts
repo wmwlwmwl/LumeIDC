@@ -102,6 +102,9 @@ export default defineConfig(({ mode }) => {
           changeOrigin: true,
           ws: true, // VNC 隧道 (/__api/*/services/{id}/vnc-ws) 走 WebSocket 升级
           rewrite: (p) => p.replace(/^\/__api/, ''),
+          // 标记本地开发代理：Go 据此在 /session 下发真实后台路径（生产不下发，
+          // 见 middleware.DevProxyHeader），开发期自定义路径的后台才能继续工作。
+          headers: { 'X-Lume-Dev-Proxy': '1' },
         },
       },
     },

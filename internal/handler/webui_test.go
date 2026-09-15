@@ -215,6 +215,49 @@ func TestSessionBootstrapThroughMiddleware(t *testing.T) {
 	}
 }
 
+// TestSessionAdminPathVisibility 自定义后台路径是隐藏入口，不得经前台 /session
+// 泄漏给匿名探测者；仅开发代理请求可拿到真实路径。
+func TestSessionAdminPathVisibility(t *testing.T) {
+	store := testStore(t)
+	newSession := func() http.Handler {
+		deps := &Deps{PageStore: store, AdminStore: store, AdminPathCfg: middleware.NewAdminPathConfig("wma")}
+		h := &Session{Deps: deps}
+		mux := http.NewServeMux()
+		h.Register(mux)
+		return mux
+	}
+
+	t.Run("生产匿名请求隐藏自定义路径", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		newSession().ServeHTTP(rec, httptest.NewRequest("GET", "/session", nil))
+		if !strings.Contains(rec.Body.String(), `"admin":{"path":"","user":null}`) {
+			t.Fatalf("自定义路径必须对匿名 /session 隐藏，got %s", rec.Body.String())
+		}
+	})
+
+	t.Run("开发代理请求下发真实路径", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/session", nil)
+		req.Header.Set(middleware.DevProxyHeader, "1")
+		rec := httptest.NewRecorder()
+		newSession().ServeHTTP(rec, req)
+		if !strings.Contains(rec.Body.String(), `"path":"wma"`) {
+			t.Fatalf("开发代理 /session 应下发真实路径，got %s", rec.Body.String())
+		}
+	})
+
+	t.Run("默认路径无需隐藏", func(t *testing.T) {
+		deps := &Deps{PageStore: store, AdminStore: store, AdminPathCfg: middleware.NewAdminPathConfig("")}
+		h := &Session{Deps: deps}
+		mux := http.NewServeMux()
+		h.Register(mux)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest("GET", "/session", nil))
+		if !strings.Contains(rec.Body.String(), `"path":"/admin"`) {
+			t.Fatalf("默认 /admin 路径应始终下发，got %s", rec.Body.String())
+		}
+	})
+}
+
 // TestAdminPathJSONPassthrough 自定义后台路径改写器应跳过 application/json 响应，
 // 避免改写 JSON body 中的 /admin 子串（SPA 时代新增端点依赖此行为）。
 func TestAdminPathJSONPassthrough(t *testing.T) {

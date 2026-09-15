@@ -50,6 +50,16 @@ func rewriteAdminPath(s, custom string) string {
 // admin.path 在运行时决定路径；其 HTML 中的资源名可能含 "admin" 字面量）。
 const NoRewriteHeader = "X-Lume-No-Rewrite"
 
+// DevProxyHeader 标记请求来自本地开发代理（vite.config.ts 的 /__api proxy 注入）。
+// 开发期后台 SPA 与 Go 可能各用不同端口/路径，/session 需据此下发真实后台路径；
+// 生产没有该头，匿名 /session 一律不下发自定义路径，避免泄漏后台入口。
+const DevProxyHeader = "X-Lume-Dev-Proxy"
+
+// IsDevProxy 判断请求是否来自本地开发代理。
+func IsDevProxy(r *http.Request) bool {
+	return r.Header.Get(DevProxyHeader) == "1"
+}
+
 func isBinaryContentType(ct string) bool {
 	ct = strings.ToLower(strings.TrimSpace(ct))
 	return strings.HasPrefix(ct, "image/") || strings.HasPrefix(ct, "video/") ||

@@ -92,8 +92,9 @@ async function bootstrap() {
 
   const session = useSession()
 
-  // 后台接口都挂在当前后台路径下（/admin/* 被中间件屏蔽以防泄漏自定义路径），
-  // 因此把 API 基址设为 /session 下发的 admin.path。
+  // 后台接口都挂在当前后台路径下（/admin/* 被中间件屏蔽以防泄漏自定义路径）。
+  // 基址由 session 模块解析：开发期取 /session 下发的 admin.path，生产从
+  // location.pathname 推导（自定义路径不向匿名 /session 下发，防探测泄漏）。
   setApiBase((session.adminPath || '').replace(/\/$/, ''))
 
   installSiteConfig()

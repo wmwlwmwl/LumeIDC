@@ -54,6 +54,28 @@ describe('loadSession', () => {
     expect(init.cache).toBe('no-store')
   })
 
+  it('后台入口在服务端未下发路径时从 location 推导基址', async () => {
+    // 生产环境自定义后台路径不对匿名 /session 下发（防探测泄漏），
+    // 后台 SPA 须从自身地址（hash 路由，pathname 即基址）推导。
+    window.history.pushState({}, '', '/wma/login')
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({ csrf: 'csrf-x', user: null, admin: { path: '', user: null } }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const mod = await import('./session')
+    mod.setAdminApp(true)
+    await mod.loadSession()
+    expect(mod.useSession().adminPath).toBe('/wma')
+
+    // 服务端显式下发（开发代理/默认路径）时优先采用
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
+      jsonResponse({ csrf: 'csrf-y', admin: { path: '/panel' } }),
+    ))
+    await mod.loadSession({ force: true })
+    expect(mod.useSession().adminPath).toBe('/panel')
+  })
+
   it('服务重启后旧 Cookie 被新的匿名会话覆盖', async () => {
     const mod = await import('./session')
     vi.stubGlobal(

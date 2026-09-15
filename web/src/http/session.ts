@@ -122,6 +122,14 @@ const FOCUS_REFRESH_INTERVAL = 30_000
 
 export const useSession = (): SessionState => state
 
+// 后台 SPA 走 hash 路由，pathname 即部署基址（自定义后台路径是单段，见
+// ValidAdminPath）。生产 /session 不下发自定义路径（防匿名探测泄漏），后台入口
+// 从自身地址推导——能打开后台登录页的人必然已知道路径。
+function deriveAdminBase(): string {
+  const seg = window.location.pathname.split('/')[1]
+  return seg ? '/' + seg : '/admin'
+}
+
 /**
  * 获取或刷新会话。
  *
@@ -157,7 +165,11 @@ export const loadSession = async (options: SessionLoadOptions = {}): Promise<voi
       state.site = { ...state.site, ...(data.site || {}) }
       // 服务重启后 Go 会用新匿名会话响应，此处必须覆盖旧的前端 user 状态。
       state.user = data.user || null
-      state.adminPath = data.admin?.path || '/admin'
+      // 后台路径：服务端下发优先（开发代理/默认 /admin）；生产匿名响应为空，
+      // 后台入口改由自身 location 推导，且不允许被空值覆盖已推导的基址。
+      const providedPath = data.admin?.path || ''
+      if (providedPath) state.adminPath = providedPath
+      else if (adminApp) state.adminPath = deriveAdminBase()
       state.adminUser = data.admin?.user || null
       state.auth = { ...defaultAuth, ...(data.auth || {}) }
       state.error = null
