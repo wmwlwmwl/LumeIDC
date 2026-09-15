@@ -59,6 +59,8 @@ func NewIdentity(store *repo.IdentityStore, users *repo.Users, pii *crypto.Crypt
 }
 
 var mainlandPhone = regexp.MustCompile(`^1[3-9][0-9]{9}$`)
+// intlPhone：E.164 — + 开头、首位非 0 的国家码（1-3 位）+ 国内号码，数字总数 7-15 位。
+var intlPhone = regexp.MustCompile(`^\+[1-9][0-9]{6,14}$`)
 var identityNumber = regexp.MustCompile(`^(?:[0-9]{15}|[0-9]{17}[0-9Xx])$`)
 
 var identityWeights = [...]int{7, 9, 10, 5, 8, 4, 2, 1, 6, 3, 7, 9, 10, 5, 8, 4, 2}
@@ -97,9 +99,18 @@ func NormalizePhone(raw string) (string, error) {
 	phone := strings.TrimSpace(raw)
 	phone = strings.ReplaceAll(phone, " ", "")
 	phone = strings.ReplaceAll(phone, "-", "")
-	if strings.HasPrefix(phone, "+86") {
-		phone = phone[3:]
-	} else if strings.HasPrefix(phone, "86") && len(phone) == 13 {
+	if phone == "" {
+		return "", errors.New("手机号格式不正确")
+	}
+	if strings.HasPrefix(phone, "+") {
+		// 国际号（含 +86…）：按 E.164 校验后原样返回
+		if !intlPhone.MatchString(phone) {
+			return "", errors.New("手机号格式不正确")
+		}
+		return phone, nil
+	}
+	// 无名前缀按中国大陆处理（兼容历史录入/内部输入）
+	if strings.HasPrefix(phone, "86") && len(phone) == 13 {
 		phone = phone[2:]
 	}
 	if !mainlandPhone.MatchString(phone) {

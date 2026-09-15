@@ -26,10 +26,22 @@ interface AuthFlags {
   phone_registration: boolean
   email_verification_required: boolean
   phone_verification_required: boolean
+  /** 注册必须同时填写邮箱和手机号（不再分邮箱/手机两种注册方式） */
+  require_both_registration: boolean
+  /** 修改邮箱时强制先验证原邮箱（两步换绑）；false=可直接修改 */
+  require_old_email_change: boolean
+  /** 修改手机号时强制先验证原手机（两步换绑）；false=可直接修改 */
+  require_old_phone_change: boolean
   captcha_register: boolean
   captcha_login: boolean
   external_captcha_login: boolean
   external_captcha_register: boolean
+  /** 注册发码前使用外部验证码 */
+  register_code_external: boolean
+  /** 找回密码发码前使用外部验证码 */
+  forgot_code_external: boolean
+  /** 修改邮箱/手机号发验证码前使用外部验证码 */
+  profile_code_external: boolean
   external_captcha_phone_login: boolean
 }
 
@@ -57,10 +69,16 @@ const defaultAuth: AuthFlags = {
   phone_registration: false,
   email_verification_required: false,
   phone_verification_required: true,
+  require_both_registration: false,
+  require_old_email_change: true,
+  require_old_phone_change: true,
   captcha_register: false,
   captcha_login: false,
   external_captcha_login: false,
   external_captcha_register: false,
+  register_code_external: false,
+  forgot_code_external: false,
+  profile_code_external: false,
   external_captcha_phone_login: false,
 }
 

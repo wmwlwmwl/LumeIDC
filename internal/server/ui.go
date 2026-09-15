@@ -18,7 +18,7 @@ type ProviderUI interface {
 // DefaultCredentialFields 通用凭据字段（zjmf 形态）。
 func DefaultCredentialFields() []CredentialField {
 	return []CredentialField{
-		{Name: "api_url", Label: "API 地址", Placeholder: "https://upstream.example.com", Required: true},
+		{Name: "api_url", Label: "API 地址", Placeholder: "请输入上游 API 地址", Required: true},
 		{Name: "api_username", Label: "API 用户名"},
 		{Name: "api_key", Label: "API 密钥（密码）", Secret: true},
 	}

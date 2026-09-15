@@ -103,6 +103,7 @@ declare module 'vue' {
     MenuLayoutSettings: typeof import('./../../components/core/layouts/art-settings-panel/widget/MenuLayoutSettings.vue')['default']
     MenuStyleSettings: typeof import('./../../components/core/layouts/art-settings-panel/widget/MenuStyleSettings.vue')['default']
     OsSelector: typeof import('./../../components/public/OsSelector.vue')['default']
+    PhoneInput: typeof import('./../../components/phone/PhoneInput.vue')['default']
     PublicAuthCard: typeof import('./../../components/public/PublicAuthCard.vue')['default']
     PublicAuthLayout: typeof import('./../../components/layout/PublicAuthLayout.vue')['default']
     PublicContainer: typeof import('./../../components/public/PublicContainer.vue')['default']

@@ -299,7 +299,7 @@ func Build(cfg *config.Config, version string) (*App, error) {
 	// SPA 启动端点：返回 CSRF 令牌 / 站点品牌 / 登录态（前端 mount 前调用）。
 	sessionHandler := &handler.Session{Users: users, Deps: deps}
 	sessionHandler.Register(mux)
-	verificationHandler := &handler.VerificationHandler{Identity: identity, Users: users, Sessions: store, AdminLog: adminLog, Challenges: challenges, Deps: deps}
+	verificationHandler := &handler.VerificationHandler{Identity: identity, Users: users, Sessions: store, AdminLog: adminLog, Challenges: challenges, StepKey: []byte(cfg.SecretKey), LocalCaptcha: localCaptcha, Captcha: service.NewConfiguredCaptchaProvider(settingsRepo), Deps: deps}
 	verificationHandler.Register(mux)
 	pay.Register(mux)
 	adminHandler.Register(mux)

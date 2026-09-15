@@ -2,7 +2,7 @@
 import { ref, reactive, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
-import { User, Lock, Iphone, ArrowRight, Refresh } from '@element-plus/icons-vue'
+import { User, Lock, ArrowRight, Refresh } from '@element-plus/icons-vue'
 import {
   login,
   fetchCaptcha,
@@ -13,6 +13,7 @@ import {
 import { useSession } from '../http/session'
 import ExternalCaptcha from '../components/ExternalCaptcha.vue'
 import PublicAuthCard from '@/components/public/PublicAuthCard.vue'
+import PhoneInput from '@/components/phone/PhoneInput.vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -26,9 +27,11 @@ function nextPath(): string {
   return n.startsWith('/') ? n : '/'
 }
 
-/* ---------------- 密码登录 ---------------- */
+/* ---------------- 密码登录（邮箱 / 手机号子 Tab） ---------------- */
+const subMode = ref<'email' | 'phone'>('email')
 const formRef = ref<FormInstance>()
-const form = reactive({ account: '', password: '', captchaAnswer: '' })
+const form = reactive({ email: '', phone: '', password: '', captchaAnswer: '' })
+const pwdPhoneInputRef = ref<InstanceType<typeof PhoneInput>>()
 const captcha = ref<CaptchaData>({ enabled: false })
 const captchaError = ref(false)
 const loading = ref(false)
@@ -36,7 +39,27 @@ const extFields = ref<Record<string, string>>({})
 const extRequired = ref(false)
 
 const rules: FormRules = {
-  account: [{ required: true, message: '请输入邮箱或手机号', trigger: 'blur' }],
+  email: [
+    {
+      validator: (_rule, value, callback) => {
+        if (subMode.value !== 'email') return callback()
+        if (!value) return callback(new Error('请输入邮箱'))
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) return callback(new Error('邮箱格式不正确'))
+        callback()
+      },
+      trigger: 'blur',
+    },
+  ],
+  phone: [
+    {
+      validator: (_rule, value, callback) => {
+        if (subMode.value !== 'phone') return callback()
+        if (!value) return callback(new Error('请输入手机号'))
+        callback()
+      },
+      trigger: 'blur',
+    },
+  ],
   password: [{ required: true, message: '请输入密码', trigger: 'blur' }],
   captchaAnswer: [
     {
@@ -67,10 +90,18 @@ async function submit() {
     ElMessage.warning('请先完成人机验证')
     return
   }
+  const loginId = subMode.value === 'email' ? form.email.trim() : form.phone
+  if (subMode.value === 'phone') {
+    const r = pwdPhoneInputRef.value?.check()
+    if (!r?.ok) {
+      ElMessage.warning(r?.msg || '手机号格式不正确')
+      return
+    }
+  }
   loading.value = true
   try {
     const body: Record<string, string> = {
-      email: form.account,
+      email: loginId,
       password: form.password,
       next: String(route.query.next || '/'),
     }
@@ -91,6 +122,7 @@ async function submit() {
 /* ---------------- 短信验证码登录 ---------------- */
 const phoneFormRef = ref<FormInstance>()
 const phoneForm = reactive({ phone: '', code: '', captchaAnswer: '' })
+const phoneInputRef = ref<InstanceType<typeof PhoneInput>>()
 const phoneCaptcha = ref<CaptchaData>({ enabled: false })
 const phoneExtFields = ref<Record<string, string>>({})
 const phoneExtRequired = ref(false)
@@ -114,8 +146,13 @@ const phoneRules: FormRules = {
 }
 
 async function loadPhoneCaptcha() {
+  // 外部行为验证启用时不加载本地图形码（后端同样外部优先）
+  if (session.auth.external_captcha_phone_login) {
+    phoneCaptcha.value = { enabled: false }
+    return
+  }
   try {
-    phoneCaptcha.value = await fetchCaptcha('phone_code')
+    phoneCaptcha.value = await fetchCaptcha('phone_login_code')
     phoneForm.captchaAnswer = ''
   } catch {
     phoneCaptcha.value = { enabled: false }
@@ -137,6 +174,11 @@ function startCooldown() {
 async function sendCode() {
   if (!phoneForm.phone) {
     ElMessage.warning('请先输入手机号')
+    return
+  }
+  const r = phoneInputRef.value?.check()
+  if (!r?.ok) {
+    ElMessage.warning(r?.msg || '手机号格式不正确')
     return
   }
   if (phoneCaptcha.value.enabled && !phoneForm.captchaAnswer) {
@@ -223,16 +265,38 @@ onBeforeUnmount(() => {
       label-position="top"
       @submit.prevent="submit"
     >
-      <el-form-item label="邮箱或手机号" prop="account">
+      <div class="auth-mode auth-mode--sm" role="tablist">
+        <button
+          type="button"
+          class="auth-mode__item"
+          :class="{ 'is-active': subMode === 'email' }"
+          @click="subMode = 'email'"
+        >
+          邮箱登录
+        </button>
+        <button
+          type="button"
+          class="auth-mode__item"
+          :class="{ 'is-active': subMode === 'phone' }"
+          @click="subMode = 'phone'"
+        >
+          手机号登录
+        </button>
+      </div>
+      <el-form-item v-if="subMode === 'email'" label="邮箱" prop="email">
         <el-input
-          v-model="form.account"
+          v-model="form.email"
           size="large"
-          placeholder="请输入邮箱或手机号"
+          type="email"
+          placeholder="请输入邮箱"
           autocomplete="username"
           :disabled="loading"
         >
           <template #prefix><el-icon><User /></el-icon></template>
         </el-input>
+      </el-form-item>
+      <el-form-item v-else label="手机号" prop="phone">
+        <PhoneInput ref="pwdPhoneInputRef" v-model="form.phone" :disabled="loading" />
       </el-form-item>
       <el-form-item label="密码" prop="password">
         <el-input
@@ -292,16 +356,7 @@ onBeforeUnmount(() => {
       @submit.prevent="submitPhone"
     >
       <el-form-item label="手机号" prop="phone">
-        <el-input
-          v-model="phoneForm.phone"
-          size="large"
-          type="tel"
-          placeholder="请输入已绑定手机号"
-          autocomplete="tel"
-          :disabled="phoneLoading"
-        >
-          <template #prefix><el-icon><Iphone /></el-icon></template>
-        </el-input>
+        <PhoneInput ref="phoneInputRef" v-model="phoneForm.phone" placeholder="请输入已绑定手机号" :disabled="phoneLoading" />
       </el-form-item>
       <el-form-item v-if="phoneCaptcha.enabled" label="图形验证码" prop="captchaAnswer">
         <div class="auth-captcha">
@@ -361,6 +416,9 @@ onBeforeUnmount(() => {
       </el-button>
     </el-form>
 
+    <div class="auth-forgot">
+      <RouterLink to="/forgot">忘记密码？</RouterLink>
+    </div>
     <div class="auth-divider"><span>还没有账户？</span></div>
     <RouterLink to="/register" class="auth-link">
       创建一个新账户 <el-icon><ArrowRight /></el-icon>
@@ -380,6 +438,11 @@ onBeforeUnmount(() => {
   margin-bottom: 18px;
   background: var(--art-gray-100);
   border-radius: var(--radius-md);
+}
+
+/* 密码登录内的 邮箱/手机号 子 Tab：更紧凑，与外层 密码/短信 切换区分 */
+.auth-mode--sm {
+  margin-bottom: 14px;
 }
 
 .auth-mode__item {
@@ -459,6 +522,16 @@ onBeforeUnmount(() => {
   margin-top: 4px;
   justify-content: center;
   gap: 5px;
+}
+
+.auth-forgot {
+  margin: 14px 0 2px;
+  text-align: right;
+  font-size: 13px;
+}
+
+.auth-forgot a:hover {
+  color: var(--theme-color);
 }
 
 .auth-divider {

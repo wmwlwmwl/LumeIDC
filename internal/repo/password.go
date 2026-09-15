@@ -26,3 +26,14 @@ func (u *Users) ChangePassword(ctx context.Context, userID int64, oldPass, newPa
 		`UPDATE users SET password_hash=$2 WHERE id=$1`, userID, string(newHash))
 	return err
 }
+
+// SetPassword 直接更新密码哈希（忘记密码重置专用，不校验旧密码）。
+func (u *Users) SetPassword(ctx context.Context, userID int64, newPass string) error {
+	newHash, err := bcrypt.GenerateFromPassword([]byte(newPass), bcrypt.DefaultCost)
+	if err != nil {
+		return err
+	}
+	_, err = u.db.ExecContext(ctx,
+		`UPDATE users SET password_hash=$2 WHERE id=$1`, userID, string(newHash))
+	return err
+}

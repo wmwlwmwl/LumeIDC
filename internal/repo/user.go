@@ -149,6 +149,25 @@ func (u *Users) MarkVerified(ctx context.Context, userID int64) error {
 	return err
 }
 
+// SetEmailVerified 管理后台手动设置邮箱验证状态；清除时一并作废残留验证令牌。
+func (u *Users) SetEmailVerified(ctx context.Context, userID int64, verified bool) error {
+	if verified {
+		return u.MarkVerified(ctx, userID)
+	}
+	_, err := u.db.ExecContext(ctx,
+		`UPDATE users SET email_verified=false, verify_token='', verify_token_created_at=NULL WHERE id=$1`, userID)
+	return err
+}
+
+// SetPhoneVerified 管理后台手动设置手机号验证状态；清除时清除验证时间（不触碰号码变更时间）。
+func (u *Users) SetPhoneVerified(ctx context.Context, userID int64, verified bool) error {
+	if verified {
+		return u.MarkPhoneVerified(ctx, userID)
+	}
+	_, err := u.db.ExecContext(ctx, `UPDATE users SET phone_verified_at=NULL WHERE id=$1`, userID)
+	return err
+}
+
 func (u *Users) VerifyPassword(hash []byte, password string) bool {
 	return bcrypt.CompareHashAndPassword(hash, []byte(password)) == nil
 }

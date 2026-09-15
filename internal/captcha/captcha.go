@@ -42,11 +42,20 @@ func (s *Service) Enabled(ctx context.Context, scene string) bool {
 	if s == nil || s.DB == nil || s.Settings == nil || len(s.Key) == 0 {
 		return false
 	}
-	v, _ := s.Settings.Get(ctx, "captcha_enabled")
-	if v != "1" {
+	v, err := s.Settings.Get(ctx, "captcha_enabled")
+	if err != nil || v != "1" {
 		return false
 	}
-	v, _ = s.Settings.Get(ctx, "captcha_"+strings.ToLower(strings.TrimSpace(scene))+"_enabled")
+	scene = strings.ToLower(strings.TrimSpace(scene))
+	v, _ = s.Settings.Get(ctx, "captcha_"+scene+"_enabled")
+	if v == "" {
+		// 发码类场景未显式配置时缺省跟随主开关（存量部署兼容：升级后找回/改绑发码不因此失去验证）。
+		switch scene {
+		case "register_code", "forgot_code", "profile_code", "phone_login_code":
+			return true
+		}
+		return false
+	}
 	return v == "1"
 }
 func (s *Service) Issue(ctx context.Context, scene, ip string) (string, []byte, error) {

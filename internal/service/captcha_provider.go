@@ -61,6 +61,12 @@ func externalCaptchaSetting(scene string) string {
 	switch scene {
 	case "register":
 		return "external_captcha_register_enabled"
+	case "register_code":
+		return "external_captcha_register_code_enabled"
+	case "forgot_code":
+		return "external_captcha_forgot_code_enabled"
+	case "profile_code":
+		return "external_captcha_profile_code_enabled"
 	case "login":
 		return "external_captcha_login_enabled"
 	case "phone_login_code":

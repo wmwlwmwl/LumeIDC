@@ -145,11 +145,11 @@ load()
         </div>
         <div class="admin-form-grid">
           <el-form-item label="名称"><el-input v-model="a.name" placeholder="选填，如 主账号" /></el-form-item>
-          <el-form-item label="SMTP 主机"><el-input v-model="a.host" placeholder="smtp.example.com" /></el-form-item>
+          <el-form-item label="SMTP 主机"><el-input v-model="a.host" placeholder="如 smtp.qq.com" /></el-form-item>
           <el-form-item label="端口"><el-input-number v-model="a.port" :min="1" :max="65535" class="w-full" /></el-form-item>
           <el-form-item label="用户名"><el-input v-model="a.user" /></el-form-item>
           <el-form-item label="密码"><el-input v-model="a.pass" type="password" show-password placeholder="留空保持不变" /></el-form-item>
-          <el-form-item label="发件人"><el-input v-model="a.from" placeholder="noreply@example.com" /></el-form-item>
+          <el-form-item label="发件人"><el-input v-model="a.from" placeholder="如 noreply@qq.com" /></el-form-item>
         </div>
         <el-checkbox v-model="a.enabled" class="mt-2">启用该账号</el-checkbox>
       </div>

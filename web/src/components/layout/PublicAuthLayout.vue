@@ -29,10 +29,13 @@ defineOptions({ name: 'PublicAuthLayout' })
   flex: 1;
   min-width: 0;
   display: flex;
-  align-items: center;
-  justify-content: center;
   padding: 48px 20px;
   overflow: auto;
+}
+
+/* 卡片矮内容时垂直/水平居中；内容高于容器时可正常滚动到顶（避免 flex 居中裁切标题） */
+.public-auth__right :deep(.auth-main) {
+  margin: auto;
 }
 
 @media (max-width: 640px) {

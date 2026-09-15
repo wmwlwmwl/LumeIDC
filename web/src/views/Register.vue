@@ -2,26 +2,33 @@
 import { ref, reactive, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
-import { User, Lock, Message, Iphone, ArrowRight, Refresh } from '@element-plus/icons-vue'
+import { User, Lock, Message, ArrowRight, Refresh } from '@element-plus/icons-vue'
 import { register, fetchCaptcha, sendRegisterCode, type CaptchaData } from '../api/store'
 import { useSession } from '../http/session'
 import ExternalCaptcha from '../components/ExternalCaptcha.vue'
 import PublicAuthCard from '@/components/public/PublicAuthCard.vue'
+import PhoneInput from '@/components/phone/PhoneInput.vue'
 
 const router = useRouter()
 const session = useSession()
+const phoneInputRef = ref<InstanceType<typeof PhoneInput>>()
 
 const emailOn = computed(() => session.auth.email_registration)
 const phoneOn = computed(() => session.auth.phone_registration)
 const bothOn = computed(() => emailOn.value && phoneOn.value)
 const anyOn = computed(() => emailOn.value || phoneOn.value)
+// 同时注册模式：后端开关开启且「邮箱+手机号」两个允许开关均开启
+const requireBoth = computed(() => emailOn.value && phoneOn.value && session.auth.require_both_registration)
 
 const regMode = ref<'email' | 'phone'>(emailOn.value ? 'email' : 'phone')
-const needVerify = computed(() =>
-  regMode.value === 'email'
-    ? session.auth.email_verification_required
-    : session.auth.phone_verification_required,
-)
+const emailVerify = computed(() => session.auth.email_verification_required)
+const phoneVerify = computed(() => session.auth.phone_verification_required)
+// 单模式（邮箱或手机）下是否需要验证码
+const needVerify = computed(() => (regMode.value === 'email' ? emailVerify.value : phoneVerify.value))
+// 同时注册模式下邮箱/手机各自是否需要验证码
+const needEmailCode = computed(() => requireBoth.value && emailVerify.value)
+const needPhoneCode = computed(() => requireBoth.value && phoneVerify.value)
+const anyVerify = computed(() => emailVerify.value || phoneVerify.value)
 
 const formRef = ref<FormInstance>()
 const form = reactive({
@@ -31,31 +38,54 @@ const form = reactive({
   password: '',
   confirm: '',
   code: '',
+  email_code: '',
+  phone_code: '',
   captchaAnswer: '',
   codeCaptchaAnswer: '',
 })
-const captcha = ref<CaptchaData>({ enabled: false })
-const codeCaptcha = ref<CaptchaData>({ enabled: false })
+const captcha = ref<CaptchaData>({ enabled: false }) // register 场景图形码（提交）
+const codeCaptcha = ref<CaptchaData>({ enabled: false }) // email_code/phone_code 场景图形码（发送验证码）
 const captchaError = ref(false)
 const loading = ref(false)
-const sending = ref(false)
+const sending = ref(false) // 单模式发送中
+const emailSending = ref(false)
+const phoneSending = ref(false)
 const cooldown = ref(0)
+const emailCooldown = ref(0)
+const phoneCooldown = ref(0)
 const extFields = ref<Record<string, string>>({})
 const extRequired = ref(false)
+// 注册发码前的外部验证（scene=register_code，由「注册发码」行控制），与注册提交外部验证分离。
+const codeExtFields = ref<Record<string, string>>({})
+const codeExtRequired = ref(false)
 let cooldownTimer: ReturnType<typeof setInterval> | null = null
+let emailTimer: ReturnType<typeof setInterval> | null = null
+let phoneTimer: ReturnType<typeof setInterval> | null = null
 
-const rules = computed<FormRules>(() => ({
-  email:
-    regMode.value === 'email'
-      ? [
-          { required: true, message: '请输入邮箱', trigger: 'blur' },
-          { type: 'email', message: '邮箱格式不正确', trigger: 'blur' },
-        ]
-      : [],
-  phone:
-    regMode.value === 'phone'
-      ? [{ required: true, message: '请输入手机号', trigger: 'blur' }]
-      : [],
+// rules 为常量引用（不随注册方式变化），避免 el-form 监听 rules 变化触发全量校验、
+// 导致切换注册方式时空表单全部标红；渠道差异用 validator 在运行时判定。
+const rules: FormRules = {
+  email: [
+    {
+      validator: (_rule, value, callback) => {
+        if (!requireBoth.value && regMode.value !== 'email') return callback()
+        if (!value) return callback(new Error('请输入邮箱'))
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) return callback(new Error('邮箱格式不正确'))
+        callback()
+      },
+      trigger: 'blur',
+    },
+  ],
+  phone: [
+    {
+      validator: (_rule, value, callback) => {
+        if (!requireBoth.value && regMode.value !== 'phone') return callback()
+        if (!value) return callback(new Error('请输入手机号'))
+        callback()
+      },
+      trigger: 'blur',
+    },
+  ],
   password: [{ required: true, min: 8, message: '密码至少 8 位', trigger: 'blur' }],
   confirm: [
     { required: true, message: '请再次输入密码', trigger: 'blur' },
@@ -67,7 +97,36 @@ const rules = computed<FormRules>(() => ({
       trigger: 'blur',
     },
   ],
-  code: needVerify.value ? [{ required: true, message: '请输入验证码', trigger: 'blur' }] : [],
+  code: [
+    {
+      validator: (_rule, value, callback) => {
+        if (requireBoth.value || !needVerify.value) return callback()
+        if (!value) return callback(new Error('请输入验证码'))
+        callback()
+      },
+      trigger: 'blur',
+    },
+  ],
+  email_code: [
+    {
+      validator: (_rule, value, callback) => {
+        if (!needEmailCode.value) return callback()
+        if (!value) return callback(new Error('请输入邮箱验证码'))
+        callback()
+      },
+      trigger: 'blur',
+    },
+  ],
+  phone_code: [
+    {
+      validator: (_rule, value, callback) => {
+        if (!needPhoneCode.value) return callback()
+        if (!value) return callback(new Error('请输入短信验证码'))
+        callback()
+      },
+      trigger: 'blur',
+    },
+  ],
   captchaAnswer: [
     {
       validator: (_rule, value, callback) => {
@@ -86,7 +145,7 @@ const rules = computed<FormRules>(() => ({
       trigger: 'blur',
     },
   ],
-}))
+}
 
 async function loadCaptcha() {
   captchaError.value = false
@@ -99,9 +158,15 @@ async function loadCaptcha() {
   }
 }
 
-async function loadCodeCaptcha() {
+// 加载「发送验证码」前的图形验证码（register_code 场景，由「注册发码」开关控制）。
+// 注册发码选择「外部验证码」时无需本地图形码（后端同样外部优先）。
+async function loadCodeCaptcha(scene: 'register_code' = 'register_code') {
+  if (session.auth.register_code_external) {
+    codeCaptcha.value = { enabled: false }
+    return
+  }
   try {
-    codeCaptcha.value = await fetchCaptcha(regMode.value === 'email' ? 'email_code' : 'phone_code')
+    codeCaptcha.value = await fetchCaptcha(scene)
     form.codeCaptchaAnswer = ''
   } catch {
     codeCaptcha.value = { enabled: false }
@@ -111,6 +176,18 @@ async function loadCodeCaptcha() {
 // 按当前注册方式与是否需要验证码，刷新对应验证码。
 async function refreshCaptchas() {
   if (!anyOn.value) return
+  if (requireBoth.value) {
+    // 同时注册：任一验证码需求开启则加载「发送验证码前」的图形验证码，让验证码区直接可见；
+    // 都关则用注册图形码
+    if (anyVerify.value) {
+      captcha.value = { enabled: false }
+      await loadCodeCaptcha()
+    } else {
+      codeCaptcha.value = { enabled: false }
+      await loadCaptcha()
+    }
+    return
+  }
   if (needVerify.value) {
     captcha.value = { enabled: false }
     await loadCodeCaptcha()
@@ -123,54 +200,168 @@ async function refreshCaptchas() {
 onMounted(refreshCaptchas)
 watch(regMode, () => refreshCaptchas())
 
-function startCooldown() {
-  cooldown.value = 60
-  if (cooldownTimer) clearInterval(cooldownTimer)
-  cooldownTimer = setInterval(() => {
-    cooldown.value -= 1
-    if (cooldown.value <= 0 && cooldownTimer) {
-      clearInterval(cooldownTimer)
-      cooldownTimer = null
-    }
-  }, 1000)
+function startCooldown(timer: 'single' | 'email' | 'phone') {
+  if (timer === 'single') {
+    cooldown.value = 60
+    if (cooldownTimer) clearInterval(cooldownTimer)
+    cooldownTimer = setInterval(() => {
+      cooldown.value -= 1
+      if (cooldown.value <= 0 && cooldownTimer) {
+        clearInterval(cooldownTimer)
+        cooldownTimer = null
+      }
+    }, 1000)
+    return
+  }
+  const isEmail = timer === 'email'
+  const cd = isEmail ? emailCooldown : phoneCooldown
+  cd.value = 60
+  if (isEmail) {
+    if (emailTimer) clearInterval(emailTimer)
+    emailTimer = setInterval(() => {
+      emailCooldown.value -= 1
+      if (emailCooldown.value <= 0 && emailTimer) {
+        clearInterval(emailTimer)
+        emailTimer = null
+      }
+    }, 1000)
+  } else {
+    if (phoneTimer) clearInterval(phoneTimer)
+    phoneTimer = setInterval(() => {
+      phoneCooldown.value -= 1
+      if (phoneCooldown.value <= 0 && phoneTimer) {
+        clearInterval(phoneTimer)
+        phoneTimer = null
+      }
+    }, 1000)
+  }
 }
 
 onBeforeUnmount(() => {
   if (cooldownTimer) clearInterval(cooldownTimer)
+  if (emailTimer) clearInterval(emailTimer)
+  if (phoneTimer) clearInterval(phoneTimer)
 })
 
+// 验证码发送前的人机验证载荷：外部「注册发码」场景字段优先，本地图形码字段兜底
+function codeExtra(): Record<string, string> {
+  const extra: Record<string, string> = { ...codeExtFields.value }
+  if (codeCaptcha.value.enabled) {
+    extra.captcha_id_code = codeCaptcha.value.id || ''
+    extra.captcha_answer_code = form.codeCaptchaAnswer
+  }
+  return extra
+}
+
+// 注册发码选择「外部验证码」时，发送前须已完成该外部验证
+function externalCodeReady(): boolean {
+  if (!session.auth.register_code_external) return true
+  if (codeExtRequired.value && !codeExtFields.value.captcha_token) {
+    ElMessage.warning('请先完成人机验证')
+    return false
+  }
+  return true
+}
+
+// 单模式：邮箱/手机验证码发送
 async function sendCode() {
   const targetVal = regMode.value === 'email' ? form.email : form.phone
   if (!targetVal) {
     ElMessage.warning(regMode.value === 'email' ? '请先填写邮箱' : '请先填写手机号')
     return
   }
+  if (!externalCodeReady()) return
+  if (regMode.value === 'phone') {
+    const r = phoneInputRef.value?.check()
+    if (!r?.ok) {
+      ElMessage.warning(r?.msg || '手机号格式不正确')
+      return
+    }
+  }
+  const scene = 'register_code'
+  if (!codeCaptcha.value.enabled) await loadCodeCaptcha(scene)
   if (codeCaptcha.value.enabled && !form.codeCaptchaAnswer) {
     ElMessage.warning('请输入图形验证码')
     return
   }
   sending.value = true
   try {
-    const extra: Record<string, string> = {}
-    if (codeCaptcha.value.enabled)
-      Object.assign(extra, {
-        captcha_id_code: codeCaptcha.value.id || '',
-        captcha_answer_code: form.codeCaptchaAnswer,
-      })
-    await sendRegisterCode(regMode.value, targetVal, extra)
+    await sendRegisterCode(regMode.value, targetVal, codeExtra())
     ElMessage.success(regMode.value === 'email' ? '验证码已发送，请查收邮件' : '验证码已发送，请查收短信')
-    startCooldown()
+    startCooldown('single')
   } catch (err: unknown) {
     ElMessage.error((err as Error).message || '发送失败')
-    if (needVerify.value) await loadCodeCaptcha()
+    if (needVerify.value) await loadCodeCaptcha(scene)
   } finally {
     sending.value = false
+  }
+}
+
+// 同时注册模式：邮箱验证码发送
+async function sendEmailCode() {
+  if (!form.email) {
+    ElMessage.warning('请先填写邮箱')
+    return
+  }
+  if (!externalCodeReady()) return
+  if (!codeCaptcha.value.enabled) await loadCodeCaptcha()
+  if (codeCaptcha.value.enabled && !form.codeCaptchaAnswer) {
+    ElMessage.warning('请输入图形验证码')
+    return
+  }
+  emailSending.value = true
+  try {
+    await sendRegisterCode('email', form.email, codeExtra())
+    ElMessage.success('验证码已发送，请查收邮件')
+    startCooldown('email')
+  } catch (err: unknown) {
+    ElMessage.error((err as Error).message || '发送失败')
+    await loadCodeCaptcha()
+  } finally {
+    emailSending.value = false
+  }
+}
+
+// 同时注册模式：手机验证码发送
+async function sendPhoneCode() {
+  if (!form.phone) {
+    ElMessage.warning('请先填写手机号')
+    return
+  }
+  if (!externalCodeReady()) return
+  const r = phoneInputRef.value?.check()
+  if (!r?.ok) {
+    ElMessage.warning(r?.msg || '手机号格式不正确')
+    return
+  }
+  if (!codeCaptcha.value.enabled) await loadCodeCaptcha()
+  if (codeCaptcha.value.enabled && !form.codeCaptchaAnswer) {
+    ElMessage.warning('请输入图形验证码')
+    return
+  }
+  phoneSending.value = true
+  try {
+    await sendRegisterCode('phone', form.phone, codeExtra())
+    ElMessage.success('验证码已发送，请查收短信')
+    startCooldown('phone')
+  } catch (err: unknown) {
+    ElMessage.error((err as Error).message || '发送失败')
+    await loadCodeCaptcha()
+  } finally {
+    phoneSending.value = false
   }
 }
 
 async function submit() {
   const valid = await formRef.value?.validate().catch(() => false)
   if (!valid) return
+  if (requireBoth.value || regMode.value === 'phone') {
+    const r = phoneInputRef.value?.check()
+    if (!r?.ok) {
+      ElMessage.warning(r?.msg || '手机号格式不正确')
+      return
+    }
+  }
   if (extRequired.value && !extFields.value.captcha_token) {
     ElMessage.warning('请先完成人机验证')
     return
@@ -178,14 +369,23 @@ async function submit() {
   loading.value = true
   try {
     const body: Record<string, string> = {
-      mode: regMode.value,
+      mode: requireBoth.value ? 'both' : regMode.value,
       name: form.name,
       password: form.password,
       password_confirm: form.confirm,
     }
-    if (regMode.value === 'email') body.email = form.email
-    else body.phone = form.phone
-    if (needVerify.value) body.code = form.code
+    if (requireBoth.value) {
+      body.email = form.email
+      body.phone = form.phone
+      if (needEmailCode.value) body.email_code = form.email_code
+      if (needPhoneCode.value) body.phone_code = form.phone_code
+    } else if (regMode.value === 'email') {
+      body.email = form.email
+      if (needVerify.value) body.code = form.code
+    } else {
+      body.phone = form.phone
+      if (needVerify.value) body.code = form.code
+    }
     if (captcha.value.enabled)
       Object.assign(body, { captcha_id: captcha.value.id || '', captcha_answer: form.captchaAnswer })
     Object.assign(body, extFields.value)
@@ -214,7 +414,10 @@ async function submit() {
     />
 
     <template v-else>
-      <div v-if="bothOn" class="auth-mode" role="tablist">
+      <div v-if="requireBoth" class="auth-both-hint">
+        注册将同时绑定邮箱与手机号
+      </div>
+      <div v-else-if="bothOn" class="auth-mode" role="tablist">
         <button
           type="button"
           class="auth-mode__item"
@@ -235,13 +438,13 @@ async function submit() {
 
       <el-form
         ref="formRef"
-        class="auth-form"
+        :class="['auth-form', { 'auth-form--stack': requireBoth }]"
         :model="form"
         :rules="rules"
         label-position="top"
         @submit.prevent="submit"
       >
-        <el-form-item v-if="regMode === 'email'" label="邮箱" prop="email">
+        <el-form-item v-if="requireBoth || regMode === 'email'" label="邮箱" prop="email">
           <el-input
             v-model="form.email"
             size="large"
@@ -253,17 +456,8 @@ async function submit() {
             <template #prefix><el-icon><Message /></el-icon></template>
           </el-input>
         </el-form-item>
-        <el-form-item v-else label="手机号" prop="phone">
-          <el-input
-            v-model="form.phone"
-            size="large"
-            type="tel"
-            placeholder="请输入手机号"
-            autocomplete="tel"
-            :disabled="loading"
-          >
-            <template #prefix><el-icon><Iphone /></el-icon></template>
-          </el-input>
+        <el-form-item v-if="requireBoth || regMode === 'phone'" label="手机号" prop="phone">
+          <PhoneInput ref="phoneInputRef" v-model="form.phone" :disabled="loading" />
         </el-form-item>
         <el-form-item label="显示名称（选填）">
           <!-- nickname 为 HTML 规范 autofill 令牌，EP 2.11 引用的 TS AutoFill 联合类型未收录 -->
@@ -305,70 +499,167 @@ async function submit() {
           </el-input>
         </el-form-item>
 
-        <template v-if="needVerify">
-          <el-form-item v-if="codeCaptcha.enabled" label="图形验证码" prop="codeCaptchaAnswer">
+        <!-- 同时注册模式：邮箱/手机验证码各自独立（按开关要求显示） -->
+        <template v-if="requireBoth">
+          <template v-if="needEmailCode || needPhoneCode">
+            <el-form-item v-if="!session.auth.register_code_external && codeCaptcha.enabled" label="图形验证码" prop="codeCaptchaAnswer">
+              <div class="auth-captcha">
+                <el-input
+                  v-model="form.codeCaptchaAnswer"
+                  size="large"
+                  placeholder="请输入图中字符"
+                  :disabled="emailSending || phoneSending"
+                />
+                <button
+                  v-if="codeCaptcha.image"
+                  type="button"
+                  class="auth-captcha__refresh"
+                  aria-label="刷新验证码"
+                  @click="() => loadCodeCaptcha()"
+                >
+                  <img :src="codeCaptcha.image" alt="图形验证码" />
+                </button>
+              </div>
+            </el-form-item>
+            <el-form-item v-if="needEmailCode" label="邮箱验证码" prop="email_code">
+              <div class="auth-code">
+                <el-input
+                  v-model="form.email_code"
+                  size="large"
+                  inputmode="numeric"
+                  placeholder="6 位验证码"
+                  autocomplete="one-time-code"
+                  :disabled="loading"
+                />
+                <el-button
+                  size="large"
+                  :loading="emailSending"
+                  :disabled="emailCooldown > 0 || loading"
+                  @click="sendEmailCode"
+                >
+                  {{ emailCooldown > 0 ? `${emailCooldown}s` : '获取邮箱验证码' }}
+                </el-button>
+              </div>
+            </el-form-item>
+            <el-form-item v-if="needPhoneCode" label="短信验证码" prop="phone_code">
+              <div class="auth-code">
+                <el-input
+                  v-model="form.phone_code"
+                  size="large"
+                  inputmode="numeric"
+                  placeholder="6 位验证码"
+                  autocomplete="one-time-code"
+                  :disabled="loading"
+                />
+                <el-button
+                  size="large"
+                  :loading="phoneSending"
+                  :disabled="phoneCooldown > 0 || loading"
+                  @click="sendPhoneCode"
+                >
+                  {{ phoneCooldown > 0 ? `${phoneCooldown}s` : '获取短信验证码' }}
+                </el-button>
+              </div>
+            </el-form-item>
+          </template>
+          <el-form-item v-else-if="!session.auth.external_captcha_register && captcha.enabled" label="图形验证码" prop="captchaAnswer">
             <div class="auth-captcha">
               <el-input
-                v-model="form.codeCaptchaAnswer"
+                v-model="form.captchaAnswer"
                 size="large"
                 placeholder="请输入图中字符"
-                :disabled="sending"
-                @keyup.enter="sendCode"
+                :disabled="loading"
               />
               <button
-                v-if="codeCaptcha.image"
+                v-if="captcha.image"
                 type="button"
                 class="auth-captcha__refresh"
                 aria-label="刷新验证码"
-                @click="loadCodeCaptcha"
+                @click="loadCaptcha"
               >
-                <img :src="codeCaptcha.image" alt="图形验证码" />
+                <img :src="captcha.image" alt="图形验证码" />
               </button>
             </div>
           </el-form-item>
-          <el-form-item :label="regMode === 'email' ? '邮箱验证码' : '短信验证码'" prop="code">
-            <div class="auth-code">
+        </template>
+
+        <!-- 单模式（邮箱或手机）验证码区 -->
+        <template v-else>
+          <template v-if="needVerify">
+            <el-form-item v-if="!session.auth.register_code_external && codeCaptcha.enabled" label="图形验证码" prop="codeCaptchaAnswer">
+              <div class="auth-captcha">
+                <el-input
+                  v-model="form.codeCaptchaAnswer"
+                  size="large"
+                  placeholder="请输入图中字符"
+                  :disabled="sending"
+                  @keyup.enter="sendCode"
+                />
+                <button
+                  v-if="codeCaptcha.image"
+                  type="button"
+                  class="auth-captcha__refresh"
+                  aria-label="刷新验证码"
+                  @click="() => loadCodeCaptcha()"
+                >
+                  <img :src="codeCaptcha.image" alt="图形验证码" />
+                </button>
+              </div>
+            </el-form-item>
+            <el-form-item :label="regMode === 'email' ? '邮箱验证码' : '短信验证码'" prop="code">
+              <div class="auth-code">
+                <el-input
+                  v-model="form.code"
+                  size="large"
+                  inputmode="numeric"
+                  placeholder="6 位验证码"
+                  autocomplete="one-time-code"
+                  :disabled="loading"
+                  @keyup.enter="submit"
+                />
+                <el-button size="large" :loading="sending" :disabled="cooldown > 0 || loading" @click="sendCode">
+                  {{ cooldown > 0 ? `${cooldown}s` : '获取验证码' }}
+                </el-button>
+              </div>
+            </el-form-item>
+          </template>
+          <el-form-item v-else-if="!session.auth.external_captcha_register && captcha.enabled" label="图形验证码" prop="captchaAnswer">
+            <div class="auth-captcha">
               <el-input
-                v-model="form.code"
+                v-model="form.captchaAnswer"
                 size="large"
-                inputmode="numeric"
-                placeholder="6 位验证码"
-                autocomplete="one-time-code"
+                placeholder="请输入图中字符"
                 :disabled="loading"
-                @keyup.enter="submit"
               />
-              <el-button size="large" :loading="sending" :disabled="cooldown > 0 || loading" @click="sendCode">
-                {{ cooldown > 0 ? `${cooldown}s` : '获取验证码' }}
-              </el-button>
+              <button
+                v-if="captcha.image"
+                type="button"
+                class="auth-captcha__refresh"
+                aria-label="刷新验证码"
+                @click="loadCaptcha"
+              >
+                <img :src="captcha.image" alt="图形验证码" />
+              </button>
             </div>
           </el-form-item>
-        </template>
-        <el-form-item v-else-if="captcha.enabled" label="图形验证码" prop="captchaAnswer">
-          <div class="auth-captcha">
-            <el-input
-              v-model="form.captchaAnswer"
-              size="large"
-              placeholder="请输入图中字符"
-              :disabled="loading"
-            />
-            <button
-              v-if="captcha.image"
-              type="button"
-              class="auth-captcha__refresh"
-              aria-label="刷新验证码"
-              @click="loadCaptcha"
-            >
-              <img :src="captcha.image" alt="图形验证码" />
-            </button>
+          <div v-else-if="captchaError" class="auth-captcha__error auth-full" role="alert">
+            <span>验证码加载失败</span>
+            <button type="button" @click="loadCaptcha"><el-icon><Refresh /></el-icon>重试</button>
           </div>
-        </el-form-item>
-        <div v-else-if="captchaError" class="auth-captcha__error auth-full" role="alert">
-          <span>验证码加载失败</span>
-          <button type="button" @click="loadCaptcha"><el-icon><Refresh /></el-icon>重试</button>
-        </div>
+        </template>
 
+        <!-- 外部「注册发码」人机验证：发送注册验证码前完成（scene=register_code） -->
         <ExternalCaptcha
-          v-if="session.auth.external_captcha_register && !needVerify"
+          v-if="session.auth.register_code_external && (needVerify || requireBoth)"
+          scene="register_code"
+          class="auth-full"
+          @update:fields="codeExtFields = $event"
+          @update:required="codeExtRequired = $event"
+        />
+
+        <!-- 外部「注册场景」人机验证：启用时替代上述本地图形码，发送验证码与注册提交共用 -->
+        <ExternalCaptcha
+          v-if="session.auth.external_captcha_register"
           scene="register"
           class="auth-full"
           @update:fields="extFields = $event"
@@ -417,6 +708,15 @@ async function submit() {
   color: var(--theme-color);
   background: var(--default-box-color);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+}
+
+.auth-both-hint {
+  margin-bottom: 18px;
+  padding: 10px 12px;
+  color: var(--theme-color);
+  font-size: 13px;
+  background: var(--theme-color-soft);
+  border-radius: var(--radius-md);
 }
 
 .auth-captcha {
@@ -490,6 +790,11 @@ async function submit() {
   .auth-form .auth-full,
   .auth-form .auth-submit {
     grid-column: 1 / -1;
+  }
+
+  /* 同时注册模式：字段单列堆叠（邮箱、手机号、验证码…逐行展示） */
+  .auth-form--stack {
+    display: block;
   }
 }
 

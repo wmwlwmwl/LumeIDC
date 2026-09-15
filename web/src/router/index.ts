@@ -14,6 +14,7 @@ const router = createRouter({
     { path: '/notices/:id(\\d+)', name: 'notice-detail', component: () => import('../views/NoticeDetail.vue'), meta: { title: '公告详情' } },
     { path: '/login', name: 'login', component: () => import('../views/Login.vue'), meta: { guest: true, authLayout: true, title: '登录' } },
     { path: '/register', name: 'register', component: () => import('../views/Register.vue'), meta: { guest: true, authLayout: true, title: '注册' } },
+    { path: '/forgot', name: 'forgot', component: () => import('../views/Forgot.vue'), meta: { guest: true, authLayout: true, title: '找回密码' } },
     {
       path: '/user',
       component: () => import('../views/UserShell.vue'),

@@ -179,8 +179,34 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="mb-3">
-    <div ref="box" aria-live="polite"></div>
-    <p v-if="error" class="text-xs text-[var(--el-color-danger)]">{{ error }}</p>
+  <div class="ext-captcha">
+    <div ref="box" class="ext-captcha__box" aria-live="polite"></div>
+    <p v-if="error" class="ext-captcha__error">{{ error }}</p>
   </div>
 </template>
+
+<style scoped>
+.ext-captcha {
+  width: 100%;
+}
+
+/* 第三方验证组件（geetest / vaptcha / corptcha）由各自 SDK 自绘皮肤，
+   这里只负责把容器对齐页面宽度并控制圆角/溢出，保持与表单观感一致。 */
+.ext-captcha__box {
+  width: 100%;
+  min-height: 56px;
+  overflow: hidden;
+  border-radius: 8px;
+}
+
+.ext-captcha__box :deep(iframe),
+.ext-captcha__box :deep(img) {
+  max-width: 100%;
+}
+
+.ext-captcha__error {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--el-color-danger);
+}
+</style>

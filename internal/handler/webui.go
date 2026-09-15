@@ -96,7 +96,7 @@ func spaOwned(p string) bool {
 	switch p {
 	case "/", "/cart", "/services", "/notifications", "/tickets",
 		"/user", "/user/recharge", "/user/invoices", "/user/password", "/user/profile",
-		"/login", "/register", "/user/verification":
+		"/login", "/register", "/forgot", "/user/verification":
 		return true
 	}
 	if strings.HasPrefix(p, "/buy/") {

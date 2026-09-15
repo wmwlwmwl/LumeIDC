@@ -778,6 +778,8 @@ export interface AdminUserDetail {
     phone_masked: string
     phone_status: string
     email_status: string
+    email_verified: boolean
+    phone_verified: boolean
     registered_at: string
     last_login_at: string
   }

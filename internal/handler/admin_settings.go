@@ -35,11 +35,18 @@ func (a *Admin) adminSettings(w http.ResponseWriter, r *http.Request) {
 		"manual_identity_enabled",
 		"registration_email_enabled", "registration_phone_enabled",
 		"registration_email_verification_required", "registration_phone_verification_required",
-		"registration_show_all_methods", "login_email_enabled", "login_phone_enabled",
+		// require_both 为「邮箱+手机号同时注册」开关；show_all_methods 为旧键名（兼容既有部署已开启的值）
+		"registration_require_both", "registration_show_all_methods",
+		"login_email_enabled", "login_phone_enabled",
 		"login_phone_otp_enabled",
+		// 换绑校验开关：修改邮箱/手机时是否强制验证原渠道
+		"profile_change_require_old_email", "profile_change_require_old_phone",
 		"captcha_enabled", "captcha_register_enabled", "captcha_login_enabled", "captcha_admin_login_enabled",
-		"captcha_email_code_enabled", "captcha_phone_code_enabled", "captcha_password_reset_enabled",
+		"captcha_register_code_enabled", "captcha_forgot_code_enabled", "captcha_profile_code_enabled",
+		"captcha_phone_login_code_enabled",
 		"external_captcha_register_enabled", "external_captcha_login_enabled",
+		"external_captcha_register_code_enabled", "external_captcha_forgot_code_enabled",
+		"external_captcha_profile_code_enabled",
 		"external_captcha_phone_login_code_enabled",
 		mailAccountsKey, mailCooldownKey,
 	)
@@ -91,19 +98,26 @@ func (a *Admin) adminSettings(w http.ResponseWriter, r *http.Request) {
 		"registration_phone_enabled":                get("registration_phone_enabled"),
 		"registration_email_verification_required":  get("registration_email_verification_required"),
 		"registration_phone_verification_required":  get("registration_phone_verification_required"),
-		"registration_show_all_methods":             get("registration_show_all_methods"),
-		"login_email_enabled":                       get("login_email_enabled"),
-		"login_phone_enabled":                       get("login_phone_enabled"),
-		"login_phone_otp_enabled":                   get("login_phone_otp_enabled"),
+		// 新键为空时兼容旧键名（registration_show_all_methods）
+		"registration_require_both": fallbackOr("registration_require_both", "registration_show_all_methods", vals),
+		"login_email_enabled":                     get("login_email_enabled"),
+		"login_phone_enabled":                     get("login_phone_enabled"),
+		"login_phone_otp_enabled":                 get("login_phone_otp_enabled"),
+		"profile_change_require_old_email":        defaultOne(get("profile_change_require_old_email")),
+		"profile_change_require_old_phone":        defaultOne(get("profile_change_require_old_phone")),
 		"captcha_enabled":                           get("captcha_enabled"),
 		"captcha_register_enabled":                  get("captcha_register_enabled"),
 		"captcha_login_enabled":                     get("captcha_login_enabled"),
 		"captcha_admin_login_enabled":               get("captcha_admin_login_enabled"),
-		"captcha_email_code_enabled":                get("captcha_email_code_enabled"),
-		"captcha_phone_code_enabled":                get("captcha_phone_code_enabled"),
-		"captcha_password_reset_enabled":            get("captcha_password_reset_enabled"),
+		"captcha_register_code_enabled":             get("captcha_register_code_enabled"),
+		"captcha_forgot_code_enabled":               get("captcha_forgot_code_enabled"),
+		"captcha_profile_code_enabled":              get("captcha_profile_code_enabled"),
+		"captcha_phone_login_code_enabled":          get("captcha_phone_login_code_enabled"),
 		"external_captcha_register_enabled":         get("external_captcha_register_enabled"),
 		"external_captcha_login_enabled":            get("external_captcha_login_enabled"),
+		"external_captcha_register_code_enabled":    get("external_captcha_register_code_enabled"),
+		"external_captcha_forgot_code_enabled":      get("external_captcha_forgot_code_enabled"),
+		"external_captcha_profile_code_enabled":     get("external_captcha_profile_code_enabled"),
 		"external_captcha_phone_login_code_enabled": get("external_captcha_phone_login_code_enabled"),
 	}
 	// 多 SMTP 账号列表（回传页面时剔除密码）
@@ -198,13 +212,29 @@ func (c *settingsSaveCtx) success() {
 }
 
 func (c *settingsSaveCtx) saveRegistration() {
-	for _, key := range []string{"registration_email_enabled", "registration_phone_enabled", "registration_email_verification_required", "registration_phone_verification_required", "registration_show_all_methods", "login_phone_otp_enabled"} {
+	for _, key := range []string{"registration_email_enabled", "registration_phone_enabled", "registration_email_verification_required", "registration_phone_verification_required", "registration_require_both", "login_phone_otp_enabled", "profile_change_require_old_email", "profile_change_require_old_phone"} {
 		c.setFlag(key)
 	}
 }
 
+// fallbackOr 返回 vals[newKey]，为空时回退 vals[oldKey]（设置键改名后的存量数据兼容）。
+func fallbackOr(newKey, oldKey string, vals map[string]string) string {
+	if v := vals[newKey]; v != "" {
+		return v
+	}
+	return vals[oldKey]
+}
+
+// defaultOne 布尔开关的默认值兜底：未配置/缺键时按开启处理（默认安全）。
+func defaultOne(v string) string {
+	if v == "" {
+		return "1"
+	}
+	return v
+}
+
 func (c *settingsSaveCtx) saveCaptcha() {
-	for _, key := range []string{"captcha_enabled", "captcha_register_enabled", "captcha_login_enabled", "captcha_admin_login_enabled", "captcha_email_code_enabled", "captcha_phone_code_enabled", "captcha_password_reset_enabled"} {
+	for _, key := range []string{"captcha_enabled", "captcha_register_enabled", "captcha_login_enabled", "captcha_admin_login_enabled", "captcha_register_code_enabled", "captcha_forgot_code_enabled", "captcha_profile_code_enabled", "captcha_phone_login_code_enabled"} {
 		c.setFlag(key)
 	}
 }
@@ -229,18 +259,21 @@ func (c *settingsSaveCtx) saveManualIdentity() {
 }
 
 // saveExternalCaptcha 校验并保存外部验证码设置；返回 false 表示校验失败且已写响应。
+// 互斥校验基于本次表单提交的本地开关状态（而非库中现值）：单人机验证卡界面按最终一致
+// 状态分请求提交，这里仅保证「同一场景不在一次提交里同时勾为本地+外部」。
 func (c *settingsSaveCtx) saveExternalCaptcha() bool {
 	provider := strings.ToLower(strings.TrimSpace(c.fv("captcha_provider")))
 	if provider != "" && provider != "geetest" && provider != "vaptcha" && provider != "corptcha" {
 		c.fail("外部验证码 provider 无效")
 		return false
 	}
-	s := c.a.Settings
-	isOn := func(key string) bool { value, _ := s.Get(c.r.Context(), key); return value == "1" }
-	localRegister := isOn("captcha_enabled") && isOn("captcha_register_enabled")
-	localLogin := isOn("captcha_enabled") && isOn("captcha_login_enabled")
-	localPhone := isOn("captcha_enabled") && isOn("captcha_phone_code_enabled")
-	if (c.fv("external_captcha_register_enabled") == "1" && localRegister) || (c.fv("external_captcha_login_enabled") == "1" && localLogin) || (c.fv("external_captcha_phone_login_code_enabled") == "1" && localPhone) {
+	localEnabled := c.fv("captcha_enabled") == "1"
+	localRegister := localEnabled && c.fv("captcha_register_enabled") == "1"
+	localLogin := localEnabled && c.fv("captcha_login_enabled") == "1"
+	// 仅注册/登录做互斥（同一动作不至于同时要求本地+外部两道验证码）。
+	// 外部「手机验证码登录」与本地「发送验证码」场景不互斥：本地 phone_code 是广义发码场景
+	// （找回密码、绑手机、短信登录发码都走它），与“登录发码走外部”并不重叠，且后端判定本就外部优先。
+	if (c.fv("external_captcha_register_enabled") == "1" && localRegister) || (c.fv("external_captcha_login_enabled") == "1" && localLogin) {
 		c.fail("同一普通场景不能同时启用本地和外部验证码")
 		return false
 	}
@@ -253,7 +286,7 @@ func (c *settingsSaveCtx) saveExternalCaptcha() bool {
 			c.set(key, value)
 		}
 	}
-	for _, key := range []string{"external_captcha_register_enabled", "external_captcha_login_enabled", "external_captcha_phone_login_code_enabled"} {
+	for _, key := range []string{"external_captcha_register_enabled", "external_captcha_login_enabled", "external_captcha_register_code_enabled", "external_captcha_forgot_code_enabled", "external_captcha_profile_code_enabled", "external_captcha_phone_login_code_enabled"} {
 		c.setFlag(key)
 	}
 	return true

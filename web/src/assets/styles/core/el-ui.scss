@@ -309,7 +309,8 @@ html.dark .el-card {
         border: 2px solid var(--el-checkbox-checked-icon-color);
         border-left: 0;
         border-top: 0;
-        transform: translate(1px, 1.5px) rotate(45deg) scale(0.85) !important;
+        // 居中定位沿用 EP 的百分比位移（固定像素会让勾号偏离方块中心）
+        transform: translate(-45%, -60%) rotate(45deg) scale(0.85) !important;
         transform-origin: center;
       }
     }

@@ -150,7 +150,7 @@ async function changeStatus() {
       <section class="conversation-section art-card">
         <div class="section-heading"><h2>沟通记录</h2><span>{{ messages.length }} 条消息</span></div>
         <div v-if="messages.length" class="conversation">
-          <article v-for="message in messages" :key="message.id" class="message" :class="{ 'is-agent': message.admin_id }">
+          <article v-for="message in messages" :key="message.id" class="message" :class="{ 'is-self': !message.admin_id }">
             <div class="message-avatar">{{ message.admin_id ? '客' : '我' }}</div>
             <div class="message-content">
               <div class="message-meta">
@@ -406,7 +406,8 @@ async function changeStatus() {
   max-width: 82%;
 }
 
-.message.is-agent {
+/* 自己的消息靠右，客服消息靠左（与常见 IM 一致） */
+.message.is-self {
   align-self: flex-end;
   flex-direction: row-reverse;
 }
@@ -420,24 +421,25 @@ async function changeStatus() {
   flex-shrink: 0;
   color: var(--theme-color-contrast);
   font-size: 12px;
-  background: var(--theme-color);
+  background: var(--el-color-success);
   border-radius: 50%;
 }
 
-.message.is-agent .message-avatar {
-  background: var(--el-color-success);
+.message.is-self .message-avatar {
+  background: var(--theme-color);
 }
 
 .message-content {
   min-width: 0;
   padding: 12px 15px;
-  background: var(--theme-color-soft);
+  background: var(--default-box-color);
+  border: 1px solid var(--art-card-border);
   border-radius: 4px var(--custom-radius) var(--custom-radius) var(--custom-radius);
 }
 
-.message.is-agent .message-content {
-  background: var(--default-box-color);
-  border: 1px solid var(--art-card-border);
+.message.is-self .message-content {
+  background: var(--theme-color-soft);
+  border: 0;
   border-radius: var(--custom-radius) 4px var(--custom-radius) var(--custom-radius);
 }
 

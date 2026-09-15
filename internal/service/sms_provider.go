@@ -58,6 +58,21 @@ func (p *ConfiguredSMSProvider) SendPurpose(ctx context.Context, phone, code, pu
 
 type settingGetter func(string) string
 
+// SMSServiceConfigured 判断是否登记了受支持的短信服务商（全站全局状态，
+// 不含用户手机号等隐私信息，可在防枚举短路前安全判定）。
+// sms_provider 取值白名单须与 ConfiguredSMSProvider.SendPurpose 保持一致。
+func SMSServiceConfigured(ctx context.Context, s *repo.Settings) bool {
+	if s == nil {
+		return false
+	}
+	provider, _ := s.Get(ctx, "sms_provider")
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "aliyun", "aliyun_sms", "stay33":
+		return true
+	}
+	return false
+}
+
 func (p *ConfiguredSMSProvider) client() *http.Client {
 	if p.Client != nil {
 		return p.Client

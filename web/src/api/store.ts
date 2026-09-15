@@ -149,7 +149,7 @@ export interface CaptchaData {
   id?: string
   image?: string
 }
-export async function fetchCaptcha(scene: 'login' | 'register' | 'phone_code' | 'email_code'): Promise<CaptchaData> {
+export async function fetchCaptcha(scene: 'login' | 'register' | 'phone_login_code' | 'email_code' | 'register_code' | 'forgot_code' | 'profile_code'): Promise<CaptchaData> {
   const res = await http.get<CaptchaData>('/captcha', { scene })
   return res as unknown as CaptchaData
 }
@@ -166,4 +166,12 @@ export async function sendRegisterCode(mode: 'email' | 'phone', target: string, 
   const body: Record<string, string> = mode === 'email' ? { mode, email: target } : { mode, phone: target }
   Object.assign(body, extra)
   await http.post('/auth/register-code', body, { silent401: true })
+}
+// 找回密码：发送验证码（account 含 @ 走邮箱，否则手机号；extra 携带图形验证码字段）
+export async function sendForgotCode(account: string, extra: Record<string, string> = {}): Promise<void> {
+  await http.post('/auth/forgot-code', { account, ...extra }, { silent401: true })
+}
+// 找回密码：校验验证码并重置密码
+export async function resetPassword(account: string, code: string, password: string): Promise<void> {
+  await http.post('/auth/forgot-reset', { account, code, password, password_confirm: password }, { silent401: true })
 }

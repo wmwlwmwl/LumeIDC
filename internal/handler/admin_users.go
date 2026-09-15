@@ -186,6 +186,7 @@ func (m *AdminManage) UserEdit(w http.ResponseWriter, r *http.Request) {
 			"balance": fmt.Sprintf("%.2f", user.Balance), "status": user.Status,
 			"phone": user.Phone, "phone_masked": service.MaskPhone(user.Phone),
 			"phone_status": phoneStatus, "email_status": emailStatus,
+			"email_verified": user.EmailVerified, "phone_verified": user.PhoneVerified,
 			"registered_at": registeredAt, "last_login_at": lastLogin,
 		},
 		"realname": map[string]any{
@@ -207,6 +208,7 @@ func (m *AdminManage) UserEdit(w http.ResponseWriter, r *http.Request) {
 // userSaveInput 校验通过后的用户编辑表单字段。
 type userSaveInput struct {
 	email, phone, status, password, balanceAdjust string
+	emailVerifiedRaw, phoneVerifiedRaw            string
 }
 
 // validateUserSaveInput 校验用户编辑表单：邮箱/手机号格式与占用查重、状态、密码长度、余额调整。
@@ -265,7 +267,24 @@ func (m *AdminManage) validateUserSaveInput(ctx context.Context, id int64, curre
 	if !validAdminBalanceAdjustment(balanceAdjust) {
 		return userSaveInput{}, errors.New("余额调整金额无效")
 	}
-	return userSaveInput{email: email, phone: phone, status: status, password: password, balanceAdjust: balanceAdjust}, nil
+	// 邮箱/手机号验证状态（""=不修改）：仅接受 "0"/"1"。
+	emailVerifiedRaw := fv("email_verified")
+	if emailVerifiedRaw != "" && emailVerifiedRaw != "0" && emailVerifiedRaw != "1" {
+		return userSaveInput{}, errors.New("邮箱验证状态无效")
+	}
+	phoneVerifiedRaw := fv("phone_verified")
+	if phoneVerifiedRaw != "" && phoneVerifiedRaw != "0" && phoneVerifiedRaw != "1" {
+		return userSaveInput{}, errors.New("手机号验证状态无效")
+	}
+	// 未绑定手机号不能标记为已验证。
+	if phoneVerifiedRaw == "1" && (phone == "" || m.Identity == nil) {
+		return userSaveInput{}, errors.New("该用户未绑定手机号，无法标记为已验证")
+	}
+	// 未绑定邮箱同理。
+	if emailVerifiedRaw == "1" && email == "" {
+		return userSaveInput{}, errors.New("该用户未绑定邮箱，无法标记为已验证")
+	}
+	return userSaveInput{email: email, phone: phone, status: status, password: password, balanceAdjust: balanceAdjust, emailVerifiedRaw: emailVerifiedRaw, phoneVerifiedRaw: phoneVerifiedRaw}, nil
 }
 
 func (m *AdminManage) UserSave(w http.ResponseWriter, r *http.Request) {
@@ -361,6 +380,30 @@ func (m *AdminManage) UserSave(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// 邮箱/手机号验证状态：在号码保存之后应用（改邮箱会复位 email_verified、换绑会复位手机验证），
+	// 以管理员本次显式指定为准。
+	if in.emailVerifiedRaw == "1" {
+		if err := m.Users.SetEmailVerified(r.Context(), id, true); err != nil {
+			fail("保存邮箱验证状态失败")
+			return
+		}
+	} else if in.emailVerifiedRaw == "0" {
+		if err := m.Users.SetEmailVerified(r.Context(), id, false); err != nil {
+			fail("保存邮箱验证状态失败")
+			return
+		}
+	}
+	if in.phoneVerifiedRaw == "1" {
+		if err := m.Users.SetPhoneVerified(r.Context(), id, true); err != nil {
+			fail("保存手机号验证状态失败")
+			return
+		}
+	} else if in.phoneVerifiedRaw == "0" {
+		if err := m.Users.SetPhoneVerified(r.Context(), id, false); err != nil {
+			fail("保存手机号验证状态失败")
+			return
+		}
+	}
 
 	if m.AdminStore != nil && (emailChanged || phoneChanged || password != "" || status == "0") {
 		m.AdminStore.RevokeUser(id)
@@ -384,6 +427,16 @@ func (m *AdminManage) UserSave(w http.ResponseWriter, r *http.Request) {
 	}
 	if balanceAdjust != "" {
 		changes = append(changes, "balance_adjusted=true")
+	}
+	if in.emailVerifiedRaw == "1" {
+		changes = append(changes, "email_verified=set")
+	} else if in.emailVerifiedRaw == "0" {
+		changes = append(changes, "email_verified=cleared")
+	}
+	if in.phoneVerifiedRaw == "1" {
+		changes = append(changes, "phone_verified=set")
+	} else if in.phoneVerifiedRaw == "0" {
+		changes = append(changes, "phone_verified=cleared")
 	}
 	m.audit(r, "user_update", "user", id, strings.Join(changes, ","))
 	if wantsJSON(r) {

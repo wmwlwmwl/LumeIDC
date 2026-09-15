@@ -4,9 +4,15 @@ import "testing"
 
 func TestNormalizePhone(t *testing.T) {
 	cases := map[string]string{
+		// 大陆号：无前缀、86 前缀、+86 前缀均归一为 +86 E.164
 		"138 0013 8000":  "+8613800138000",
 		"+8613800138000": "+8613800138000",
 		"8613800138000":  "+8613800138000",
+		// 国际号：按 E.164 原样返回（含 +86…，与历史行为等价）
+		"+85261234567":  "+85261234567",
+		"+852-6123-4567": "+85261234567",
+		"+14155552671":  "+14155552671",
+		"+85213800138000": "+85213800138000",
 	}
 	for input, want := range cases {
 		got, err := NormalizePhone(input)
@@ -14,7 +20,7 @@ func TestNormalizePhone(t *testing.T) {
 			t.Fatalf("NormalizePhone(%q) = %q, %v; want %q", input, got, err, want)
 		}
 	}
-	for _, input := range []string{"", "12345678901", "+85213800138000"} {
+	for _, input := range []string{"", "12345678901", "+0123", "+123", "+1a2345678", "abc"} {
 		if _, err := NormalizePhone(input); err == nil {
 			t.Fatalf("NormalizePhone(%q) unexpectedly succeeded", input)
 		}
