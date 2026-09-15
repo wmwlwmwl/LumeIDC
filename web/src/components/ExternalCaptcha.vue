@@ -7,7 +7,7 @@
  *   验证通过后把 provider 专有字段写回表单，字段名与后端 captchaCheckVals 读取的一致
  *   （captcha_token / lot_number / captcha_output / pass_token / gen_time / knock / dfu / ip）。
  */
-import { ref, onMounted, onBeforeUnmount } from 'vue'
+import { ref, shallowRef, onMounted, onBeforeUnmount } from 'vue'
 import { http } from '../http/index'
 
 const props = defineProps<{ scene: string }>()
@@ -30,6 +30,15 @@ interface CaptchaConfig {
 const box = ref<HTMLElement | null>(null)
 const error = ref('')
 const ready = ref(false)
+
+// 当前生效的 provider：模板据此决定容器占位与是否需要自绘触发按钮
+const provider = ref('')
+const hint = ref('')
+const vpDone = ref(false)
+// 挑战进行中：防止重复触发导致 Vaptcha 实例进入 closed 状态
+const vpBusy = ref(false)
+// 第三方实例用 shallowRef：避免被 Vue 深度代理后内部状态判断出错
+const vpWidget = shallowRef<VpWidget | null>(null)
 
 // 外部验证码字段名（与后端白名单一致）
 const FIELD_NAMES = ['captcha_token', 'lot_number', 'captcha_output', 'pass_token', 'gen_time', 'knock', 'dfu', 'ip'] as const
@@ -101,37 +110,56 @@ async function initGeetest(el: HTMLElement, cfg: CaptchaConfig) {
   })
 }
 
-async function initVaptcha(el: HTMLElement, cfg: CaptchaConfig) {
+// SDK 只认 container 挂载点，不注入任何 UI；触发按钮由模板渲染
+let vpMount: HTMLElement | null = null
+let vpCfg: CaptchaConfig | null = null
+
+async function mountVaptcha() {
+  if (!vpMount || !vpCfg) return
   if (typeof w.vaptcha !== 'function') throw new Error('Vaptcha SDK 初始化失败')
+  // 每次都用全新的挂载点建实例：旧实例在挑战失败/关闭后不再接受 validate()
   const mount = document.createElement('div')
-  const hint = document.createElement('div')
-  hint.className = 'mt-1 text-xs text-[var(--el-color-danger)]'
-  const button = document.createElement('button')
-  button.type = 'button'
-  button.className = 'rounded-custom-sm border border-[var(--art-card-border)] px-3 py-1.5 text-sm'
-  button.textContent = '开始人机验证'
-  el.append(mount, button, hint)
-  const widget = await w.vaptcha({ vid: cfg.public_id, container: mount, mode: 'click' })
+  vpMount.replaceChildren(mount)
+  const widget = await w.vaptcha({ vid: vpCfg.public_id, container: mount, mode: 'click' })
   if (!widget || typeof widget.validate !== 'function' || typeof widget.getVerifyResult !== 'function') {
     throw new Error('Vaptcha SDK 版本不受支持')
   }
-  button.addEventListener('click', async () => {
-    hint.textContent = ''
+  vpWidget.value = widget
+}
+
+async function initVaptcha(el: HTMLElement, cfg: CaptchaConfig) {
+  vpMount = el
+  vpCfg = cfg
+  await mountVaptcha()
+}
+
+async function runVaptcha() {
+  const widget = vpWidget.value
+  // vpBusy 期间忽略重复点击：挑战未结束就再次 validate() 会把实例打成 closed 状态
+  if (!widget || vpDone.value || vpBusy.value) return
+  vpBusy.value = true
+  hint.value = ''
+  try {
+    await widget.validate()
+    const r = widget.getVerifyResult()
+    if (!r || !r.token || !r.knock) throw new Error('请先完成行为验证')
+    setFields({ captcha_token: r.token, knock: r.knock, dfu: r.dfu || '', ip: r.ip || '' })
+    vpDone.value = true
+  } catch {
+    clearFields()
+    ready.value = false
+    vpDone.value = false
+    hint.value = '行为验证未通过，请重试'
+    // 旧实例已不可用，重建后下次点击才能正常拉起挑战
+    vpWidget.value = null
     try {
-      await widget.validate()
-      const r = widget.getVerifyResult()
-      if (!r || !r.token || !r.knock) throw new Error('请先完成行为验证')
-      setFields({ captcha_token: r.token, knock: r.knock, dfu: r.dfu || '', ip: r.ip || '' })
-      button.textContent = '验证通过'
-      button.disabled = true
+      await mountVaptcha()
     } catch {
-      clearFields()
-      ready.value = false
-      button.textContent = '开始人机验证'
-      button.disabled = false
-      hint.textContent = '行为验证未通过，请重试'
+      hint.value = '人机验证初始化失败，请刷新页面后重试'
     }
-  })
+  } finally {
+    vpBusy.value = false
+  }
 }
 
 async function initCorptcha(el: HTMLElement, cfg: CaptchaConfig) {
@@ -162,11 +190,14 @@ async function init() {
     const sdk = conf.script_url || conf.sdk_url
     if (!sdk) throw new Error('验证码 SDK 地址未配置')
     await loadScript(sdk)
+    // 先定型 provider：vaptcha 的触发按钮随模板立即渲染，SDK 就绪前保持禁用
+    provider.value = conf.provider || ''
     if (conf.provider === 'geetest') await initGeetest(el, conf)
     else if (conf.provider === 'vaptcha') await initVaptcha(el, conf)
     else if (conf.provider === 'corptcha') await initCorptcha(el, conf)
     else throw new Error('未知验证码 provider')
   } catch (e) {
+    provider.value = ''
     emit('update:required', true)
     error.value = (e as Error).message || '外部人机验证加载失败，请刷新后重试'
   }
@@ -175,28 +206,57 @@ async function init() {
 onMounted(init)
 onBeforeUnmount(() => {
   clearFields()
+  vpWidget.value = null
+  vpMount = null
+  vpCfg = null
 })
 </script>
 
 <template>
   <div class="ext-captcha">
-    <div ref="box" class="ext-captcha__box" aria-live="polite"></div>
-    <p v-if="error" class="ext-captcha__error">{{ error }}</p>
+    <div
+      ref="box"
+      class="ext-captcha__box"
+      :class="provider ? `ext-captcha__box--${provider}` : ''"
+      aria-live="polite"
+    ></div>
+    <el-button
+      v-if="provider === 'vaptcha'"
+      class="ext-captcha__trigger"
+      size="large"
+      :disabled="vpDone || !vpWidget"
+      @click="runVaptcha"
+    >
+      <template #icon>
+        <ArtSvgIcon icon="ri:shield-check-line" />
+      </template>
+      {{ vpDone ? '验证通过' : '开始人机验证' }}
+    </el-button>
+    <p v-if="hint" class="ext-captcha__hint" role="alert">{{ hint }}</p>
+    <p v-if="error" class="ext-captcha__error" role="alert">{{ error }}</p>
   </div>
 </template>
 
 <style scoped>
 .ext-captcha {
   width: 100%;
+  /* 与 el-form-item 默认下间距一致（Element Plus 18px），夹在表单项之间时节奏一致 */
+  margin-bottom: 18px;
 }
 
 /* 第三方验证组件（geetest / vaptcha / corptcha）由各自 SDK 自绘皮肤，
    这里只负责把容器对齐页面宽度并控制圆角/溢出，保持与表单观感一致。 */
 .ext-captcha__box {
   width: 100%;
-  min-height: 56px;
   overflow: hidden;
   border-radius: 8px;
+}
+
+/* 只有 geetest / corptcha 会在容器内直接绘制组件，需要预留高度；
+   vaptcha 的容器只是 SDK 挂载点，不占位（触发按钮另由模板渲染）。 */
+.ext-captcha__box--geetest,
+.ext-captcha__box--corptcha {
+  min-height: 56px;
 }
 
 .ext-captcha__box :deep(iframe),
@@ -204,6 +264,12 @@ onBeforeUnmount(() => {
   max-width: 100%;
 }
 
+/* vaptcha 触发按钮铺满整行，与上下输入框、提交按钮等宽 */
+.ext-captcha__trigger {
+  width: 100%;
+}
+
+.ext-captcha__hint,
 .ext-captcha__error {
   margin: 8px 0 0;
   font-size: 12px;
