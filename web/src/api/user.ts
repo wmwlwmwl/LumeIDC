@@ -17,8 +17,10 @@ export interface ServiceLite {
   product_id: number
   monthly: string
   config_desc: string
+  show_monthly: boolean
   show_q: boolean
   show_y: boolean
+  default_cycle: 'monthly' | 'quarterly' | 'yearly'
   /** 过渡状态：renew_pending=续费人工处理中（此时不允许再次续费） */
   transition: string
   renew_prices?: { monthly: string; quarterly: string; yearly: string }
@@ -76,8 +78,10 @@ export interface DetailData {
     speed_limit?: string
     create_time?: string
   }
+  show_monthly: boolean
   show_q: boolean
   show_y: boolean
+  default_cycle: 'monthly' | 'quarterly' | 'yearly'
   renew_prices?: { monthly: string; quarterly: string; yearly: string }
   can_upgrade: boolean
   /** 上游模块方块 key 列表（nat_acl/nat_web/security_groups/setting/snapshot…），空 = 无面板 */

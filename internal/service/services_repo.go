@@ -21,8 +21,10 @@ type ServiceRow struct {
 	StatusText   string    `json:"-"`
 	ExpiresAt    time.Time `json:"expires_at"`
 	ProductID    int64     `json:"product_id"`
+	ShowMonthly  bool      `json:"-"`
 	ShowQ        bool      `json:"-"`
 	ShowY        bool      `json:"-"`
+	DefaultCycle string    `json:"-"`
 	ExpiringSoon bool      `json:"-"` // 14 天内到期（列表提醒用）
 	Hostname     string    `json:"hostname"`
 	IP           string    `json:"ip"` // 上游实时（best-effort，列表展示）

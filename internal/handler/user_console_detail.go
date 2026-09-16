@@ -26,7 +26,8 @@ func (h *Pages) serviceDetail(w http.ResponseWriter, r *http.Request) {
 	}
 	// 续费周期仅展示该产品有实际价格（>0）的选项，避免按 0 价/月价误续费。
 	psID, _ := h.Products.DefaultPricesetID(r.Context())
-	var showQ, showY bool
+	var showMonthly, showQ, showY bool
+	defaultCycle := "monthly"
 	renewPrices := map[string]string{"monthly": d.Amount, "quarterly": "", "yearly": ""}
 	// 有冻结的续费价（后台可改可清空）时以它为准：下单成交额含一次性初装费，不能当续费价展示
 	// （否则开通页 33、续费实收 28 自相矛盾；冻结价本身已剔除此项，见 Payment.frozenRenewAmount）。
@@ -34,8 +35,14 @@ func (h *Pages) serviceDetail(w http.ResponseWriter, r *http.Request) {
 		renewPrices["monthly"] = d.RenewM
 	}
 	if pr, perr := h.Products.Price(r.Context(), d.ProductID, psID); perr == nil {
-		showQ = priceVal(pr.Quarterly) > 0
-		showY = priceVal(pr.Yearly) > 0
+		monthly, quarterly, yearly := priceVal(pr.Monthly), priceVal(pr.Quarterly), priceVal(pr.Yearly)
+		cycles, selected := service.AvailableCycles(monthly, quarterly, yearly)
+		showMonthly = len(cycles) == 0 || monthly > 0
+		showQ = quarterly > 0
+		showY = yearly > 0
+		if selected != "" {
+			defaultCycle = selected
+		}
 		renewPrices["quarterly"] = pr.Quarterly
 		renewPrices["yearly"] = pr.Yearly
 		if renewPrices["monthly"] == "" {
@@ -96,8 +103,9 @@ func (h *Pages) serviceDetail(w http.ResponseWriter, r *http.Request) {
 			"provider":    d.Provider,
 			"transition":  d.Transition,
 		},
-		"host":   host,
-		"show_q": showQ, "show_y": showY, "renew_prices": renewPrices, "can_upgrade": canUpgrade, "modules": modules,
+		"host":         host,
+		"show_monthly": showMonthly, "show_q": showQ, "show_y": showY, "default_cycle": defaultCycle,
+		"renew_prices": renewPrices, "can_upgrade": canUpgrade, "modules": modules,
 	})
 }
 

@@ -383,7 +383,7 @@ func TestMyServicesSnapshotAndOwnership(t *testing.T) {
 		if row["ip"] != ip || row["os"] != os {
 			t.Errorf("实时或快照兜底错误：%+v", row)
 		}
-		if len(row) != 16 {
+		if len(row) != 18 {
 			t.Errorf("响应字段发生变化：%+v", row)
 		}
 	}

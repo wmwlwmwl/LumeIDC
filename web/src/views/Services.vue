@@ -91,7 +91,7 @@ const renewBusy = ref(false)
 
 function openRenew(s: ServiceLite) {
   renewTarget.value = s
-  renewCycle.value = 'monthly'
+  renewCycle.value = s.default_cycle || 'monthly'
   renewDialog.value = true
 }
 
@@ -255,7 +255,7 @@ async function doRenew() {
       <el-form label-position="top">
         <el-form-item label="续费周期">
           <el-select v-model="renewCycle" class="w-full">
-            <el-option value="monthly" label="按月付" />
+            <el-option v-if="renewTarget?.show_monthly" value="monthly" label="按月付" />
             <el-option v-if="renewTarget?.show_q" value="quarterly" label="按季付" />
             <el-option v-if="renewTarget?.show_y" value="yearly" label="按年付" />
           </el-select>

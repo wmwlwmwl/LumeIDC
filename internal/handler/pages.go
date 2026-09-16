@@ -734,8 +734,15 @@ func (h *Pages) myServices(w http.ResponseWriter, r *http.Request) {
 		svc.StatusText = statusText[svc.Status]
 		svc.ExpiringSoon = svc.ExpiresAt.Before(soon)
 		svc.DaysLeft = int(time.Until(svc.ExpiresAt).Hours() / 24)
-		svc.ShowQ = priceVal(svc.QuarterlyBase) > 0
-		svc.ShowY = priceVal(svc.YearlyBase) > 0
+		monthly, quarterly, yearly := priceVal(svc.MonthlyBase), priceVal(svc.QuarterlyBase), priceVal(svc.YearlyBase)
+		cycles, defaultCycle := service.AvailableCycles(monthly, quarterly, yearly)
+		svc.ShowMonthly = len(cycles) == 0 || monthly > 0
+		svc.ShowQ = quarterly > 0
+		svc.ShowY = yearly > 0
+		svc.DefaultCycle = defaultCycle
+		if svc.DefaultCycle == "" {
+			svc.DefaultCycle = "monthly"
+		}
 		// 配置摘要 + 月价：主查询带回的数据在内存计算（不逐行查库）
 		svc.ConfigDesc, svc.Monthly = rowPricing(svc.ConfigSnap, svc.ConfigOpts, svc.MonthlyBase,
 			svc.ProfitType, svc.ProfitValue, svc.ServerProfitType, svc.ServerProfitValue)
@@ -809,7 +816,8 @@ dispatch:
 			"days_left":  svc.DaysLeft, "expiring_soon": svc.ExpiringSoon,
 			"transition": svc.Transition,
 			"product_id": svc.ProductID, "monthly": svc.Monthly,
-			"config_desc": svc.ConfigDesc, "show_q": svc.ShowQ, "show_y": svc.ShowY,
+			"config_desc": svc.ConfigDesc, "show_monthly": svc.ShowMonthly, "show_q": svc.ShowQ, "show_y": svc.ShowY,
+			"default_cycle": svc.DefaultCycle,
 		})
 	}
 	writeJSON(w, map[string]any{"ok": 1, "list": out})

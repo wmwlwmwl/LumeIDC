@@ -32,7 +32,9 @@ func (m *AdminManage) ProductsList(w http.ResponseWriter, r *http.Request) {
 	for _, p := range list {
 		mn, first, cycle, label := "-", "-", "monthly", "月"
 		monthly, quarterly, yearly := priceVal(p.Monthly), priceVal(p.Quarterly), priceVal(p.Yearly)
-		_, cycle = service.AvailableCycles(monthly, quarterly, yearly)
+		if _, selected := service.AvailableCycles(monthly, quarterly, yearly); selected != "" {
+			cycle = selected
+		}
 		if cycle == "quarterly" {
 			label = "季"
 		} else if cycle == "yearly" {

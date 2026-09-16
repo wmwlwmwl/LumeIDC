@@ -144,7 +144,7 @@ const renewCycle = ref('monthly')
 const renewBusy = ref(false)
 
 function openRenew() {
-  renewCycle.value = 'monthly'
+  renewCycle.value = data.value?.default_cycle || 'monthly'
   renewDialog.value = true
 }
 
@@ -370,6 +370,7 @@ function openUpgrade() {
           <el-form-item label="续费周期">
             <el-select v-model="renewCycle" class="w-full">
               <el-option
+                v-if="data.show_monthly"
                 value="monthly"
                 :label="`按月付 · ￥${formatMoney(data.renew_prices?.monthly || data.svc.amount || 0)}`"
               />

@@ -392,8 +392,23 @@ func (o *Orders) CreateRenewOrder(ctx context.Context, userID, serviceID int64, 
 	if err != nil || !money.FiniteNonNegative(base) {
 		return 0, 0, "", fmt.Errorf("商品价格无效")
 	}
-	// 周期可售性：与新购同口径——季/年付必须有该周期正价，防止改 POST 用未配置周期 0 元续一年。
-	if (cycle == "quarterly" || cycle == "yearly") && base <= 0 {
+	// 周期可售性：与新购同口径；纯配置计价/免费产品保留月付入口。
+	var monthly, quarterly, yearly float64
+	for name, value := range map[string]string{"monthly": "monthly", "quarterly": "quarterly", "yearly": "yearly"} {
+		var raw string
+		if err := tx.QueryRowContext(ctx, `SELECT `+value+` FROM product_prices WHERE product_id=$1 AND priceset_id=$2`, productID, psID).Scan(&raw); err == nil {
+			v, _ := strconv.ParseFloat(raw, 64)
+			switch name {
+			case "monthly":
+				monthly = v
+			case "quarterly":
+				quarterly = v
+			case "yearly":
+				yearly = v
+			}
+		}
+	}
+	if cycles, _ := AvailableCycles(monthly, quarterly, yearly); len(cycles) > 0 && base <= 0 {
 		return 0, 0, "", fmt.Errorf("该产品未提供所选计费周期")
 	}
 	selection := map[string]string{}
