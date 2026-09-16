@@ -67,6 +67,8 @@ func (a *Admin) adminSite(w http.ResponseWriter, r *http.Request) {
 		v, _ := s.Get(r.Context(), k)
 		return v
 	}
+	siteInfo := service.LoadSiteInfo(r.Context(), s)
+	contactsJSON, _ := json.Marshal(siteInfo.ServiceContacts)
 	cfg := map[string]string{
 		service.KeySiteName:         get(service.KeySiteName),
 		service.KeySiteDescription:  get(service.KeySiteDescription),
@@ -74,7 +76,7 @@ func (a *Admin) adminSite(w http.ResponseWriter, r *http.Request) {
 		service.KeyServiceEmail:     get(service.KeyServiceEmail),
 		service.KeyServicePhone:     get(service.KeyServicePhone),
 		service.KeyServiceHours:     get(service.KeyServiceHours),
-		service.KeyServiceContacts:  get(service.KeyServiceContacts),
+		service.KeyServiceContacts:  string(contactsJSON),
 		service.KeySiteURL:          get(service.KeySiteURL),
 		service.KeyListenPort:       get(service.KeyListenPort),
 		service.KeyAdminPath:        get(service.KeyAdminPath),
@@ -130,7 +132,7 @@ func (a *Admin) adminSiteSave(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if len(contacts) > 20 {
-			fail("自定义联系方式最多 20 条")
+			fail("联系方式最多 20 条")
 			return
 		}
 		for i := range contacts {
@@ -138,6 +140,11 @@ func (a *Admin) adminSiteSave(w http.ResponseWriter, r *http.Request) {
 			contacts[i].Name = strings.TrimSpace(contacts[i].Name)
 			contacts[i].Value = strings.TrimSpace(contacts[i].Value)
 			contacts[i].Link = strings.TrimSpace(contacts[i].Link)
+			if contacts[i].Type == "email" {
+				contacts[i].Link = "mailto:" + contacts[i].Value
+			} else if contacts[i].Type == "phone" {
+				contacts[i].Link = "tel:" + contacts[i].Value
+			}
 			if contacts[i].Type == "" || contacts[i].Name == "" || contacts[i].Value == "" {
 				fail("每条联系方式都需要填写类型、名称和内容")
 				return
@@ -154,6 +161,13 @@ func (a *Admin) adminSiteSave(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
+	}
+	if contactsRaw == "" {
+		contacts = append(contacts,
+			service.SiteContact{Type: "email", Name: "邮箱", Value: email, Link: "mailto:" + email},
+			service.SiteContact{Type: "phone", Name: "电话", Value: phone, Link: "tel:" + phone},
+			service.SiteContact{Type: "hours", Name: "服务时间", Value: hours},
+		)
 	}
 	siteURL := strings.TrimRight(strings.TrimSpace(fv(service.KeySiteURL)), "/")
 	if siteURL != "" && !validSiteURL(siteURL) {

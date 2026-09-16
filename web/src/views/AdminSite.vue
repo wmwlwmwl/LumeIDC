@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { reactive, ref, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
+import { VueDraggable } from 'vue-draggable-plus'
 import { http } from '../http/index'
 import { useSession } from '../http/session'
 
@@ -19,9 +20,6 @@ const form = reactive<Record<string, string>>({
   site_name: '',
   site_description: '',
   site_keywords: '',
-  service_email: '',
-  service_phone: '',
-  service_hours: '',
   site_url: '',
   listen_port: '',
   admin_path: '',
@@ -48,16 +46,32 @@ onMounted(async () => {
 })
 
 function addContact(type = 'custom') {
-  contacts.value.push({ type, name: type === 'qq' ? 'QQ' : type === 'wechat' ? '微信' : '', value: '', link: '' })
+  const defaults: Record<string, string> = { email: '邮箱', phone: '电话', hours: '服务时间', qq: 'QQ', wechat: '微信' }
+  contacts.value.push({ type, name: defaults[type] || '', value: '', link: '' })
 }
 function removeContact(index: number) {
   contacts.value.splice(index, 1)
+}
+function contactTypeLabel(type: string): string {
+  return ({ email: '邮箱', phone: '电话', hours: '服务时间', qq: 'QQ', wechat: '微信', custom: '自定义' } as Record<string, string>)[type] || '自定义'
 }
 
 async function save() {
   saving.value = true
   try {
-    const res = (await http.post('/site', { ...form, service_contacts: JSON.stringify(contacts.value) })) as { ok: number; msg?: string; admin_path?: string }
+    const legacy = { email: '', phone: '', hours: '' }
+    for (const contact of contacts.value) {
+      if (contact.type === 'email' && !legacy.email) legacy.email = contact.value
+      if (contact.type === 'phone' && !legacy.phone) legacy.phone = contact.value
+      if (contact.type === 'hours' && !legacy.hours) legacy.hours = contact.value
+    }
+    const res = (await http.post('/site', {
+      ...form,
+      service_email: legacy.email,
+      service_phone: legacy.phone,
+      service_hours: legacy.hours,
+      service_contacts: JSON.stringify(contacts.value),
+    })) as { ok: number; msg?: string; admin_path?: string }
     if (String(res.ok) === '1') {
       ElMessage.success('已保存')
       const prevBase = (session.adminPath || '/').replace(/\/$/, '')
@@ -104,31 +118,29 @@ async function save() {
         </el-form-item>
 
         <el-divider content-position="left">联系方式</el-divider>
-        <div class="admin-form-grid">
-          <el-form-item label="服务邮箱">
-            <el-input v-model="form.service_email" />
-          </el-form-item>
-          <el-form-item label="服务电话">
-            <el-input v-model="form.service_phone" />
-          </el-form-item>
-        </div>
-        <el-form-item label="工作时间">
-          <el-input v-model="form.service_hours" placeholder="如 9:00-18:00" />
-        </el-form-item>
-        <el-form-item label="其他联系方式">
+        <el-form-item label="联系方式（可拖拽排序）">
           <div class="contact-editor">
-            <div v-for="(contact, index) in contacts" :key="index" class="contact-row">
-              <el-select v-model="contact.type" style="width: 110px">
-                <el-option label="QQ" value="qq" />
-                <el-option label="微信" value="wechat" />
-                <el-option label="自定义" value="custom" />
-              </el-select>
-              <el-input v-model="contact.name" placeholder="名称，如技术支持" style="width: 140px" />
-              <el-input v-model="contact.value" placeholder="账号或联系方式" class="contact-value" />
-              <el-input v-model="contact.link" placeholder="链接（可选，如 https://...）" class="contact-link" />
-              <el-button text type="danger" @click="removeContact(index)">删除</el-button>
-            </div>
+            <VueDraggable v-model="contacts" handle=".contact-drag" :animation="150" class="contact-list">
+              <div v-for="(contact, index) in contacts" :key="index" class="contact-row">
+                <span class="contact-drag" title="拖动排序">☷</span>
+                <el-select v-model="contact.type" style="width: 110px">
+                  <el-option label="邮箱" value="email" />
+                  <el-option label="电话" value="phone" />
+                  <el-option label="服务时间" value="hours" />
+                  <el-option label="QQ" value="qq" />
+                  <el-option label="微信" value="wechat" />
+                  <el-option label="自定义" value="custom" />
+                </el-select>
+                <el-input v-model="contact.name" :placeholder="contactTypeLabel(contact.type)" style="width: 140px" />
+                <el-input v-model="contact.value" placeholder="账号或联系方式" class="contact-value" />
+                <el-input v-model="contact.link" placeholder="链接（可选，如 https://...）" class="contact-link" />
+                <el-button text type="danger" @click="removeContact(index)">删除</el-button>
+              </div>
+            </VueDraggable>
             <div class="contact-actions">
+              <el-button size="small" @click="addContact('email')">+ 邮箱</el-button>
+              <el-button size="small" @click="addContact('phone')">+ 电话</el-button>
+              <el-button size="small" @click="addContact('hours')">+ 服务时间</el-button>
               <el-button size="small" @click="addContact('qq')">+ QQ</el-button>
               <el-button size="small" @click="addContact('wechat')">+ 微信</el-button>
               <el-button size="small" @click="addContact()">+ 自定义</el-button>
@@ -167,8 +179,16 @@ async function save() {
   width: 100%;
   gap: 8px;
 }
+.contact-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
 .contact-row {
   display: flex;
+  padding: 6px;
+  border: 1px solid var(--art-card-border);
+  border-radius: 6px;
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
@@ -177,6 +197,15 @@ async function save() {
 .contact-link {
   flex: 1 1 180px;
   min-width: 160px;
+}
+.contact-drag {
+  flex: 0 0 22px;
+  color: var(--art-gray-400);
+  cursor: grab;
+  font-size: 18px;
+  line-height: 30px;
+  text-align: center;
+  user-select: none;
 }
 .contact-actions {
   display: flex;

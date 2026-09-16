@@ -17,14 +17,18 @@ const session = useSession()
             {{ session.site.description || '为企业与开发者提供稳定、安全、高性价比的云计算与 IDC 服务。' }}
           </p>
           <ul class="footer-contact">
-            <li v-if="session.site.email"><span>邮箱</span><a :href="`mailto:${session.site.email}`">{{ session.site.email }}</a></li>
-            <li v-if="session.site.phone"><span>电话</span><b>{{ session.site.phone }}</b></li>
-            <li v-if="session.site.hours"><span>服务时间</span><b>{{ session.site.hours }}</b></li>
-            <li v-for="(contact, index) in session.site.contacts" :key="`contact-${index}`">
-              <span>{{ contact.name }}</span>
-              <a v-if="contact.link" :href="contact.link" target="_blank" rel="noopener noreferrer">{{ contact.value }}</a>
-              <b v-else>{{ contact.value }}</b>
-            </li>
+            <template v-if="session.site.contacts.length">
+              <li v-for="(contact, index) in session.site.contacts" :key="`contact-${index}`">
+                <span>{{ contact.name }}</span>
+                <a v-if="contact.link" :href="contact.link" target="_blank" rel="noopener noreferrer">{{ contact.value }}</a>
+                <b v-else>{{ contact.value }}</b>
+              </li>
+            </template>
+            <template v-else>
+              <li v-if="session.site.email"><span>邮箱</span><a :href="`mailto:${session.site.email}`">{{ session.site.email }}</a></li>
+              <li v-if="session.site.phone"><span>电话</span><b>{{ session.site.phone }}</b></li>
+              <li v-if="session.site.hours"><span>服务时间</span><b>{{ session.site.hours }}</b></li>
+            </template>
           </ul>
         </div>
 

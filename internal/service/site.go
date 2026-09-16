@@ -72,6 +72,25 @@ func LoadSiteInfo(ctx context.Context, s *repo.Settings) SiteInfo {
 	if raw := strings.TrimSpace(values[KeyServiceContacts]); raw != "" {
 		_ = json.Unmarshal([]byte(raw), &info.ServiceContacts)
 	}
+	legacy := make([]SiteContact, 0, 3)
+	hasType := func(kind string) bool {
+		for _, contact := range info.ServiceContacts {
+			if contact.Type == kind {
+				return true
+			}
+		}
+		return false
+	}
+	if info.ServiceEmail != "" && !hasType("email") {
+		legacy = append(legacy, SiteContact{Type: "email", Name: "邮箱", Value: info.ServiceEmail, Link: "mailto:" + info.ServiceEmail})
+	}
+	if info.ServicePhone != "" && !hasType("phone") {
+		legacy = append(legacy, SiteContact{Type: "phone", Name: "电话", Value: info.ServicePhone, Link: "tel:" + info.ServicePhone})
+	}
+	if info.ServiceHours != "" && !hasType("hours") {
+		legacy = append(legacy, SiteContact{Type: "hours", Name: "服务时间", Value: info.ServiceHours})
+	}
+	info.ServiceContacts = append(legacy, info.ServiceContacts...)
 	if strings.TrimSpace(info.Name) == "" {
 		info.Name = DefaultSiteName
 	}
