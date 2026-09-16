@@ -77,10 +77,6 @@ function selectCategory(c: Category, sub: CategoryChild) {
   catOpen.value = false
   router.push({ path: '/cart', query: { fid: String(c.id), gid: String(sub.id) } })
 }
-function selectTop(c: Category) {
-  catOpen.value = false
-  router.push({ path: '/cart', query: { fid: String(c.id) } })
-}
 </script>
 
 <template>
@@ -113,12 +109,12 @@ function selectTop(c: Category) {
             <button
               type="button"
               class="cat-group__head"
-              :aria-expanded="c.children?.length ? openGroup === String(c.id) : undefined"
-              @click="c.children?.length ? toggleGroup(c.id) : selectTop(c)"
+              :aria-expanded="openGroup === String(c.id)"
+              @click="toggleGroup(c.id)"
             >
               <span class="cat-group__name">{{ c.name }}</span>
               <span v-if="c.children?.length" class="cat-group__meta">{{ c.children.length }}</span>
-              <el-icon v-if="c.children?.length" class="cat-group__arrow"><ArrowDown /></el-icon>
+              <el-icon class="cat-group__arrow"><ArrowDown /></el-icon>
             </button>
             <ul v-if="c.children?.length" v-show="openGroup === String(c.id)" class="cat-group__list">
               <li v-for="sub in c.children" :key="sub.id" class="cat-item">
