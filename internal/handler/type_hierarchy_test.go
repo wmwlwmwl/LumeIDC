@@ -67,6 +67,9 @@ func TestBuildTypeRows(t *testing.T) {
 	if len(rows[0].Children) != 3 { // 国内/海外/隐藏子（后台全显示）
 		t.Fatalf("云 children=%d, 期望 3", len(rows[0].Children))
 	}
+	if rows[0].ParentID != 0 || rows[0].Children[0].ParentID != rows[0].ID {
+		t.Fatalf("父级 ID 挂载错误: %+v", rows[0])
+	}
 	if rows[0].ProductCount != 2 || rows[0].Children[0].ProductCount != 3 {
 		t.Fatalf("产品数挂载错误: %+v", rows[0])
 	}

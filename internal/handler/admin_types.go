@@ -66,12 +66,12 @@ func (m *AdminManage) TypesList(w http.ResponseWriter, r *http.Request) {
 		children := make([]map[string]any, 0, len(first.Children))
 		for _, c := range first.Children {
 			children = append(children, map[string]any{
-				"id": c.ID, "name": c.Name, "description": c.Description,
+				"id": c.ID, "parent_id": c.ParentID, "name": c.Name, "description": c.Description,
 				"sort": c.Sort, "hidden": c.Hidden, "product_count": c.ProductCount,
 			})
 		}
 		out = append(out, map[string]any{
-			"id": first.ID, "name": first.Name, "description": first.Description,
+			"id": first.ID, "parent_id": first.ParentID, "name": first.Name, "description": first.Description,
 			"sort": first.Sort, "hidden": first.Hidden, "product_count": first.ProductCount,
 			"children": children,
 		})

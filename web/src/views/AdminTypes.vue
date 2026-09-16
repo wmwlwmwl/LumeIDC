@@ -11,7 +11,10 @@ const saving = ref(false)
 
 const dialog = ref(false)
 const editing = ref<AdminType | null>(null)
+const demoteToChild = ref<boolean>(false)
 const form = ref({ name: '', description: '', sort: 0, parent_id: 0, hidden: false })
+const editingOriginalParentId = computed(() => editing.value?.parent_id ?? 0)
+const availableParentTypes = computed(() => list.value.filter((t) => t.id !== editing.value?.id))
 
 // 移动产品：目标只能是二级分类（与后端约束一致）
 const moveDialog = ref(false)
@@ -66,18 +69,32 @@ onMounted(load)
 
 function openNew(parent_id = 0) {
   editing.value = null
+  demoteToChild.value = false
   form.value = { name: '', description: '', sort: 0, parent_id, hidden: false }
   dialog.value = true
 }
 function openEdit(t: AdminType) {
   editing.value = t
-  form.value = { name: t.name, description: t.description || '', sort: t.sort, parent_id: t.parent_id ?? 0, hidden: t.hidden }
+  const parentId = t.parent_id ?? 0
+  demoteToChild.value = parentId !== 0
+  form.value = { name: t.name, description: t.description || '', sort: t.sort, parent_id: parentId, hidden: t.hidden }
   dialog.value = true
+}
+function onDemoteChange(value: string | number | boolean) {
+  if (value === true && form.value.parent_id === 0) {
+    form.value.parent_id = availableParentTypes.value[0]?.id || 0
+  } else if (value !== true) {
+    form.value.parent_id = 0
+  }
 }
 
 async function save() {
   if (!form.value.name.trim()) {
     ElMessage.warning('请输入分类名称')
+    return
+  }
+  if (demoteToChild.value && form.value.parent_id === 0) {
+    ElMessage.warning('请选择所属一级分类')
     return
   }
   saving.value = true
@@ -161,6 +178,27 @@ async function del(t: AdminType) {
     <el-dialog v-model="dialog" :title="editing ? '编辑分类' : form.parent_id ? '新增二级分类' : '新增一级分类'" width="480px">
       <el-form label-position="top">
         <el-form-item label="分类名称" required><el-input v-model="form.name" maxlength="50" /></el-form-item>
+        <el-form-item v-if="editing && editingOriginalParentId === 0" label="设为二级分类">
+          <el-switch
+            v-model="demoteToChild"
+            :disabled="Boolean(editing.children?.length)"
+            @change="onDemoteChange"
+          />
+          <span v-if="editing.children?.length" class="admin-demote-hint">含有子分类，不能设为二级分类</span>
+        </el-form-item>
+        <el-form-item
+          v-if="editing && (editingOriginalParentId !== 0 || demoteToChild)"
+          label="所属一级分类"
+        >
+          <el-select v-model="form.parent_id" class="w-full" placeholder="请选择所属一级分类">
+            <el-option
+              v-for="first in availableParentTypes"
+              :key="first.id"
+              :value="first.id"
+              :label="first.name"
+            />
+          </el-select>
+        </el-form-item>
         <el-form-item label="描述"><el-input v-model="form.description" type="textarea" :rows="2" /></el-form-item>
         <el-form-item label="排序（小在前）"><el-input-number v-model="form.sort" :min="0" /></el-form-item>
         <el-checkbox v-model="form.hidden">隐藏（前台不展示）</el-checkbox>
@@ -192,5 +230,6 @@ async function del(t: AdminType) {
 .admin-type-child__count { color: var(--art-gray-400); font-size: 10px; }
 .admin-type-child__ops { display: flex; gap: 2px; }
 .admin-move-hint { margin: 0 0 11px; color: var(--art-gray-600); font-size: 12px; line-height: 1.7; }
+.admin-demote-hint { margin-left: 10px; color: var(--art-gray-500); font-size: 12px; }
 @media (max-width: 640px) { .admin-type-group__head { flex-wrap: wrap; } .admin-type-group__ops { margin-left: 0; width: 100%; flex-wrap: wrap; } }
 </style>
