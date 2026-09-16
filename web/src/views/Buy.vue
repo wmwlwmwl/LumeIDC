@@ -29,10 +29,11 @@ const product = computed(() => data.value?.product)
 const visibleOptions = computed(() => (data.value?.options || []).filter((o) => !o.hidden))
 const cycles = computed(() => {
   if (!data.value) return []
-  const out: { key: 'monthly' | 'quarterly' | 'yearly'; label: string }[] = [{ key: 'monthly', label: `月付 · ￥${data.value.cycle.monthly} 起` }]
-  if (data.value.show_q && data.value.cycle.quarterly) out.push({ key: 'quarterly', label: `季付 · ￥${data.value.cycle.quarterly}` })
-  if (data.value.show_y && data.value.cycle.yearly) out.push({ key: 'yearly', label: `年付 · ￥${data.value.cycle.yearly}` })
-  return out
+  const labels = { monthly: '月付', quarterly: '季付', yearly: '年付' } as const
+  return data.value.cycles.map((key) => ({
+    key,
+    label: `${labels[key]} · ￥${data.value!.cycle[key]}${key === 'monthly' ? ' 起' : ''}`,
+  }))
 })
 
 // 定价（对齐旧 buy.html 的客户端 recalc）
@@ -176,7 +177,7 @@ async function loadProduct() {
   loadError.value = false
   try {
     data.value = await fetchBuy(route.params.id as string)
-    cycle.value = 'monthly'
+    cycle.value = data.value.default_cycle
     ensureDefaults()
   } catch (err: unknown) {
     data.value = null

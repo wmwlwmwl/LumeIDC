@@ -153,11 +153,13 @@ func (h *Pages) listAnnouncements(ctx context.Context) []map[string]any {
 }
 
 type productView struct {
-	ID      int64
-	Name    string
-	Desc    string
-	Monthly string
-	Stock   int
+	ID           int64
+	Name         string
+	Desc         string
+	Monthly      string
+	BillingCycle string
+	CycleLabel   string
+	Stock        int
 }
 
 // productListJSON 前台产品 → JSON 视图（SPA 用，键小写对齐 API 约定）。
@@ -165,7 +167,8 @@ func productListJSON(views []productView) []map[string]any {
 	out := make([]map[string]any, 0, len(views))
 	for _, v := range views {
 		out = append(out, map[string]any{
-			"id": v.ID, "name": v.Name, "desc": v.Desc, "monthly": v.Monthly, "stock": v.Stock,
+			"id": v.ID, "name": v.Name, "desc": v.Desc, "monthly": v.Monthly,
+			"billing_cycle": v.BillingCycle, "cycle_label": v.CycleLabel, "stock": v.Stock,
 		})
 	}
 	return out
@@ -490,16 +493,26 @@ outer:
 	fallbacks := h.Products.ServerProfitFallbacks(r.Context(), ids)
 	views := make([]productView, 0, len(picked))
 	for _, p := range picked {
-		m := "-"
+		m, cycle, label := "-", "monthly", "月"
 		if pr, ok := prices[p.ID]; ok {
 			eType, eVal := p.ProfitType, p.ProfitValue
 			if p.ProfitValue <= 0 {
 				fb := fallbacks[p.ID]
 				eType, eVal = fb.Type, fb.Value
 			}
-			m = fmt.Sprintf("%.2f", service.DisplayStartPrice(priceVal(pr.Monthly), optsBy[p.ID], eType, eVal, "monthly"))
+			monthly, quarterly, yearly := priceVal(pr.Monthly), priceVal(pr.Quarterly), priceVal(pr.Yearly)
+			if _, selected := service.AvailableCycles(monthly, quarterly, yearly); selected != "" {
+				cycle = selected
+			}
+			if cycle == "quarterly" {
+				label = "季"
+			} else if cycle == "yearly" {
+				label = "年"
+			}
+			base := map[string]float64{"monthly": monthly, "quarterly": quarterly, "yearly": yearly}[cycle]
+			m = fmt.Sprintf("%.2f", service.DisplayStartPrice(base, optsBy[p.ID], eType, eVal, cycle))
 		}
-		views = append(views, productView{ID: p.ID, Name: p.Name, Desc: p.Description, Monthly: m, Stock: p.Stock})
+		views = append(views, productView{ID: p.ID, Name: p.Name, Desc: p.Description, Monthly: m, BillingCycle: cycle, CycleLabel: label, Stock: p.Stock})
 	}
 	writeJSON(w, map[string]any{
 		"catalog":       typeNavJSON(nav),
@@ -583,16 +596,26 @@ func (h *Pages) productListPage(w http.ResponseWriter, r *http.Request, _ string
 					optsBy := h.Products.ConfigOptionsByProducts(r.Context(), ids)
 					fallbacks := h.Products.ServerProfitFallbacks(r.Context(), ids)
 					for _, p := range list {
-						m := "-"
+						m, cycle, label := "-", "monthly", "月"
 						if pr, ok := prices[p.ID]; ok {
 							eType, eVal := p.ProfitType, p.ProfitValue
 							if p.ProfitValue <= 0 {
 								fb := fallbacks[p.ID]
 								eType, eVal = fb.Type, fb.Value
 							}
-							m = fmt.Sprintf("%.2f", service.DisplayStartPrice(priceVal(pr.Monthly), optsBy[p.ID], eType, eVal, "monthly"))
+							monthly, quarterly, yearly := priceVal(pr.Monthly), priceVal(pr.Quarterly), priceVal(pr.Yearly)
+							if _, selected := service.AvailableCycles(monthly, quarterly, yearly); selected != "" {
+								cycle = selected
+							}
+							if cycle == "quarterly" {
+								label = "季"
+							} else if cycle == "yearly" {
+								label = "年"
+							}
+							base := map[string]float64{"monthly": monthly, "quarterly": quarterly, "yearly": yearly}[cycle]
+							m = fmt.Sprintf("%.2f", service.DisplayStartPrice(base, optsBy[p.ID], eType, eVal, cycle))
 						}
-						views = append(views, productView{ID: p.ID, Name: p.Name, Desc: p.Description, Monthly: m, Stock: p.Stock})
+						views = append(views, productView{ID: p.ID, Name: p.Name, Desc: p.Description, Monthly: m, BillingCycle: cycle, CycleLabel: label, Stock: p.Stock})
 					}
 				}
 			}
@@ -623,9 +646,15 @@ func (h *Pages) buyForm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	opts, _ := h.Products.GetConfigOptions(r.Context(), p.ID)
-	// 周期是否开售：价格>0 才展示（如上游仅开月付的配置计价产品，季/年付为 0 则隐藏）
-	showQ := priceVal(pr.Quarterly) > 0
-	showY := priceVal(pr.Yearly) > 0
+	monthly, quarterly, yearly := priceVal(pr.Monthly), priceVal(pr.Quarterly), priceVal(pr.Yearly)
+	cycles, defaultCycle := service.AvailableCycles(monthly, quarterly, yearly)
+	// 周期是否开售：价格>0 才展示；三周期基础价均为 0 时保留月付的配置计价/免费商品入口。
+	showMonthly := len(cycles) == 0 || monthly > 0
+	showQ := quarterly > 0
+	showY := yearly > 0
+	if defaultCycle == "" {
+		defaultCycle = "monthly"
+	}
 	// 客户端实时计价数据：周期基础价 + 各配置项加价表（提交后服务端仍会重算）
 	baseMap := map[string]float64{}
 	if v, err := strconv.ParseFloat(pr.Monthly, 64); err == nil {
@@ -649,12 +678,15 @@ func (h *Pages) buyForm(w http.ResponseWriter, r *http.Request) {
 			"requires_identity": p.RequiresIdentity, "stock": p.Stock, "hidden": p.Hidden,
 			"upstream_offline_reason": p.UpstreamOfflineReason,
 		},
-		"base":        baseMap,
-		"cycle":       map[string]any{"monthly": dispMonthly, "quarterly": dispQuarterly, "yearly": dispYearly},
-		"show_q":      showQ,
-		"show_y":      showY,
-		"options":     opts,
-		"profit_type": eType, "profit_value": eVal,
+		"base":          baseMap,
+		"cycle":         map[string]any{"monthly": dispMonthly, "quarterly": dispQuarterly, "yearly": dispYearly},
+		"cycles":        cycles,
+		"default_cycle": defaultCycle,
+		"show_monthly":  showMonthly,
+		"show_q":        showQ,
+		"show_y":        showY,
+		"options":       opts,
+		"profit_type":   eType, "profit_value": eVal,
 	})
 }
 

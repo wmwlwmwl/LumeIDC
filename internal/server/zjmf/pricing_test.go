@@ -14,6 +14,14 @@ func TestExtractPricingNewFormat(t *testing.T) {
 	}
 }
 
+func TestExtractPricingAnnualOnly(t *testing.T) {
+	entries := []pricingEntry{{BillingCycle: "annually", Annually: 120}}
+	m, q, y := extractPricing(entries, nil)
+	if m != 0 || q != 0 || y != 120 {
+		t.Fatalf("got %v %v %v", m, q, y)
+	}
+}
+
 func TestExtractPricingLegacy(t *testing.T) {
 	legacy := map[string]jsonNum{"monthly": 5, "quarterly": 14, "annually": 50}
 	m, q, y := extractPricing(nil, legacy)

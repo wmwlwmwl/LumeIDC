@@ -216,12 +216,29 @@ type UpstreamProduct struct {
 	ConfigOptions []repo.ConfigOption
 }
 
-// DisplayPrice 目录展示月价：真实基础价>0 用真实价，否则用最低配置价兜底（仅展示）。
+// DisplayPrice 目录展示首个可售周期价格；无基础价时用最低配置月价兜底（仅展示）。
 func (u UpstreamProduct) DisplayPrice() float64 {
-	if u.Monthly > 0 {
-		return u.Monthly
+	for _, price := range []float64{u.Monthly, u.Quarterly, u.Yearly} {
+		if price > 0 {
+			return price
+		}
 	}
 	return u.DisplayMonthly
+}
+
+// DisplayCycle 目录展示价格对应的首个可售周期。
+func (u UpstreamProduct) DisplayCycle() string {
+	for _, cycle := range []struct {
+		name  string
+		price float64
+	}{
+		{"monthly", u.Monthly}, {"quarterly", u.Quarterly}, {"yearly", u.Yearly},
+	} {
+		if cycle.price > 0 {
+			return cycle.name
+		}
+	}
+	return "monthly"
 }
 
 // ProvisionResult 开通结果。

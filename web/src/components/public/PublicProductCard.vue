@@ -10,6 +10,8 @@
     name: string
     desc?: string
     monthly: string | number
+    billing_cycle?: 'monthly' | 'quarterly' | 'yearly'
+    cycle_label?: string
     stock: number
   }
 
@@ -52,7 +54,7 @@
     <div class="public-product-card__desc" v-html="descHtml" />
     <div class="public-product-card__bottom">
       <div class="public-product-card__price">
-        <strong>￥{{ product.monthly }}</strong><small>/ 月起</small>
+        <strong>￥{{ product.monthly }}</strong><small>/ {{ product.cycle_label || '月' }}起</small>
       </div>
       <RouterLink v-if="!soldOut" :to="target" class="public-product-card__action">
         开始配置 <el-icon><ArrowRight /></el-icon>

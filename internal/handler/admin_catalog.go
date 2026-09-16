@@ -132,6 +132,7 @@ func (m *AdminManage) CatalogPage(w http.ResponseWriter, r *http.Request) {
 	for _, c := range crows {
 		rowsJSON = append(rowsJSON, map[string]any{
 			"pid": c.PID, "name": c.A, "group": c.B, "monthly": c.C,
+			"billing_cycle": c.Cycle, "cycle_label": c.CycleLabel,
 			"stock": c.Stock, "linked": c.Linked,
 		})
 	}
@@ -162,10 +163,12 @@ func catalogErr(err error) string {
 }
 
 type catalogRow struct {
-	PID     int64
-	A, B, C string // 名称 / 分组 / 月付价
-	Stock   string
-	Linked  bool // 是否已对接为本地产品
+	PID        int64
+	A, B, C    string // 名称 / 分组 / 起售价
+	Cycle      string
+	CycleLabel string
+	Stock      string
+	Linked     bool // 是否已对接为本地产品
 }
 
 func toCatalogRows(list []server.UpstreamProduct, linked map[int]bool) []catalogRow {
@@ -175,9 +178,16 @@ func toCatalogRows(list []server.UpstreamProduct, linked map[int]bool) []catalog
 		if u.Stock >= 0 {
 			st = itoa(int64(u.Stock))
 		}
+		cycle := u.DisplayCycle()
+		label := "月"
+		if cycle == "quarterly" {
+			label = "季"
+		} else if cycle == "yearly" {
+			label = "年"
+		}
 		rows = append(rows, catalogRow{
 			PID: int64(u.PID), A: u.Name, B: u.GroupName,
-			C: fmt.Sprintf("%.2f", u.DisplayPrice()), Stock: st, Linked: linked[u.PID],
+			C: fmt.Sprintf("%.2f", u.DisplayPrice()), Cycle: cycle, CycleLabel: label, Stock: st, Linked: linked[u.PID],
 		})
 	}
 	return rows

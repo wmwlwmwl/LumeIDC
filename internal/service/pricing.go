@@ -32,6 +32,24 @@ type Quote struct {
 	Total float64 `json:"total"`
 }
 
+// AvailableCycles 按月、季、年顺序返回有基础价的可售周期及默认周期。
+func AvailableCycles(monthly, quarterly, yearly float64) (cycles []string, defaultCycle string) {
+	for _, item := range []struct {
+		name  string
+		price float64
+	}{
+		{"monthly", monthly}, {"quarterly", quarterly}, {"yearly", yearly},
+	} {
+		if item.price > 0 {
+			cycles = append(cycles, item.name)
+		}
+	}
+	if len(cycles) > 0 {
+		defaultCycle = cycles[0]
+	}
+	return cycles, defaultCycle
+}
+
 // PayableOnce 首次购买的成本基数 = 周期费 + 初装费。利润加成由调用方施加。
 func (q *Quote) PayableOnce() float64 { return q.Total + q.Setup }
 

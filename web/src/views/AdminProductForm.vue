@@ -186,7 +186,7 @@ async function loadOptions(f: ProductFormField) {
     const groups = await fetchUpstreamOptions(sid)
     dynGroups[f.key] = groups.map((g) => ({
       name: g.name,
-      options: g.items.map((it) => ({ value: String(it.pid), label: it.name })),
+      options: g.items.map((it) => ({ value: String(it.pid), label: `${it.name}（PID: ${it.pid}）` })),
     }))
   } catch (err) {
     ElMessage.error((err as Error).message || '拉取上游商品失败')
@@ -212,7 +212,7 @@ async function onPidChange() {
   const f = pidField.value
   if (f?.sync_name && form.upstream_pid) {
     const label = optionLabel(form.upstream_pid)
-    if (label) form.name = label
+    if (label) form.name = label.replace(/（PID: \d+）$/, '')
   }
   if (f?.pull_config) await pullConfig()
 }

@@ -37,6 +37,8 @@ type AdminProductRow struct {
 	ServerName            string
 	UpstreamPID           int64
 	Monthly               string
+	Quarterly             string
+	Yearly                string
 	Hidden                bool
 	UpstreamOfflineReason string
 	Options               []ConfigOption
@@ -90,7 +92,8 @@ func (p *Products) ListAdmin(ctx context.Context, pricesetID int64) ([]AdminProd
 		            THEN parent.name || '/' || t.name
 		            ELSE coalesce(t.name, '') END,
 		       coalesce(s.name, ''), p.upstream_pid,
-		       coalesce(pp.monthly::text, ''), p.hidden, p.requires_identity,
+		       coalesce(pp.monthly::text, ''), coalesce(pp.quarterly::text, ''), coalesce(pp.yearly::text, ''),
+		       p.hidden, p.requires_identity,
 		       coalesce(p.configoption::text, '[]'),
 		       p.profit_type, p.profit_value,
 		       coalesce(s.profit_type, 0), coalesce(s.profit_value, 0), p.upstream_offline_reason
@@ -111,7 +114,7 @@ func (p *Products) ListAdmin(ctx context.Context, pricesetID int64) ([]AdminProd
 		var raw string
 		var productProfitType, serverProfitType int16
 		var productProfitValue, serverProfitValue float64
-		if err := rows.Scan(&row.ID, &row.Name, &row.TypeName, &row.ServerName, &row.UpstreamPID, &row.Monthly, &row.Hidden, &row.RequiresIdentity,
+		if err := rows.Scan(&row.ID, &row.Name, &row.TypeName, &row.ServerName, &row.UpstreamPID, &row.Monthly, &row.Quarterly, &row.Yearly, &row.Hidden, &row.RequiresIdentity,
 			&raw, &productProfitType, &productProfitValue, &serverProfitType, &serverProfitValue, &row.UpstreamOfflineReason); err != nil {
 			return nil, err
 		}

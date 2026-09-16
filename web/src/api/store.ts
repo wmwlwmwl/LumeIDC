@@ -17,6 +17,8 @@ export interface ProductLite {
   name: string
   desc?: string
   monthly: string
+  billing_cycle?: 'monthly' | 'quarterly' | 'yearly'
+  cycle_label?: string
   stock: number
 }
 export interface Announcement {
@@ -88,6 +90,9 @@ export interface BuyData {
   }
   base: Record<string, number>
   cycle: { monthly: string; quarterly?: string; yearly?: string }
+  cycles: ('monthly' | 'quarterly' | 'yearly')[]
+  default_cycle: 'monthly' | 'quarterly' | 'yearly'
+  show_monthly: boolean
   show_q: boolean
   show_y: boolean
   options: ConfigOption[]

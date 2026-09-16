@@ -94,9 +94,23 @@ func (o *Orders) CreateOrder(ctx context.Context, userID, productID, pricesetID 
 	if err != nil || base < 0 {
 		return 0, 0, "", fmt.Errorf("商品价格无效")
 	}
-	// 周期可售性：仅月付无条件可售；季/年付要求该周期基础价>0（与购买页 showQ/showY 展示口径一致）。
-	// 防止改 POST 周期绕过前端，用未配置价格的季/年付以 0 元下单（原价产品 0 元购路径之一）。
-	if (cycle == "quarterly" || cycle == "yearly") && base <= 0 {
+	// 周期可售性：有基础价的产品只能购买已配置的周期；纯配置计价/免费产品保留月付入口。
+	var monthly, quarterly, yearly float64
+	for name, value := range map[string]string{"monthly": "monthly", "quarterly": "quarterly", "yearly": "yearly"} {
+		var raw string
+		if err := tx.QueryRowContext(ctx, `SELECT `+value+` FROM product_prices WHERE product_id=$1 AND priceset_id=$2`, productID, pricesetID).Scan(&raw); err == nil {
+			v, _ := strconv.ParseFloat(raw, 64)
+			switch name {
+			case "monthly":
+				monthly = v
+			case "quarterly":
+				quarterly = v
+			case "yearly":
+				yearly = v
+			}
+		}
+	}
+	if cycles, _ := AvailableCycles(monthly, quarterly, yearly); len(cycles) > 0 && base <= 0 {
 		return 0, 0, "", fmt.Errorf("该产品未提供所选计费周期")
 	}
 

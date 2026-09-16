@@ -30,15 +30,21 @@ func (m *AdminManage) ProductsList(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]map[string]any, 0, len(list))
 	for _, p := range list {
-		mn, first := "-", "-"
-		if p.Monthly != "" {
-			base := priceVal(p.Monthly)
+		mn, first, cycle, label := "-", "-", "monthly", "月"
+		monthly, quarterly, yearly := priceVal(p.Monthly), priceVal(p.Quarterly), priceVal(p.Yearly)
+		_, cycle = service.AvailableCycles(monthly, quarterly, yearly)
+		if cycle == "quarterly" {
+			label = "季"
+		} else if cycle == "yearly" {
+			label = "年"
+		}
+		if cycle != "" {
+			base := map[string]float64{"monthly": monthly, "quarterly": quarterly, "yearly": yearly}[cycle]
 			mn = fmt.Sprintf("%.2f", service.DisplayPrice(base, p.Options, p.ProfitType, p.ProfitValue))
-			// 首期 = 月价 + 最低配置档的一次性初装费（无初装费时与月价相同）
-			first = fmt.Sprintf("%.2f", service.DisplayStartPrice(base, p.Options, p.ProfitType, p.ProfitValue, "monthly"))
+			first = fmt.Sprintf("%.2f", service.DisplayStartPrice(base, p.Options, p.ProfitType, p.ProfitValue, cycle))
 		}
 		out = append(out, map[string]any{
-			"id": p.ID, "name": p.Name, "type": p.TypeName, "monthly": mn, "first": first,
+			"id": p.ID, "name": p.Name, "type": p.TypeName, "monthly": mn, "billing_cycle": cycle, "cycle_label": label, "first": first,
 			"visible": !p.Hidden, "hidden": p.Hidden, "server": p.ServerName, "upstream_pid": p.UpstreamPID,
 			"requires_identity": p.RequiresIdentity, "upstream_offline_reason": p.UpstreamOfflineReason,
 		})
