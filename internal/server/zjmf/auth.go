@@ -18,11 +18,18 @@ import (
 
 // jwtCache 按规范化 APIURL + 用户名缓存 JWT，剩余有效期 <300s 时重登。
 // 不同上游账号即使共用 API 地址也必须隔离 token。
-var cache = &authCache{tokens: map[string]jwtEntry{}}
+var cache = &authCache{tokens: map[string]jwtEntry{}, inflight: map[string]*loginCall{}}
 
 type authCache struct {
-	mu     sync.Mutex
-	tokens map[string]jwtEntry
+	mu       sync.Mutex
+	tokens   map[string]jwtEntry
+	inflight map[string]*loginCall
+}
+
+type loginCall struct {
+	done  chan struct{}
+	token string
+	err   error
 }
 
 type jwtEntry struct {
@@ -119,10 +126,32 @@ func ensureToken(ctx context.Context, cfg server.Config) (string, error) {
 	if t, ok := cache.get(key); ok {
 		return t, nil
 	}
-	t, err := login(ctx, cfg)
-	if err != nil {
-		return "", err
+
+	cache.mu.Lock()
+	if e, ok := cache.tokens[key]; ok && !time.Now().After(e.expiresAt.Add(-300*time.Second)) {
+		cache.mu.Unlock()
+		return e.token, nil
 	}
-	cache.put(key, t)
-	return t, nil
+	if call := cache.inflight[key]; call != nil {
+		cache.mu.Unlock()
+		select {
+		case <-call.done:
+			return call.token, call.err
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+	}
+	call := &loginCall{done: make(chan struct{})}
+	cache.inflight[key] = call
+	cache.mu.Unlock()
+
+	call.token, call.err = login(ctx, cfg)
+	if call.err == nil {
+		cache.put(key, call.token)
+	}
+	cache.mu.Lock()
+	delete(cache.inflight, key)
+	close(call.done)
+	cache.mu.Unlock()
+	return call.token, call.err
 }

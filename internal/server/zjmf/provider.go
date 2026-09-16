@@ -296,8 +296,8 @@ func (n *jsonNum) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-// Catalog 拉取目录树，逐产品回填价格与库存（串行；批量并发优化二期再做）。
-// ponytail: 每产品一次 get_product_config，目录大时较慢——批量并发优化属二期。
+// Catalog 拉取目录树，逐产品回填价格与库存（单并发）。
+// ponytail: 每产品一次 get_product_config，目录大时较慢；为避免上游限流，保持单并发。
 func (p Provider) Catalog(ctx context.Context, cfg server.Config) ([]server.UpstreamProduct, error) {
 	// ZJMF /cart/all 结构因版本而异：data 可能是分组数组（组内商品在 "product" 键）
 	// 或 {products:[{...products:[...]}]} 嵌套树。宽松遍历统一提取。
@@ -312,7 +312,7 @@ func (p Provider) Catalog(ctx context.Context, cfg server.Config) ([]server.Upst
 	if len(out) == 0 {
 		return nil, fmt.Errorf("目录为空或响应结构无法识别")
 	}
-	// 并发回填价格与库存（每批 8 个）
+	// 单并发回填价格与库存，避免上游限流。
 	fillPricingParallel(ctx, cfg, out)
 	return out, nil
 }
@@ -334,10 +334,10 @@ func (p Provider) CatalogLight(ctx context.Context, cfg server.Config) ([]server
 	return out, nil
 }
 
-// fillPricingParallel 并发拉取每个商品的 get_product_config 回填价格/库存。
+// fillPricingParallel 单并发拉取每个商品的 get_product_config 回填价格/库存。
 // 单个失败静默跳过（价格留 0），全部原始响应结构差异记录日志便于排查。
 func fillPricingParallel(ctx context.Context, cfg server.Config, out []server.UpstreamProduct) {
-	sem := make(chan struct{}, 8)
+	sem := make(chan struct{}, 1)
 	var wg sync.WaitGroup
 	for i := range out {
 		wg.Add(1)

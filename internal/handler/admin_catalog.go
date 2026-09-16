@@ -24,14 +24,22 @@ const providerCatalogTTL = 60 * time.Second
 // 定时同步 syncPrices 直接调用 provider.Catalog 且不经过本缓存，价格必为实时。
 // ponytail: 目录页/导入的价格可能滞后 ≤TTL；页面提供 ?fresh=1 强制刷新。
 type providerCatalogCache struct {
-	mu    sync.Mutex
-	at    map[int64]time.Time
-	lists map[int64][]server.UpstreamProduct
+	mu       sync.Mutex
+	at       map[int64]time.Time
+	lists    map[int64][]server.UpstreamProduct
+	inflight map[int64]*providerCatalogCall
+}
+
+type providerCatalogCall struct {
+	done chan struct{}
+	list []server.UpstreamProduct
+	err  error
 }
 
 var catalogCache = &providerCatalogCache{
-	at:    map[int64]time.Time{},
-	lists: map[int64][]server.UpstreamProduct{},
+	at:       map[int64]time.Time{},
+	lists:    map[int64][]server.UpstreamProduct{},
+	inflight: map[int64]*providerCatalogCall{},
 }
 
 func (c *providerCatalogCache) get(serverID int64) ([]server.UpstreamProduct, bool) {
@@ -51,19 +59,37 @@ func (c *providerCatalogCache) put(serverID int64, list []server.UpstreamProduct
 	c.lists[serverID] = list
 }
 
-// providerCatalog 带 TTL 缓存的目录拉取；fresh=true 时强制重新请求上游。
+// providerCatalog 带 TTL 缓存的目录拉取；fresh=true 时绕过已缓存值但复用同 serverID 的进行中请求。
 func (m *AdminManage) providerCatalog(ctx context.Context, serverID int64, sv *repo.Server, prov server.Provider, fresh bool) ([]server.UpstreamProduct, error) {
 	if !fresh {
 		if list, ok := catalogCache.get(serverID); ok {
 			return list, nil
 		}
 	}
-	list, err := prov.Catalog(ctx, serverConfig(sv))
-	if err != nil {
-		return nil, err
+
+	catalogCache.mu.Lock()
+	if call := catalogCache.inflight[serverID]; call != nil {
+		catalogCache.mu.Unlock()
+		select {
+		case <-call.done:
+			return call.list, call.err
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 	}
-	catalogCache.put(serverID, list)
-	return list, nil
+	call := &providerCatalogCall{done: make(chan struct{})}
+	catalogCache.inflight[serverID] = call
+	catalogCache.mu.Unlock()
+
+	call.list, call.err = prov.Catalog(ctx, serverConfig(sv))
+	if call.err == nil {
+		catalogCache.put(serverID, call.list)
+	}
+	catalogCache.mu.Lock()
+	delete(catalogCache.inflight, serverID)
+	close(call.done)
+	catalogCache.mu.Unlock()
+	return call.list, call.err
 }
 
 func (m *AdminManage) CatalogPage(w http.ResponseWriter, r *http.Request) {

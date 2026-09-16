@@ -24,8 +24,22 @@ const profitValue = ref('0')
 const requiresIdentity = ref(false)
 const desc = ref('')
 const selected = ref<number[]>([])
+const groupFilter = ref('')
+const keyword = ref('')
+const ungroupedGroup = '__ungrouped__'
 
-const selectable = computed(() => rows.value.filter((r) => !r.linked))
+const groupOptions = computed(() => {
+  const groups = new Set(rows.value.map((r) => r.group))
+  return [...groups].sort((a, b) => a.localeCompare(b, 'zh-CN'))
+})
+const filteredRows = computed(() => {
+  const q = keyword.value.trim().toLowerCase()
+  return rows.value.filter((r) => {
+    if (groupFilter.value && (groupFilter.value === ungroupedGroup ? r.group : r.group !== groupFilter.value)) return false
+    return !q || `${r.name} ${String(r.pid)} ${r.group}`.trim().toLowerCase().includes(q)
+  })
+})
+const selectable = computed(() => filteredRows.value.filter((r) => !r.linked))
 
 // 月付价/库存为字符串，字典序会 9>10，需按数值比较；"不限"库存视为 +∞（升序排最后）
 const toNum = (s: string): number => (Number.isNaN(Number(s)) ? Infinity : Number(s))
@@ -174,7 +188,14 @@ async function doImport() {
     <ElCard class="art-table-card" style="margin-top: 0">
       <ArtTableHeader v-model:columns="columns" :loading="loading" @refresh="() => !importing && load(true)">
         <template #left>
-          <span class="admin-import-count">已选 {{ selected.length }} 个（共 {{ selectable.length }} 个未对接）</span>
+          <div class="admin-catalog-filters">
+            <el-select v-model="groupFilter" clearable placeholder="全部上游分组" aria-label="按上游分组筛选" class="admin-catalog-group-filter">
+              <el-option v-if="groupOptions.includes('')" label="未分组" :value="ungroupedGroup" />
+              <el-option v-for="group in groupOptions.filter((group) => group)" :key="group" :label="group" :value="group" />
+            </el-select>
+            <el-input v-model="keyword" clearable placeholder="搜索名称、PID 或分组" aria-label="搜索名称、PID 或分组" class="admin-catalog-keyword" />
+            <span class="admin-import-count">显示 {{ filteredRows.length }} / {{ rows.length }} 个产品、未对接 {{ selectable.length }} 个、已选 {{ selected.length }} 个</span>
+          </div>
         </template>
         <template #right>
           <el-button type="primary" :loading="importing" :disabled="!selected.length || !!errMsg" @click="doImport">
@@ -185,7 +206,7 @@ async function doImport() {
 
       <ArtTable
         :loading="loading"
-        :data="rows"
+        :data="filteredRows"
         :columns="columns"
         empty-text="上游目录为空，请检查服务器连接或稍后重试"
         @selection-change="onSelectionChange"
@@ -229,6 +250,20 @@ async function doImport() {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.admin-catalog-filters {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+.admin-catalog-group-filter {
+  width: min(220px, 100%);
+}
+.admin-catalog-keyword {
+  width: min(240px, 100%);
+}
 .admin-import-count {
   color: var(--art-gray-500);
   font-size: 12px;
@@ -236,6 +271,13 @@ async function doImport() {
 @media (max-width: 900px) {
   .admin-import-bar {
     grid-template-columns: 1fr;
+  }
+  .admin-catalog-filters {
+    align-items: stretch;
+  }
+  .admin-catalog-group-filter,
+  .admin-catalog-keyword {
+    width: 100%;
   }
 }
 </style>
