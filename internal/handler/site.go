@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"net"
 	"net/http"
 	"net/url"
@@ -73,6 +74,7 @@ func (a *Admin) adminSite(w http.ResponseWriter, r *http.Request) {
 		service.KeyServiceEmail:     get(service.KeyServiceEmail),
 		service.KeyServicePhone:     get(service.KeyServicePhone),
 		service.KeyServiceHours:     get(service.KeyServiceHours),
+		service.KeyServiceContacts:  get(service.KeyServiceContacts),
 		service.KeySiteURL:          get(service.KeySiteURL),
 		service.KeyListenPort:       get(service.KeyListenPort),
 		service.KeyAdminPath:        get(service.KeyAdminPath),
@@ -120,6 +122,39 @@ func (a *Admin) adminSiteSave(w http.ResponseWriter, r *http.Request) {
 	email := strings.TrimSpace(fv(service.KeyServiceEmail))
 	phone := strings.TrimSpace(fv(service.KeyServicePhone))
 	hours := strings.TrimSpace(fv(service.KeyServiceHours))
+	contactsRaw := strings.TrimSpace(fv(service.KeyServiceContacts))
+	var contacts []service.SiteContact
+	if contactsRaw != "" {
+		if err := json.Unmarshal([]byte(contactsRaw), &contacts); err != nil {
+			fail("联系方式格式无效")
+			return
+		}
+		if len(contacts) > 20 {
+			fail("自定义联系方式最多 20 条")
+			return
+		}
+		for i := range contacts {
+			contacts[i].Type = strings.TrimSpace(contacts[i].Type)
+			contacts[i].Name = strings.TrimSpace(contacts[i].Name)
+			contacts[i].Value = strings.TrimSpace(contacts[i].Value)
+			contacts[i].Link = strings.TrimSpace(contacts[i].Link)
+			if contacts[i].Type == "" || contacts[i].Name == "" || contacts[i].Value == "" {
+				fail("每条联系方式都需要填写类型、名称和内容")
+				return
+			}
+			if len([]rune(contacts[i].Name)) > 32 || len([]rune(contacts[i].Value)) > 256 || len([]rune(contacts[i].Link)) > 512 {
+				fail("联系方式内容过长")
+				return
+			}
+			if contacts[i].Link != "" {
+				u, err := url.Parse(contacts[i].Link)
+				if err != nil || (u.Scheme != "http" && u.Scheme != "https" && u.Scheme != "mailto" && u.Scheme != "tel") {
+					fail("联系方式链接仅支持 http、https、mailto 或 tel")
+					return
+				}
+			}
+		}
+	}
 	siteURL := strings.TrimRight(strings.TrimSpace(fv(service.KeySiteURL)), "/")
 	if siteURL != "" && !validSiteURL(siteURL) {
 		fail("站点地址无效：需以 http:// 或 https:// 开头且不含路径（可留空自动推断）")
@@ -175,7 +210,9 @@ func (a *Admin) adminSiteSave(w http.ResponseWriter, r *http.Request) {
 	set(service.KeySiteKeywords, keywords)
 	set(service.KeyServiceEmail, email)
 	set(service.KeyServicePhone, phone)
+	storedContacts, _ := json.Marshal(contacts)
 	set(service.KeyServiceHours, hours)
+	set(service.KeyServiceContacts, string(storedContacts))
 	set(service.KeySiteURL, siteURL)
 	// 监听端口热切换：先绑定成功（旧服务不中断）再落库。
 	addr := a.DefaultListen

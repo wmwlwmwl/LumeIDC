@@ -31,6 +31,7 @@ func (h *Session) get(w http.ResponseWriter, r *http.Request) {
 			"email":       si.ServiceEmail,
 			"phone":       si.ServicePhone,
 			"hours":       si.ServiceHours,
+			"contacts":    si.ServiceContacts,
 		},
 		"user":  nil, // 匿名会话返回 null，前端统一判空
 		"admin": h.adminBlock(r),

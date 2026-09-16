@@ -2,6 +2,12 @@ import { reactive } from 'vue'
 import { getAppRouter } from '@/router/registry'
 
 // 全局会话状态：mount 前由 /session 填充，供路由守卫与请求头使用。
+export interface SiteContact {
+  type: string
+  name: string
+  value: string
+  link?: string
+}
 interface SiteInfo {
   name: string
   description: string
@@ -9,6 +15,7 @@ interface SiteInfo {
   email: string
   phone: string
   hours: string
+  contacts: SiteContact[]
 }
 
 interface UserInfo {
@@ -86,7 +93,7 @@ const defaultAuth: AuthFlags = {
 const state = reactive<SessionState>({
   loaded: false,
   csrf: '',
-  site: { name: 'LumeIDC', description: '', keywords: '', email: '', phone: '', hours: '' },
+  site: { name: 'LumeIDC', description: '', keywords: '', email: '', phone: '', hours: '', contacts: [] },
   user: null,
   adminPath: '/admin',
   adminUser: null,

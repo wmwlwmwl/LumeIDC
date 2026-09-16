@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 
 	"lumeidc/internal/repo"
@@ -15,6 +16,7 @@ const (
 	KeyServiceEmail     = "service_email"
 	KeyServicePhone     = "service_phone"
 	KeyServiceHours     = "service_hours"
+	KeyServiceContacts  = "service_contacts"
 	KeySiteURL          = "site_url"          // 站点对外地址（含协议），留空则按用户访问的请求自动推断
 	KeyListenPort       = "listen_port"       // 监听端口，留空使用 config.yaml 的 listen
 	KeyAdminPath        = "admin_path"        // 自定义后台访问路径（启动时读取，改后重启生效）
@@ -24,13 +26,21 @@ const (
 )
 
 // SiteInfo 站点品牌/SEO/客服配置（页面渲染与邮件品牌统一来源）。
+type SiteContact struct {
+	Type  string `json:"type"`
+	Name  string `json:"name"`
+	Value string `json:"value"`
+	Link  string `json:"link,omitempty"`
+}
+
 type SiteInfo struct {
-	Name         string
-	Description  string
-	Keywords     string
-	ServiceEmail string
-	ServicePhone string
-	ServiceHours string
+	Name            string
+	Description     string
+	Keywords        string
+	ServiceEmail    string
+	ServicePhone    string
+	ServiceHours    string
+	ServiceContacts []SiteContact
 }
 
 // LoadSiteInfo 从 settings 读取站点信息；缺省回退默认值。
@@ -38,7 +48,7 @@ func LoadSiteInfo(ctx context.Context, s *repo.Settings) SiteInfo {
 	defaults := map[string]string{
 		KeySiteName: DefaultSiteName,
 	}
-	keys := []string{KeySiteName, KeySiteDescription, KeySiteKeywords, KeyServiceEmail, KeyServicePhone, KeyServiceHours}
+	keys := []string{KeySiteName, KeySiteDescription, KeySiteKeywords, KeyServiceEmail, KeyServicePhone, KeyServiceHours, KeyServiceContacts}
 	values := map[string]string{}
 	if s != nil {
 		if loaded, err := s.GetMany(ctx, keys...); err == nil {
@@ -58,6 +68,9 @@ func LoadSiteInfo(ctx context.Context, s *repo.Settings) SiteInfo {
 		ServiceEmail: read(KeyServiceEmail),
 		ServicePhone: read(KeyServicePhone),
 		ServiceHours: read(KeyServiceHours),
+	}
+	if raw := strings.TrimSpace(values[KeyServiceContacts]); raw != "" {
+		_ = json.Unmarshal([]byte(raw), &info.ServiceContacts)
 	}
 	if strings.TrimSpace(info.Name) == "" {
 		info.Name = DefaultSiteName

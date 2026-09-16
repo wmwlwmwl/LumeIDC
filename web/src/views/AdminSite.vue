@@ -7,6 +7,14 @@ import { useSession } from '../http/session'
 const session = useSession()
 const loading = ref(true)
 const saving = ref(false)
+interface SiteContact {
+  type: string
+  name: string
+  value: string
+  link: string
+}
+
+const contacts = ref<SiteContact[]>([])
 const form = reactive<Record<string, string>>({
   site_name: '',
   site_description: '',
@@ -24,6 +32,14 @@ onMounted(async () => {
   try {
     const res = (await http.get('/site')) as Record<string, string>
     for (const k of Object.keys(form)) form[k] = res[k] || ''
+    try {
+      const parsed = JSON.parse(res.service_contacts || '[]')
+      contacts.value = Array.isArray(parsed) ? parsed.map((c) => ({
+        type: String(c.type || 'custom'), name: String(c.name || ''), value: String(c.value || ''), link: String(c.link || ''),
+      })) : []
+    } catch {
+      contacts.value = []
+    }
   } catch (err: unknown) {
     ElMessage.error((err as Error).message || '读取设置失败')
   } finally {
@@ -31,10 +47,17 @@ onMounted(async () => {
   }
 })
 
+function addContact(type = 'custom') {
+  contacts.value.push({ type, name: type === 'qq' ? 'QQ' : type === 'wechat' ? '微信' : '', value: '', link: '' })
+}
+function removeContact(index: number) {
+  contacts.value.splice(index, 1)
+}
+
 async function save() {
   saving.value = true
   try {
-    const res = (await http.post('/site', { ...form })) as { ok: number; msg?: string; admin_path?: string }
+    const res = (await http.post('/site', { ...form, service_contacts: JSON.stringify(contacts.value) })) as { ok: number; msg?: string; admin_path?: string }
     if (String(res.ok) === '1') {
       ElMessage.success('已保存')
       const prevBase = (session.adminPath || '/').replace(/\/$/, '')
@@ -92,6 +115,26 @@ async function save() {
         <el-form-item label="工作时间">
           <el-input v-model="form.service_hours" placeholder="如 9:00-18:00" />
         </el-form-item>
+        <el-form-item label="其他联系方式">
+          <div class="contact-editor">
+            <div v-for="(contact, index) in contacts" :key="index" class="contact-row">
+              <el-select v-model="contact.type" style="width: 110px">
+                <el-option label="QQ" value="qq" />
+                <el-option label="微信" value="wechat" />
+                <el-option label="自定义" value="custom" />
+              </el-select>
+              <el-input v-model="contact.name" placeholder="名称，如技术支持" style="width: 140px" />
+              <el-input v-model="contact.value" placeholder="账号或联系方式" class="contact-value" />
+              <el-input v-model="contact.link" placeholder="链接（可选，如 https://...）" class="contact-link" />
+              <el-button text type="danger" @click="removeContact(index)">删除</el-button>
+            </div>
+            <div class="contact-actions">
+              <el-button size="small" @click="addContact('qq')">+ QQ</el-button>
+              <el-button size="small" @click="addContact('wechat')">+ 微信</el-button>
+              <el-button size="small" @click="addContact()">+ 自定义</el-button>
+            </div>
+          </div>
+        </el-form-item>
 
         <el-divider content-position="left">访问</el-divider>
         <el-form-item label="站点地址（site_url）">
@@ -118,6 +161,27 @@ async function save() {
 </template>
 
 <style scoped>
+.contact-editor {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  gap: 8px;
+}
+.contact-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.contact-value,
+.contact-link {
+  flex: 1 1 180px;
+  min-width: 160px;
+}
+.contact-actions {
+  display: flex;
+  gap: 8px;
+}
 .admin-form-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
