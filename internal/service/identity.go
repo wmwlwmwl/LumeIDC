@@ -25,12 +25,12 @@ var ErrIdentityRequired = errors.New("请先完成实名认证后再购买或续
 
 // PhoneOTPProvider 隔离短信供应商；正式供应商接入后只替换实现。
 type PhoneOTPProvider interface {
-	Send(ctx context.Context, phone, code string) error
+	SendPurpose(ctx context.Context, phone, code, purpose string) error
 }
 
 type UnavailablePhoneOTPProvider struct{}
 
-func (UnavailablePhoneOTPProvider) Send(context.Context, string, string) error {
+func (UnavailablePhoneOTPProvider) SendPurpose(context.Context, string, string, string) error {
 	return errors.New("短信服务暂未配置")
 }
 
@@ -59,6 +59,7 @@ func NewIdentity(store *repo.IdentityStore, users *repo.Users, pii *crypto.Crypt
 }
 
 var mainlandPhone = regexp.MustCompile(`^1[3-9][0-9]{9}$`)
+
 // intlPhone：E.164 — + 开头、首位非 0 的国家码（1-3 位）+ 国内号码，数字总数 7-15 位。
 var intlPhone = regexp.MustCompile(`^\+[1-9][0-9]{6,14}$`)
 var identityNumber = regexp.MustCompile(`^(?:[0-9]{15}|[0-9]{17}[0-9Xx])$`)
@@ -157,7 +158,7 @@ func (s *Identity) RequestPhoneCode(ctx context.Context, userID int64, rawPhone,
 		}
 		return err
 	}
-	if err := s.OTP.Send(ctx, phone, code); err != nil {
+	if err := s.OTP.SendPurpose(ctx, phone, code, purpose); err != nil {
 		_ = s.Store.InvalidatePhoneChallenge(ctx, id, time.Now())
 		return errors.New("短信发送失败，请稍后再试")
 	}
@@ -268,7 +269,7 @@ func (s *Identity) SubmitForm(ctx context.Context, userID int64, form RealNameFo
 		return err
 	}
 	if s.Notifier != nil {
-		s.Notifier.Notify(ctx, userID, "实名申请已提交", "你的实名资料已提交，等待管理员人工审核。")
+		s.Notifier.NotifyTemplate(ctx, userID, "identity_submitted", "实名申请已提交", "你的实名资料已提交，等待管理员人工审核。")
 	}
 	return nil
 }
@@ -409,9 +410,9 @@ func (s *Identity) Review(ctx context.Context, id, adminID int64, approve bool, 
 	v, err := s.Store.Submission(ctx, id)
 	if err == nil && s.Notifier != nil {
 		if approve {
-			s.Notifier.Notify(ctx, v.UserID, "实名审核已通过", "你的实名资料已通过人工审核。")
+			s.Notifier.NotifyTemplate(ctx, v.UserID, "identity_approved", "实名审核已通过", "你的实名资料已通过人工审核。")
 		} else {
-			s.Notifier.Notify(ctx, v.UserID, "实名审核未通过", "你的实名资料未通过人工审核，请登录账户查看原因并重新提交。")
+			s.Notifier.NotifyTemplate(ctx, v.UserID, "identity_rejected", "实名审核未通过", "你的实名资料未通过人工审核，请登录账户查看原因并重新提交。")
 		}
 	}
 	return nil

@@ -162,12 +162,12 @@ func (m *AdminManage) notifyCancelResult(ctx context.Context, userID int64, appr
 		if note != "" {
 			body += "\n备注：" + note
 		}
-		m.Notifier.Notify(ctx, userID, "停用申请已通过", body)
+		m.Notifier.NotifyTemplate(ctx, userID, "cancel_approved", "停用申请已通过", body)
 		return
 	}
 	body := "你的服务停用申请未通过。"
 	if note != "" {
 		body += "\n原因：" + note
 	}
-	m.Notifier.Notify(ctx, userID, "停用申请未通过", body)
+	m.Notifier.NotifyTemplate(ctx, userID, "cancel_rejected", "停用申请未通过", body)
 }

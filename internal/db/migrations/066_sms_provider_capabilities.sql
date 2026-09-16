@@ -1,0 +1,32 @@
+ALTER TABLE sms_templates DROP CONSTRAINT IF EXISTS sms_templates_provider_check;
+ALTER TABLE sms_templates ADD CONSTRAINT sms_templates_provider_check CHECK (provider IN ('aliyun','aliyun_sms','stay33','qcloudsms','submail','smsbao','idcsmart','idcsmartpro'));
+ALTER TABLE sms_templates ADD COLUMN IF NOT EXISTS remote_operation TEXT NOT NULL DEFAULT '';
+-- 验证码解绑继续使用当前通道默认模板，不能关闭验证码场景。
+ALTER TABLE sms_scene_bindings DROP CONSTRAINT IF EXISTS sms_scene_bindings_check;
+ALTER TABLE sms_scene_bindings DROP CONSTRAINT IF EXISTS sms_scene_bindings_check1;
+ALTER TABLE sms_scene_bindings ADD CONSTRAINT sms_scene_bindings_otp_enabled CHECK (code NOT LIKE 'otp_%' OR enabled);
+ALTER TABLE sms_scene_bindings ADD CONSTRAINT sms_scene_bindings_notification_template CHECK (code LIKE 'otp_%' OR NOT enabled OR template_id IS NOT NULL);
+ALTER TABLE sms_templates ADD COLUMN IF NOT EXISTS range_type TEXT NOT NULL DEFAULT 'cn';
+ALTER TABLE sms_templates ADD COLUMN IF NOT EXISTS remote_template_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE sms_templates ADD COLUMN IF NOT EXISTS audit_status TEXT NOT NULL DEFAULT 'unknown';
+ALTER TABLE sms_templates ADD COLUMN IF NOT EXISTS audit_message TEXT NOT NULL DEFAULT '';
+ALTER TABLE sms_templates ADD COLUMN IF NOT EXISTS audit_updated_at TIMESTAMPTZ;
+ALTER TABLE sms_templates ADD COLUMN IF NOT EXISTS remark TEXT NOT NULL DEFAULT '';
+ALTER TABLE sms_templates ADD COLUMN IF NOT EXISTS sign_name TEXT NOT NULL DEFAULT '';
+ALTER TABLE sms_templates ADD COLUMN IF NOT EXISTS template_type TEXT NOT NULL DEFAULT '';
+ALTER TABLE sms_templates ADD CONSTRAINT sms_templates_range_type_check CHECK (range_type IN ('cn','global','marketing'));
+ALTER TABLE sms_templates ADD CONSTRAINT sms_templates_audit_status_check CHECK (audit_status IN ('pending','approved','rejected','unknown','not_supported'));
+UPDATE sms_templates SET range_type='cn' WHERE range_type IS NULL OR range_type='';
+UPDATE sms_templates SET audit_status='unknown' WHERE audit_status IS NULL OR audit_status='';
+
+ALTER TABLE sms_outbox ADD COLUMN IF NOT EXISTS provider TEXT NOT NULL DEFAULT 'aliyun_sms';
+ALTER TABLE sms_outbox ADD COLUMN IF NOT EXISTS range_type TEXT NOT NULL DEFAULT 'cn';
+ALTER TABLE sms_outbox ADD COLUMN IF NOT EXISTS remote_template_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE sms_outbox ADD COLUMN IF NOT EXISTS provider_message_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE sms_outbox ADD COLUMN IF NOT EXISTS request_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE sms_outbox ADD COLUMN IF NOT EXISTS error_code TEXT NOT NULL DEFAULT '';
+ALTER TABLE sms_outbox ADD COLUMN IF NOT EXISTS attempt_count INTEGER NOT NULL DEFAULT 0;
+UPDATE sms_outbox SET provider=coalesce(nullif(payload->'template'->>'provider',''),'aliyun_sms');
+UPDATE sms_templates SET audit_status='not_supported' WHERE provider IN ('stay33','smsbao','aliyun');
+ALTER TABLE sms_templates ADD CONSTRAINT sms_templates_remote_id_matches CHECK (remote_template_id='' OR remote_template_id=template_code);
+UPDATE sms_outbox SET range_type='cn' WHERE range_type IS NULL OR range_type='';

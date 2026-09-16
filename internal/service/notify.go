@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log"
 	"mime"
+	"mime/quotedprintable"
 	"net"
 	"net/mail"
 	"net/smtp"
@@ -38,11 +39,19 @@ type Notifier struct {
 	stopped          bool
 	workers          sync.WaitGroup
 	done             chan struct{}
+	smsStartOnce     sync.Once
+	smsStopOnce      sync.Once
+	smsMu            sync.Mutex
+	smsCancel        context.CancelFunc
+	smsDone          chan struct{}
+	smsStopped       bool
 }
 
 const (
 	keySMTPAccounts = "smtp_accounts"
 	keySMTPCooldown = "smtp_cooldown_seconds"
+	// keyEmailForwardEnabled 业务邮件总开关，后台「邮件模板」页维护；验证码与短信不受其影响。
+	keyEmailForwardEnabled = "notify_email_forward_enabled"
 )
 
 // MailAccount 单个 SMTP 账号（settings 表 smtp_accounts JSON 存储）。
@@ -173,7 +182,11 @@ func (n *Notifier) cooldownSeconds(ctx context.Context) int {
 
 // Notify 在短事务中一起保存站内信和邮件意图；返回成功才代表可靠入队。
 // 邮件快照不关联站内信外键、不保存 SMTP 凭据；账号在实际发送时读取。
-func (n *Notifier) Notify(ctx context.Context, userID int64, title, body string) (err error) {
+func (n *Notifier) Notify(ctx context.Context, userID int64, title, body string) error {
+	return n.notify(ctx, userID, title, body, "", nil)
+}
+
+func (n *Notifier) notify(ctx context.Context, userID int64, title, body, code string, values map[string]string) (err error) {
 	if n == nil || n.db == nil {
 		return fmt.Errorf("通知服务不可用")
 	}
@@ -189,15 +202,16 @@ func (n *Notifier) Notify(ctx context.Context, userID int64, title, body string)
 		return fmt.Errorf("无法开启通知事务")
 	}
 	defer tx.Rollback()
-	if _, err = tx.ExecContext(ctx,
-		`INSERT INTO notifications(user_id,title,body,category) VALUES($1,$2,$3,$4)`, userID, title, body, notificationCategory(title)); err != nil {
+	var notificationID int64
+	if err = tx.QueryRowContext(ctx,
+		`INSERT INTO notifications(user_id,title,body,category) VALUES($1,$2,$3,$4) RETURNING id`, userID, title, body, notificationCategory(title)).Scan(&notificationID); err != nil {
 		return fmt.Errorf("站内通知保存失败")
 	}
 	var enabled, site, email string
 	if err = tx.QueryRowContext(ctx, `SELECT
-		coalesce((SELECT value FROM settings WHERE key='notify_email_forward_enabled'),''),
+		coalesce((SELECT value FROM settings WHERE key=$2),''),
 		coalesce((SELECT value FROM settings WHERE key='site_name'),''),
-		coalesce((SELECT email FROM users WHERE id=$1),'')`, userID).Scan(&enabled, &site, &email); err != nil {
+		coalesce((SELECT email FROM users WHERE id=$1),'')`, userID, keyEmailForwardEnabled).Scan(&enabled, &site, &email); err != nil {
 		return fmt.Errorf("读取通知设置或收件地址失败")
 	}
 	if enabled == "1" && strings.TrimSpace(email) != "" {
@@ -212,8 +226,37 @@ func (n *Notifier) Notify(ctx context.Context, userID int64, title, body string)
 		if !strings.Contains(body, site) {
 			text += "\r\n\r\n—— " + site
 		}
-		if _, err = tx.ExecContext(ctx, `INSERT INTO mail_outbox(recipient,subject,body) VALUES($1,$2,$3)`, email, subject, text); err != nil {
-			return fmt.Errorf("待发邮件保存失败")
+		format, send := mailFormatText, true
+		if code != "" {
+			t, loadErr := loadEmailTemplate(ctx, tx, code)
+			if loadErr != nil {
+				return loadErr
+			}
+			send = t.Enabled
+			if send {
+				values["site_name"] = site
+				preview, renderErr := renderEmailTemplate(t, EmailTemplateDraft{Code: t.Code, Subject: t.Subject, Body: t.Body, Enabled: t.Enabled}, values)
+				if renderErr != nil {
+					return renderErr
+				}
+				subject, text, format = preview.Subject, preview.Body, mailFormatHTML
+			}
+		}
+		if send {
+			if err := validateMailRecipient(email); err != nil {
+				return err
+			}
+			if err := validateMailContent(subject, text, format); err != nil {
+				return err
+			}
+			if _, err = tx.ExecContext(ctx, `INSERT INTO mail_outbox(recipient,subject,body,format) VALUES($1,$2,$3,$4)`, email, subject, text, format); err != nil {
+				return fmt.Errorf("待发邮件保存失败")
+			}
+		}
+	}
+	if code != "" && code != "auth_code" {
+		if err = n.enqueueSMS(ctx, tx, notificationID, userID, code, values); err != nil {
+			return err
 		}
 	}
 	if err = tx.Commit(); err != nil {
@@ -237,7 +280,7 @@ func (n *Notifier) TicketNotify(ctx context.Context, userID int64, event, subjec
 		body = "你的工单「{{subject}}」有新的处理动态。"
 	}
 	body = strings.ReplaceAll(body, "{{subject}}", subject)
-	n.Notify(ctx, userID, title, body)
+	n.NotifyTemplate(ctx, userID, "ticket_"+event, title, body, map[string]string{"subject": subject})
 }
 
 func notificationCategory(title string) string {
@@ -260,6 +303,31 @@ func (n *Notifier) EmailEnabled(ctx context.Context) bool {
 	return n != nil && n.hasEnabledAccount(ctx)
 }
 
+// EmailForwardEnabled 业务邮件总开关：关闭后所有业务通知邮件不再入队，站内信照常保存。
+// 验证码走同步发送、短信走独立模板，均不受该开关影响。
+func (n *Notifier) EmailForwardEnabled(ctx context.Context) bool {
+	if n == nil || n.Settings == nil {
+		return false
+	}
+	v, err := n.Settings.Get(ctx, keyEmailForwardEnabled)
+	return err == nil && v == "1"
+}
+
+// SetEmailForwardEnabled 保存业务邮件总开关。
+func (n *Notifier) SetEmailForwardEnabled(ctx context.Context, enabled bool) error {
+	if n == nil || n.Settings == nil {
+		return errors.New("邮件服务不可用")
+	}
+	v := "0"
+	if enabled {
+		v = "1"
+	}
+	if err := n.Settings.Set(ctx, keyEmailForwardEnabled, v); err != nil {
+		return errors.New("保存邮件通知总开关失败")
+	}
+	return nil
+}
+
 // mailHeaderFrom 拼 From 头的发件人：显示名取站点名（形如「无名云 <admin@x.com>」）。
 // 只写地址时邮箱客户端会拿邮箱前缀当发件人显示（如「admin」），收件人看不出是谁发的。
 // 中文显示名的 RFC 2047 编码与特殊字符加引号交给 net/mail；信封发件人仍是纯地址。
@@ -270,13 +338,31 @@ func mailHeaderFrom(site, from string) string {
 	return (&mail.Address{Name: site, Address: from}).String()
 }
 
-// buildMailMessage 拼装带 MIME 头的中文邮件内容。
-func buildMailMessage(from, to, subject, body string) []byte {
+func mailFormat(formats []string) string {
+	if len(formats) == 0 {
+		return mailFormatText
+	}
+	return formats[0]
+}
+
+// buildMailMessage 未传格式的旧调用保持纯文本，HTML 显式使用安全传输编码。
+func buildMailMessage(from, to, subject, body string, formats ...string) []byte {
+	contentType := "text/plain"
+	encoding := ""
+	if mailFormat(formats) == mailFormatHTML {
+		contentType = "text/html"
+		var encoded strings.Builder
+		writer := quotedprintable.NewWriter(&encoded)
+		_, _ = writer.Write([]byte(body))
+		_ = writer.Close()
+		body = encoded.String()
+		encoding = "Content-Transfer-Encoding: quoted-printable\r\n"
+	}
 	return []byte("To: " + to + "\r\n" +
 		"From: " + from + "\r\n" +
 		"Subject: " + mime.QEncoding.Encode("UTF-8", subject) + "\r\n" +
-		"MIME-Version: 1.0\r\n" +
-		"Content-Type: text/plain; charset=UTF-8\r\n\r\n" + body)
+		"MIME-Version: 1.0\r\n" + encoding +
+		"Content-Type: " + contentType + "; charset=UTF-8\r\n\r\n" + body)
 }
 
 // loginAuth 实现 SMTP AUTH LOGIN（部分服务器不提供 PLAIN 时使用）。
@@ -424,12 +510,16 @@ func smtpDeliver(ctx context.Context, host string, port int, user, pass, from, t
 
 // SendMail 发送纯文本邮件（自动走多账号轮流负载/失败切换）。
 func (n *Notifier) SendMail(ctx context.Context, to, subject, body string) error {
+	return n.sendMailFormat(ctx, to, subject, body, mailFormatText)
+}
+
+func (n *Notifier) sendMailFormat(ctx context.Context, to, subject, body, format string) error {
 	ctx, done, err := n.beginMail(ctx, mailSendTimeout)
 	if err != nil {
 		return err
 	}
 	defer done()
-	return n.sendWithChannels(ctx, to, subject, body)
+	return n.sendWithChannels(ctx, to, subject, body, format)
 }
 
 type mailContextError struct{ cause error }
@@ -460,11 +550,11 @@ func (n *Notifier) beginMail(ctx context.Context, timeout time.Duration) (contex
 }
 
 // sendWithChannels 多账号轮流负载发送（调用时自行加载账号配置）。
-func (n *Notifier) sendWithChannels(ctx context.Context, to, subject, body string) error {
+func (n *Notifier) sendWithChannels(ctx context.Context, to, subject, body string, formats ...string) error {
 	if n == nil || n.db == nil || n.Settings == nil {
 		return fmt.Errorf("邮件服务不可用")
 	}
-	return n.sendWithAccounts(ctx, n.loadAccounts(ctx), to, subject, body)
+	return n.sendWithAccounts(ctx, n.loadAccounts(ctx), to, subject, body, formats...)
 }
 
 // sendWithAccounts 多账号轮流负载发送：
@@ -472,7 +562,13 @@ func (n *Notifier) sendWithChannels(ctx context.Context, to, subject, body strin
 //   - 发送失败的账号进入冷却，本次自动尝试下一个可用账号；
 //   - 冷却中的账号跳过；全部失败返回汇总错误。
 //   - accounts 由调用方加载传入，避免同一请求内重复读库。
-func (n *Notifier) sendWithAccounts(ctx context.Context, accounts []MailAccount, to, subject, body string) error {
+func (n *Notifier) sendWithAccounts(ctx context.Context, accounts []MailAccount, to, subject, body string, formats ...string) error {
+	if err := validateMailRecipient(to); err != nil {
+		return err
+	}
+	if err := validateMailContent(subject, body, mailFormat(formats)); err != nil {
+		return err
+	}
 	if len(accounts) == 0 {
 		return fmt.Errorf("尚未配置 SMTP 账号，请先在「系统设置-邮件服务」填写并保存")
 	}
@@ -507,7 +603,7 @@ func (n *Notifier) sendWithAccounts(ctx context.Context, accounts []MailAccount,
 
 	var lastErr error
 	for _, idx := range candidates {
-		if err := n.sendAccount(ctx, accounts, idx, to, subject, body, false); err != nil {
+		if err := n.sendAccount(ctx, accounts, idx, to, subject, body, false, formats...); err != nil {
 			if ctx.Err() != nil {
 				return mailContextError{ctx.Err()}
 			}
@@ -535,7 +631,7 @@ func (n *Notifier) sendWithAccounts(ctx context.Context, accounts []MailAccount,
 // sendAccount 用指定索引的账号直接发送。ignoreEnabled=true 时忽略启用开关（用于定向测试）。
 // accounts 由调用方加载传入：sendWithAccounts 的失败重试循环与 Notify 均可能连续调用本函数，
 // 若在此重复读库会把账号查询放大到每账号一次。
-func (n *Notifier) sendAccount(ctx context.Context, accounts []MailAccount, idx int, to, subject, body string, ignoreEnabled bool) error {
+func (n *Notifier) sendAccount(ctx context.Context, accounts []MailAccount, idx int, to, subject, body string, ignoreEnabled bool, formats ...string) error {
 	if idx < 0 || idx >= len(accounts) {
 		return fmt.Errorf("SMTP 账号 #%d 不存在", idx+1)
 	}
@@ -557,10 +653,14 @@ func (n *Notifier) sendAccount(ctx context.Context, accounts []MailAccount, idx 
 			return fmt.Errorf("发件或收件邮箱格式无效")
 		}
 	}
-	if strings.ContainsAny(subject, "\r\n") {
-		return fmt.Errorf("邮件标题不能包含换行")
+	if err := validateMailContent(subject, body, mailFormat(formats)); err != nil {
+		return err
 	}
-	msg := buildMailMessage(mailHeaderFrom(n.SiteName(ctx), from), to, subject, body)
+	site := n.SiteName(ctx)
+	if !emailHeaderValid(site) || len(site) > maxMailSubject {
+		return fmt.Errorf("邮件站点名称格式无效")
+	}
+	msg := buildMailMessage(mailHeaderFrom(site, from), to, subject, body, formats...)
 	if err := smtpDeliver(ctx, host, acct.Port, acct.User, acct.Pass, from, to, msg); err != nil {
 		return fmt.Errorf("账号 #%d「%s」发送失败: %w", idx+1, acct.accountName(), err)
 	}

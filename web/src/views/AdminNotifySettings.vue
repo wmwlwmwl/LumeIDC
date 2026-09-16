@@ -1,10 +1,12 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
+import { onBeforeRouteLeave } from 'vue-router'
+import { fetchSMSProviders, type SMSProviderDescriptor, type SMSRange } from '../admin/smsTemplates'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAdminSettings } from '../admin/useSettings'
 import { testAdminEmail } from '../admin/api'
 
-const { loading, saving, cfg, load, save, flag } = useAdminSettings()
+const { loading, saving, cfg, load, save } = useAdminSettings()
 
 // ---- 邮件账号（多账号，密码留空保持旧值）----
 interface MailAccount {
@@ -49,19 +51,22 @@ function moveAccount(i: number, dir: -1 | 1) {
   ;[accounts.value[i], accounts.value[j]] = [accounts.value[j], accounts.value[i]]
 }
 
-function saveMail() {
+async function saveMail() {
+  if (!ready.value || saving.value) return
   const clean = accounts.value
     .filter((a) => a.host.trim())
     .map(({ name, host, port, user, pass, from, enabled }) => ({ name, host, port, user, pass, from, enabled }))
-  save(
+  if (await save(
     '',
     {
       smtp_accounts: JSON.stringify(clean),
       smtp_cooldown_seconds: String(cooldownSeconds.value || 60),
-      notify_email_forward_enabled: flag('notify_email_forward_enabled'),
     },
     'mail',
-  )
+  )) {
+    accounts.value.forEach(account => { account.pass = '' })
+    mailBaseline.value = mailSnapshot()
+  }
 }
 
 // 冷却秒数：el-input-number 需要 number 类型，而 cfg 值为服务端返回的字符串
@@ -103,20 +108,70 @@ async function sendTest() {
 }
 
 // ---- 短信 ----
-function saveSms() {
-  save('sms', {
-    sms_provider: cfg['sms_provider'] || '',
-    sms_endpoint: cfg['sms_endpoint'] || '',
-    sms_access_key: cfg['sms_access_key'] || '',
-    sms_username: cfg['sms_username'] || '',
-    sms_secret_key: cfg['sms_secret_key'] || '',
-    sms_sign_name: cfg['sms_sign_name'] || '',
-    sms_template_code: cfg['sms_template_code'] || '',
-    sms_template_content: cfg['sms_template_content'] || '',
-  })
+const providers = ref<SMSProviderDescriptor[]>([])
+const ready = ref(false)
+const loadError = ref('')
+type SMSRouteDraft = Record<string, string>
+const smsRanges: { key: SMSRange; label: string }[] = [{ key: 'cn', label: '国内' }, { key: 'global', label: '国际' }, { key: 'marketing', label: '营销' }]
+const smsRoutes = ref<Record<SMSRange, SMSRouteDraft>>({ cn: {}, global: {}, marketing: {} })
+const smsBaseline = ref('')
+const mailBaseline = ref('')
+const mailSnapshot = () => JSON.stringify({ accounts: accounts.value, cooldown: cooldownSeconds.value })
+const routesBody = () => Object.fromEntries(smsRanges.filter(({ key }) => smsRoutes.value[key].provider).map(({ key }) => [key, { ...smsRoutes.value[key] }]))
+const smsBody = () => ({ sms_routes: JSON.stringify(routesBody()) })
+const dirty = computed(() => ready.value && (JSON.stringify(smsBody()) !== smsBaseline.value || mailSnapshot() !== mailBaseline.value))
+const fieldLabels: Record<string, string> = {
+  sms_access_key: '应用标识 / 访问密钥标识', sms_secret_key: '密钥或密码（留空保持不变）',
+  sms_username: '账号 / 腾讯云短信应用编号', sms_sign_name: '签名', sms_endpoint: '供应商固定接口地址（选填）',
+  sms_region: '腾讯云地域（默认 ap-guangzhou）', sms_global_access_key: '国际应用标识',
+  sms_global_secret_key: '国际密钥（留空保持不变）', sms_global_sign_name: '国际签名',
 }
-
-load()
+function routeFields(range: SMSRange) { return providers.value.find(item => item.key === smsRoutes.value[range].provider)?.config_fields || [] }
+function changeSmsProvider(range: SMSRange, provider: string) {
+  if (saving.value || provider === smsRoutes.value[range].provider) return
+  smsRoutes.value[range] = provider ? { provider } : {}
+}
+function parseRoutes() {
+  try {
+    const raw = cfg.sms_routes || '{}'
+    const saved = JSON.parse(raw) as Partial<Record<SMSRange, SMSRouteDraft>>
+    smsRoutes.value = { cn: { ...(saved.cn || {}) }, global: { ...(saved.global || {}) }, marketing: { ...(saved.marketing || {}) } }
+  } catch { smsRoutes.value = { cn: {}, global: {}, marketing: {} } }
+}
+async function saveSms() {
+  if (!ready.value || saving.value) return
+  if (await save('sms', smsBody())) {
+    for (const route of Object.values(smsRoutes.value)) {
+      route.sms_secret_key = ''
+      route.sms_global_secret_key = ''
+    }
+    smsBaseline.value = JSON.stringify(smsBody())
+  }
+}
+async function initialize() {
+  loadError.value = ''
+  try {
+    const [ok, descriptors] = await Promise.all([load(), fetchSMSProviders()])
+    if (!ok) throw new Error('读取设置失败')
+    providers.value = descriptors
+    parseRoutes()
+    await nextTick()
+    smsBaseline.value = JSON.stringify(smsBody())
+    mailBaseline.value = mailSnapshot()
+    ready.value = true
+  } catch { loadError.value = '读取通知设置或短信供应商失败，请重新加载页面；保存已禁用，避免覆盖旧配置' }
+}
+onBeforeRouteLeave(async () => {
+  if (saving.value) return false
+  if (!dirty.value) return true
+  return !!await ElMessageBox.confirm('有未保存的通知设置，离开将丢弃修改。是否继续？', '未保存的设置', { confirmButtonText: '丢弃并离开', cancelButtonText: '取消', type: 'warning' }).catch(() => false)
+})
+function beforeUnload(event: BeforeUnloadEvent) {
+  if (dirty.value || saving.value) { event.preventDefault(); event.returnValue = '' }
+}
+onMounted(() => window.addEventListener('beforeunload', beforeUnload))
+onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload))
+void initialize()
 </script>
 
 <template>
@@ -126,11 +181,12 @@ load()
         <div class="art-card-header">
           <div class="title">
             <h4>通知设置</h4>
-            <p>邮件与短信通道配置，用于站内信转发、验证码与业务通知。</p>
+            <p>邮件与短信发送通道配置。邮件内容、启停与总开关在「邮件模板」页维护。</p>
           </div>
         </div>
       </template>
 
+      <el-form :disabled="!ready || !!saving" label-position="top">
       <el-divider content-position="left">邮件通知</el-divider>
       <p class="mb-3 text-xs text-g-500">可配置多个 SMTP 账号（轮换发送）；密码留空表示沿用旧值。</p>
 
@@ -160,10 +216,12 @@ load()
         <el-form-item label="发送失败冷却（秒，1-86400）">
           <el-input-number v-model="cooldownSeconds" :min="1" :max="86400" class="w-full" />
         </el-form-item>
-        <el-form-item label="站内信邮件转发">
-          <el-switch v-model="cfg['notify_email_forward_enabled']" active-value="1" inactive-value="0" active-text="启用" />
-        </el-form-item>
       </div>
+      <p class="text-xs text-g-500">
+        业务邮件的内容、启停和总开关在
+        <router-link :to="{ name: 'admin-email-templates' }">邮件模板</router-link>
+        页维护；此处仅配置发送通道。
+      </p>
 
       <div class="notify-save-row">
         <el-button type="primary" :loading="saving === 'mail'" @click="saveMail">保存邮件设置</el-button>
@@ -177,72 +235,32 @@ load()
         </span>
       </div>
 
+      </el-form>
       <el-divider content-position="left">短信</el-divider>
-      <el-form-item label="服务商">
-        <el-select v-model="cfg['sms_provider']" clearable placeholder="选择短信服务商" style="max-width: 320px">
-          <el-option label="阿里云 PNVS（号码认证）" value="aliyun" />
-          <el-option label="阿里云短信" value="aliyun_sms" />
-          <el-option label="Stay33" value="stay33" />
-        </el-select>
-      </el-form-item>
-
-      <p v-if="!cfg['sms_provider']" class="text-xs text-g-500">选择服务商后填写对应参数。</p>
-
-      <!-- 阿里云 PNVS（号码认证） -->
-      <template v-else-if="cfg['sms_provider'] === 'aliyun'">
-        <div class="admin-form-grid">
-          <el-form-item label="AccessKey ID"><el-input v-model="cfg['sms_access_key']" /></el-form-item>
-          <el-form-item label="AccessKey Secret（留空保持不变）">
-            <el-input v-model="cfg['sms_secret_key']" type="password" show-password />
-          </el-form-item>
-          <el-form-item label="签名名称（签名/方案）"><el-input v-model="cfg['sms_sign_name']" /></el-form-item>
-          <el-form-item label="模板编码（选填）">
-            <el-input v-model="cfg['sms_template_code']" placeholder="留空按场景默认：登录/注册 100001、改绑 100002、绑定 100004、验证 100005" />
-          </el-form-item>
-        </div>
-        <p class="text-xs text-g-500">接口地址固定为 dypnsapi.aliyuncs.com，无需配置。</p>
-      </template>
-
-      <!-- 阿里云短信 -->
-      <template v-else-if="cfg['sms_provider'] === 'aliyun_sms'">
-        <div class="admin-form-grid">
-          <el-form-item label="AccessKey ID"><el-input v-model="cfg['sms_access_key']" /></el-form-item>
-          <el-form-item label="AccessKey Secret（留空保持不变）">
-            <el-input v-model="cfg['sms_secret_key']" type="password" show-password />
-          </el-form-item>
-          <el-form-item label="签名名称"><el-input v-model="cfg['sms_sign_name']" /></el-form-item>
-          <el-form-item label="模板编码"><el-input v-model="cfg['sms_template_code']" placeholder="控制台申请的短信模板 CODE" /></el-form-item>
-          <el-form-item label="接口地址（选填）">
-            <el-input v-model="cfg['sms_endpoint']" placeholder="仅域名，默认 dysmsapi.aliyuncs.com" />
-          </el-form-item>
-        </div>
-      </template>
-
-      <!-- Stay33 -->
-      <template v-else-if="cfg['sms_provider'] === 'stay33'">
-        <div class="admin-form-grid">
-          <el-form-item label="用户名"><el-input v-model="cfg['sms_username']" /></el-form-item>
-          <el-form-item label="密钥（留空保持不变）">
-            <el-input v-model="cfg['sms_secret_key']" type="password" show-password />
-          </el-form-item>
-          <el-form-item label="签名名称"><el-input v-model="cfg['sms_sign_name']" /></el-form-item>
-          <el-form-item label="接口地址（选填）">
-            <el-input v-model="cfg['sms_endpoint']" placeholder="默认 https://idc.stay33.cn/sms/sendApi.php" />
-          </el-form-item>
-        </div>
-        <el-form-item label="模板内容（选填）">
-          <el-input
-            v-model="cfg['sms_template_content']"
-            type="textarea"
-            :rows="2"
-            placeholder="默认：【签名】您的验证码是：{code}，5分钟内有效。可用占位：{code}、{purpose}、{sign_name}"
-          />
-        </el-form-item>
-      </template>
-
+      <el-alert title="验证码仅走国内路由。未绑定验证码模板时，仍使用旧的国内单通道配置回退；业务通知按模板范围选择对应路由。" type="warning" :closable="false" />
+      <p class="my-3"><router-link :to="{ name: 'admin-sms-templates' }">管理短信模板、业务场景绑定与投递状态</router-link></p>
+      <el-alert v-if="loadError" :title="loadError" type="error" :closable="false" />
+      <el-form :disabled="!ready || !!saving" label-position="top">
+        <el-tabs>
+          <el-tab-pane v-for="range in smsRanges" :key="range.key" :label="range.label">
+            <p class="text-xs text-g-500">{{ range.key === 'cn' ? '国内路由用于验证码和国内通知。' : range.key === 'global' ? '国际路由仅用于国际业务通知。' : '营销路由仅用于营销业务通知，不可用于验证码。' }}</p>
+            <el-form-item :label="range.label + '服务商'">
+              <el-select :model-value="smsRoutes[range.key].provider" clearable placeholder="选择短信服务商" style="max-width: 320px" :aria-label="range.label + '短信服务商'" @update:model-value="changeSmsProvider(range.key, $event)">
+                <el-option v-for="item in providers.filter(item => item.capabilities.ranges.includes(range.key) && item.capabilities.notification)" :key="item.key" :label="item.name" :value="item.key" />
+              </el-select>
+            </el-form-item>
+            <div v-if="smsRoutes[range.key].provider" class="admin-form-grid">
+              <el-form-item v-for="key in routeFields(range.key)" :key="key" :label="fieldLabels[key] || key">
+                <el-input v-model="smsRoutes[range.key][key]" :aria-label="range.label + (fieldLabels[key] || key)" :type="key.includes('secret') ? 'password' : 'text'" :show-password="key.includes('secret')" autocomplete="off" />
+              </el-form-item>
+            </div>
+          </el-tab-pane>
+        </el-tabs>
       <div class="notify-save-row">
         <el-button type="primary" :loading="saving === 'sms'" @click="saveSms">保存短信设置</el-button>
+        <el-tag v-if="dirty" type="warning">有未保存修改</el-tag>
       </div>
+      </el-form>
     </ElCard>
   </div>
 </template>

@@ -57,6 +57,12 @@ export const ADMIN_ACTION_LABELS: Record<string, string> = {
   refund: '订单退款',
   // 系统
   system_update: '系统更新',
+  email_template_saved: '保存邮件模板',
+  email_template_reset: '恢复默认邮件模板',
+  email_template_master_updated: '切换邮件通知总开关',
+  sms_template_saved: '保存短信模板',
+  sms_template_deleted: '删除短信模板',
+  sms_binding_saved: '保存短信场景绑定',
 }
 
 /** 审计日志的操作对象类型。 */
@@ -69,6 +75,9 @@ export const TARGET_TYPE_LABELS: Record<string, string> = {
   real_name_submission: '实名申请',
   admin: '管理员',
   system: '系统',
+  email_template: '邮件模板',
+  sms_template: '短信模板',
+  sms_scene: '短信业务场景',
 }
 
 export function balanceTypeLabel(type: string): string {

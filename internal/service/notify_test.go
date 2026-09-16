@@ -21,6 +21,7 @@ type fakeSMTPServer struct {
 	authMechs  string // 如 "LOGIN PLAIN"
 	rejectAuth bool
 	gotTo      string
+	gotMessage string
 	mu         sync.Mutex
 	done       chan struct{}
 }
@@ -102,6 +103,7 @@ func (f *fakeSMTPServer) handle(c net.Conn) {
 		case cmd == "DATA":
 			send("354 End data with <CR><LF>.<CR><LF>\r\n")
 			// 读取正文直到单独一行 "."
+			var message strings.Builder
 			for {
 				d, err := r.ReadString('\n')
 				if err != nil {
@@ -110,7 +112,11 @@ func (f *fakeSMTPServer) handle(c net.Conn) {
 				if strings.TrimSpace(d) == "." {
 					break
 				}
+				message.WriteString(d)
 			}
+			f.mu.Lock()
+			f.gotMessage = message.String()
+			f.mu.Unlock()
 			send("250 2.0.0 Ok: queued\r\n")
 		default:
 			// 忽略其它内容行

@@ -23,7 +23,8 @@ func (a *Admin) adminSettings(w http.ResponseWriter, r *http.Request) {
 	// GetMany 只返回库中存在的键，缺失键取空串——与原 Get 失败回退行为一致。
 	vals, err := s.GetMany(r.Context(),
 		"manual_identity_requires_verified_phone",
-		"smtp_host", "smtp_port", "smtp_user", "smtp_from", "notify_email_forward_enabled",
+		"smtp_host", "smtp_port", "smtp_user", "smtp_from",
+		"sms_region", "sms_global_access_key", "sms_global_sign_name", "sms_routes",
 		"sms_provider", "sms_endpoint", "sms_access_key", "sms_username",
 		"sms_sign_name", "sms_template_code", "sms_template_content",
 		"captcha_provider", "captcha_geetest_id", "captcha_vaptcha_vid", "captcha_corptcha_site_key",
@@ -61,50 +62,54 @@ func (a *Admin) adminSettings(w http.ResponseWriter, r *http.Request) {
 		manualRequiresPhone = "1"
 	}
 	cfg := map[string]string{
-		"smtp_host":                                 get("smtp_host"),
-		"smtp_port":                                 get("smtp_port"),
-		"smtp_user":                                 get("smtp_user"),
-		"smtp_pass":                                 "", // 不回传明文；多账号列表内的密码同样已掩码
-		"smtp_from":                                 get("smtp_from"),
-		"notify_email_forward_enabled":              get("notify_email_forward_enabled"),
-		"sms_provider":                              get("sms_provider"),
-		"sms_endpoint":                              get("sms_endpoint"),
-		"sms_access_key":                            get("sms_access_key"),
-		"sms_username":                              get("sms_username"),
-		"sms_api_key":                               "",
-		"sms_sign_name":                             get("sms_sign_name"),
-		"sms_template_code":                         get("sms_template_code"),
-		"sms_template_content":                      get("sms_template_content"),
-		"captcha_provider":                          get("captcha_provider"),
-		"captcha_geetest_id":                        get("captcha_geetest_id"),
-		"captcha_vaptcha_vid":                       get("captcha_vaptcha_vid"),
-		"captcha_corptcha_site_key":                 get("captcha_corptcha_site_key"),
-		"verification_provider":                     get("verification_provider"),
-		"verification_endpoint":                     get("verification_endpoint"),
-		"verification_token":                        "",
-		"verification_baidu_api_key":                get("verification_baidu_api_key"),
-		"verification_baidu_plan_id":                get("verification_baidu_plan_id"),
-		"verification_leaf_app_id":                  get("verification_leaf_app_id"),
-		"verification_leaf_api_base":                get("verification_leaf_api_base"),
-		"verification_smapi_api_url":                get("verification_smapi_api_url"),
-		"verification_smapi_product_code":           get("verification_smapi_product_code"),
-		"verification_smapi_app_key":                get("verification_smapi_app_key"),
-		"verification_stay33_api_url":               get("verification_stay33_api_url"),
-		"verification_stay33_api_key":               get("verification_stay33_api_key"),
-		"verification_stay33_biz_code":              get("verification_stay33_biz_code"),
-		"manual_identity_requires_verified_phone":   manualRequiresPhone,
-		"manual_identity_enabled":                   get("manual_identity_enabled"),
-		"registration_email_enabled":                get("registration_email_enabled"),
-		"registration_phone_enabled":                get("registration_phone_enabled"),
-		"registration_email_verification_required":  get("registration_email_verification_required"),
-		"registration_phone_verification_required":  get("registration_phone_verification_required"),
+		"smtp_host":                                get("smtp_host"),
+		"smtp_port":                                get("smtp_port"),
+		"smtp_user":                                get("smtp_user"),
+		"smtp_pass":                                "", // 不回传明文；多账号列表内的密码同样已掩码
+		"smtp_from":                                get("smtp_from"),
+		"sms_region":                               get("sms_region"),
+		"sms_global_access_key":                    get("sms_global_access_key"),
+		"sms_global_sign_name":                     get("sms_global_sign_name"),
+		"sms_global_secret_key":                    "",
+		"sms_secret_key":                           "",
+		"sms_provider":                             get("sms_provider"),
+		"sms_endpoint":                             get("sms_endpoint"),
+		"sms_access_key":                           get("sms_access_key"),
+		"sms_username":                             get("sms_username"),
+		"sms_api_key":                              "",
+		"sms_sign_name":                            get("sms_sign_name"),
+		"sms_template_code":                        get("sms_template_code"),
+		"sms_template_content":                     get("sms_template_content"),
+		"captcha_provider":                         get("captcha_provider"),
+		"captcha_geetest_id":                       get("captcha_geetest_id"),
+		"captcha_vaptcha_vid":                      get("captcha_vaptcha_vid"),
+		"captcha_corptcha_site_key":                get("captcha_corptcha_site_key"),
+		"verification_provider":                    get("verification_provider"),
+		"verification_endpoint":                    get("verification_endpoint"),
+		"verification_token":                       "",
+		"verification_baidu_api_key":               get("verification_baidu_api_key"),
+		"verification_baidu_plan_id":               get("verification_baidu_plan_id"),
+		"verification_leaf_app_id":                 get("verification_leaf_app_id"),
+		"verification_leaf_api_base":               get("verification_leaf_api_base"),
+		"verification_smapi_api_url":               get("verification_smapi_api_url"),
+		"verification_smapi_product_code":          get("verification_smapi_product_code"),
+		"verification_smapi_app_key":               get("verification_smapi_app_key"),
+		"verification_stay33_api_url":              get("verification_stay33_api_url"),
+		"verification_stay33_api_key":              get("verification_stay33_api_key"),
+		"verification_stay33_biz_code":             get("verification_stay33_biz_code"),
+		"manual_identity_requires_verified_phone":  manualRequiresPhone,
+		"manual_identity_enabled":                  get("manual_identity_enabled"),
+		"registration_email_enabled":               get("registration_email_enabled"),
+		"registration_phone_enabled":               get("registration_phone_enabled"),
+		"registration_email_verification_required": get("registration_email_verification_required"),
+		"registration_phone_verification_required": get("registration_phone_verification_required"),
 		// 新键为空时兼容旧键名（registration_show_all_methods）
-		"registration_require_both": fallbackOr("registration_require_both", "registration_show_all_methods", vals),
-		"login_email_enabled":                     get("login_email_enabled"),
-		"login_phone_enabled":                     get("login_phone_enabled"),
-		"login_phone_otp_enabled":                 get("login_phone_otp_enabled"),
-		"profile_change_require_old_email":        defaultOne(get("profile_change_require_old_email")),
-		"profile_change_require_old_phone":        defaultOne(get("profile_change_require_old_phone")),
+		"registration_require_both":                 fallbackOr("registration_require_both", "registration_show_all_methods", vals),
+		"login_email_enabled":                       get("login_email_enabled"),
+		"login_phone_enabled":                       get("login_phone_enabled"),
+		"login_phone_otp_enabled":                   get("login_phone_otp_enabled"),
+		"profile_change_require_old_email":          defaultOne(get("profile_change_require_old_email")),
+		"profile_change_require_old_phone":          defaultOne(get("profile_change_require_old_phone")),
 		"captcha_enabled":                           get("captcha_enabled"),
 		"captcha_register_enabled":                  get("captcha_register_enabled"),
 		"captcha_login_enabled":                     get("captcha_login_enabled"),
@@ -119,6 +124,13 @@ func (a *Admin) adminSettings(w http.ResponseWriter, r *http.Request) {
 		"external_captcha_forgot_code_enabled":      get("external_captcha_forgot_code_enabled"),
 		"external_captcha_profile_code_enabled":     get("external_captcha_profile_code_enabled"),
 		"external_captcha_phone_login_code_enabled": get("external_captcha_phone_login_code_enabled"),
+	}
+	if a.Notifier != nil {
+		if routes, routeErr := a.Notifier.PublicSMSRoutes(r.Context()); routeErr == nil {
+			cfg["sms_routes"] = routes
+		} else {
+			cfg["sms_routes"] = "{}"
+		}
 	}
 	// 多 SMTP 账号列表（回传页面时剔除密码）
 	acctRaw := get(mailAccountsKey)
@@ -240,16 +252,47 @@ func (c *settingsSaveCtx) saveCaptcha() {
 }
 
 func (c *settingsSaveCtx) saveSMS() {
-	c.set("sms_provider", strings.TrimSpace(c.fv("sms_provider")))
-	c.set("sms_access_key", strings.TrimSpace(c.fv("sms_access_key")))
-	c.set("sms_username", strings.TrimSpace(c.fv("sms_username")))
-	c.set("sms_sign_name", strings.TrimSpace(c.fv("sms_sign_name")))
-	c.set("sms_template_code", strings.TrimSpace(c.fv("sms_template_code")))
-	c.set("sms_template_content", strings.TrimSpace(c.fv("sms_template_content")))
-	c.set("sms_endpoint", strings.TrimSpace(c.fv("sms_endpoint")))
-	if secret := strings.TrimSpace(c.fv("sms_secret_key")); secret != "" {
-		c.set("sms_secret_key", secret)
-		c.set("sms_token", secret)
+	if c.a.Notifier == nil {
+		c.setErr = fmt.Errorf("短信服务不可用")
+		return
+	}
+	if routes := strings.TrimSpace(c.fv("sms_routes")); routes != "" {
+		if err := c.a.Notifier.SaveSMSSettings(c.r.Context(), map[string]string{"sms_routes": routes}); err != nil {
+			c.setErr = err
+		}
+		return
+	}
+	values := map[string]string{
+		"sms_provider":         strings.TrimSpace(c.fv("sms_provider")),
+		"sms_access_key":       strings.TrimSpace(c.fv("sms_access_key")),
+		"sms_username":         strings.TrimSpace(c.fv("sms_username")),
+		"sms_sign_name":        strings.TrimSpace(c.fv("sms_sign_name")),
+		"sms_template_code":    strings.TrimSpace(c.fv("sms_template_code")),
+		"sms_template_content": strings.TrimSpace(c.fv("sms_template_content")),
+		"sms_endpoint":         strings.TrimSpace(c.fv("sms_endpoint")),
+		"sms_secret_key":       strings.TrimSpace(c.fv("sms_secret_key")),
+	}
+	for _, key := range []string{"sms_region", "sms_global_access_key", "sms_global_secret_key", "sms_global_sign_name"} {
+		values[key] = strings.TrimSpace(c.fv(key))
+	}
+	input := c.vals
+	if input == nil {
+		input = map[string]string{}
+		for key := range c.r.PostForm {
+			input[key] = c.r.PostForm.Get(key)
+		}
+	}
+	for key := range input {
+		if key == "settings_section" || key == "_csrf" || key == "csrf_token" {
+			continue
+		}
+		if _, ok := values[key]; !ok {
+			c.setErr = fmt.Errorf("短信设置包含未知字段")
+			return
+		}
+	}
+	if err := c.a.Notifier.SaveSMSSettings(c.r.Context(), values); err != nil {
+		c.setErr = err
 	}
 }
 
@@ -442,6 +485,7 @@ func (a *Admin) adminSettingsSave(w http.ResponseWriter, r *http.Request) {
 	if !a.require(w, r) {
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, 256<<10)
 	vals := jsonVals(r)
 	if vals == nil {
 		if err := r.ParseForm(); err != nil {
@@ -459,6 +503,11 @@ func (a *Admin) adminSettingsSave(w http.ResponseWriter, r *http.Request) {
 		c.success()
 	case "sms":
 		c.saveSMS()
+		if c.setErr != nil {
+			c.fail(c.setErr.Error())
+			return
+		}
+		a.recordSMSChange(r, "sms_settings_saved", "sms_settings", 0, "")
 		c.success()
 	case "manual_identity":
 		c.saveManualIdentity()
@@ -473,10 +522,10 @@ func (a *Admin) adminSettingsSave(w http.ResponseWriter, r *http.Request) {
 		}
 	default:
 		// SMTP/邮件服务（含旧版未带 settings_section 的综合表单）。
+		// 业务邮件总开关已移至「邮件模板」页，此处不再写入，避免旧表单把它重置为 0。
 		if !c.saveMailAccounts() {
 			return
 		}
-		c.setFlag("notify_email_forward_enabled")
 		c.success()
 	}
 }
@@ -486,16 +535,22 @@ func (a *Admin) adminTestEmail(w http.ResponseWriter, r *http.Request) {
 	if _, ok := middleware.RequireAdmin(w, r); !ok {
 		return
 	}
-	if err := r.ParseForm(); err != nil {
+	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
+	vals, err := bodyValues(r)
+	if err != nil {
 		writeJSON(w, map[string]any{"ok": false, "msg": "请求解析失败"})
 		return
 	}
-	to := strings.TrimSpace(r.PostFormValue("email"))
+	to := strings.TrimSpace(vals["email"])
 	if to == "" || !strings.Contains(to, "@") {
 		writeJSON(w, map[string]any{"ok": false, "msg": "请输入有效的收件邮箱"})
 		return
 	}
 	n := a.Notifier
+	if n == nil {
+		writeJSON(w, map[string]any{"ok": false, "msg": "邮件服务暂不可用"})
+		return
+	}
 	siteName := n.SiteName(r.Context())
 	if siteName == "" {
 		siteName = service.DefaultSiteName
@@ -503,7 +558,7 @@ func (a *Admin) adminTestEmail(w http.ResponseWriter, r *http.Request) {
 	subject := siteName + " 邮件发送测试"
 	body := "这是一封来自 " + siteName + " 的测试邮件，收到即表示 SMTP 配置生效。\r\n发送时间：" + time.Now().Format("2006-01-02 15:04:05")
 	idx := -1
-	if v := strings.TrimSpace(r.PostFormValue("account_index")); v != "" {
+	if v := strings.TrimSpace(vals["account_index"]); v != "" {
 		if p, e := strconv.Atoi(v); e == nil && p >= 0 {
 			idx = p
 		} else {
@@ -511,14 +566,16 @@ func (a *Admin) adminTestEmail(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	var err error
+	if !a.allowEmailTest(w, r) {
+		return
+	}
 	if idx >= 0 {
 		err = n.SendTestMailAccount(r.Context(), idx, to, subject, body)
 	} else {
 		err = n.SendTestMail(r.Context(), to, subject, body)
 	}
 	if err != nil {
-		writeJSON(w, map[string]any{"ok": false, "msg": "发送失败：" + err.Error()})
+		writeJSON(w, map[string]any{"ok": false, "msg": "发送失败，请检查收件邮箱及邮件通道配置后重试"})
 		return
 	}
 	if idx >= 0 {

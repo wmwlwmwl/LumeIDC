@@ -103,7 +103,7 @@ func (j *Jobs) notifyStaleTickets(ctx context.Context) {
 	var notifiedIDs []int64
 	for _, it := range tickets {
 		body := "你的工单「" + it.subject + "」仍在处理中，客服会尽快跟进。"
-		if err := j.Notifier.Notify(ctx, it.userID, title, body); err != nil {
+		if err := j.Notifier.NotifyTemplate(ctx, it.userID, "ticket_timeout", title, body, map[string]string{"subject": it.subject}); err != nil {
 			continue
 		}
 		notifiedIDs = append(notifiedIDs, it.id)
@@ -297,7 +297,7 @@ func (j *Jobs) notifyExpiringSoon(ctx context.Context) {
 	var warnedIDs []int64
 	for _, it := range items {
 		body := fmt.Sprintf("您的服务将于 %s 到期，请及时续费以免停机。", it.exp.Format("2006-01-02 15:04"))
-		if err := j.Notifier.Notify(ctx, it.uid, "服务即将到期", body); err != nil {
+		if err := j.Notifier.NotifyTemplate(ctx, it.uid, "service_expiring", "服务即将到期", body, map[string]string{"service_id": fmt.Sprint(it.id), "expires_at": it.exp.Format("2006-01-02 15:04")}); err != nil {
 			continue
 		}
 		warnedIDs = append(warnedIDs, it.id)

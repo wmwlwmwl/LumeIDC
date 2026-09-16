@@ -263,7 +263,7 @@ func (p *Payment) MarkPaidByBalance(ctx context.Context, invoiceNo string, userI
 		} else if !newService {
 			msg = "账单 " + invoiceNo + " 已通过余额支付，服务已续费。"
 		}
-		p.Notifier.Notify(ctx, userID, "支付成功", msg)
+		p.Notifier.NotifyTemplate(ctx, userID, "payment_success", "支付成功", msg, map[string]string{"amount": amountStr, "invoice_no": invoiceNo})
 	}
 	if p.Jobs == nil {
 		switch {
@@ -637,7 +637,7 @@ func (p *Payment) MarkPaid(ctx context.Context, invoiceNo, tradeNo, gatewayCode 
 			return err
 		}
 		if p.Notifier != nil {
-			p.Notifier.Notify(ctx, userID, "充值成功", "余额已充值 "+amount+" 元。")
+			p.Notifier.NotifyTemplate(ctx, userID, "recharge_success", "充值成功", "余额已充值 "+amount+" 元。", map[string]string{"amount": amount, "invoice_no": invoiceNo})
 		}
 		return nil
 	}
@@ -659,7 +659,7 @@ func (p *Payment) MarkPaid(ctx context.Context, invoiceNo, tradeNo, gatewayCode 
 		} else if res.kind == "renew" {
 			msg = "账单 " + invoiceNo + " 已支付，服务已续费。"
 		}
-		p.Notifier.Notify(ctx, userID, "支付成功", msg)
+		p.Notifier.NotifyTemplate(ctx, userID, "payment_success", "支付成功", msg, map[string]string{"amount": paidAmount, "invoice_no": invoiceNo})
 	}
 	if p.Jobs == nil {
 		switch res.kind {
@@ -1197,11 +1197,19 @@ func (p *Payment) Refund(ctx context.Context, adminID, orderID int64, amount, re
 	}
 	if serviceID > 0 {
 		var locked bool
-		if err := tx.QueryRowContext(ctx, `SELECT pg_try_advisory_xact_lock(hashtextextended($1,0))`, repo.FulfillmentLockKey(serviceID)).Scan(&locked); err != nil { return err }
-		if !locked { return repo.ErrFulfillmentBusy }
+		if err := tx.QueryRowContext(ctx, `SELECT pg_try_advisory_xact_lock(hashtextextended($1,0))`, repo.FulfillmentLockKey(serviceID)).Scan(&locked); err != nil {
+			return err
+		}
+		if !locked {
+			return repo.ErrFulfillmentBusy
+		}
 		var blocked bool
-		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM fulfillment_jobs WHERE service_id=$1 AND (recovery_required OR status='running'))`, serviceID).Scan(&blocked); err != nil { return err }
-		if blocked { return repo.ErrFulfillmentRecoveryRequired }
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM fulfillment_jobs WHERE service_id=$1 AND (recovery_required OR status='running'))`, serviceID).Scan(&blocked); err != nil {
+			return err
+		}
+		if blocked {
+			return repo.ErrFulfillmentRecoveryRequired
+		}
 	}
 	var userID int64
 	var orderAmount string

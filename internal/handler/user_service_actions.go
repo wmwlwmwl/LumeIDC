@@ -209,7 +209,7 @@ func (h *Pages) serviceCancelRequestSubmit(w http.ResponseWriter, r *http.Reques
 	}
 	h.Svc.AppendLog(r.Context(), serviceID, userID, "申请停用", typeText+"："+reason)
 	if h.Notifier != nil {
-		h.Notifier.Notify(r.Context(), userID, "停用申请已提交",
+		h.Notifier.NotifyTemplate(r.Context(), userID, "cancel_submitted", "停用申请已提交",
 			"你的服务停用申请已提交（"+typeText+"），我们将尽快处理。\n原因："+reason+
 				func() string {
 					if detail != "" {

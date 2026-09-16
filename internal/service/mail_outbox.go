@@ -79,6 +79,7 @@ type mailJob struct {
 	id, version       int64
 	attempts          int
 	to, subject, body string
+	format            string
 }
 
 // claimMail 单条语句领取，过期 running 同样参与；版本令牌阻止旧发送者覆盖新租约。
@@ -93,8 +94,8 @@ func (n *Notifier) claimMail(ctx context.Context) (mailJob, error) {
 	) UPDATE mail_outbox m SET state='running',lease_until=now()+$1::interval,
 		version=m.version+1,attempts=LEAST(m.attempts+1,30)
 	FROM candidate c WHERE m.id=c.id
-	RETURNING m.id,m.version,m.attempts,m.recipient,m.subject,m.body`, mailLease.String()).Scan(
-		&job.id, &job.version, &job.attempts, &job.to, &job.subject, &job.body)
+	RETURNING m.id,m.version,m.attempts,m.recipient,m.subject,m.body,m.format`, mailLease.String()).Scan(
+		&job.id, &job.version, &job.attempts, &job.to, &job.subject, &job.body, &job.format)
 	return job, err
 }
 
@@ -133,7 +134,7 @@ func (n *Notifier) mailWorker() {
 		if err == nil {
 			// 合并唤醒仍允许另一个空闲 worker 参与，不为每封邮件建立 goroutine。
 			n.wakeMail()
-			sendErr := n.SendMail(n.mailCtx, job.to, job.subject, job.body)
+			sendErr := n.sendMailFormat(n.mailCtx, job.to, job.subject, job.body, job.format)
 			// 停机也尝试短时写回；失败则保留 running 等租约回收。
 			if err := n.finishMail(context.Background(), job, sendErr == nil); err != nil {
 				log.Printf("邮件队列写回失败，任务编号=%d，将在租约到期后重试", job.id)

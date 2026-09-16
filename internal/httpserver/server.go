@@ -53,6 +53,9 @@ func (a *App) Shutdown(ctx context.Context) {
 	if a.Cron != nil {
 		cronDone = a.Cron.Stop()
 	}
+	if err := a.Notifier.StopSMS(ctx); err != nil {
+		log.Print("等待短信服务停止超时，未确认任务不会自动重发")
+	}
 	if err := a.Notifier.StopMail(ctx); err != nil {
 		log.Print("等待邮件服务停止超时，未完成任务将由租约回收")
 	}
@@ -210,7 +213,7 @@ func Build(cfg *config.Config, version string) (*App, error) {
 	// 通知/实名服务：Notifier 先建，供身份/验证码/Auth 共享。
 	notifier := service.NewNotifier(database, settingsRepo)
 	identity := service.NewIdentity(identityStore, users, piiCryptor, identityFiles,
-		service.NewConfiguredSMSProvider(settingsRepo), identityKey, notifier, settingsRepo, cfg.BaseURL,
+		notifier, identityKey, notifier, settingsRepo, cfg.BaseURL,
 		service.NewConfiguredVerificationProvider(settingsRepo, ""))
 	localCaptcha := captcha.New(database, settingsRepo, []byte(cfg.SecretKey))
 
@@ -234,7 +237,7 @@ func Build(cfg *config.Config, version string) (*App, error) {
 			orderQueriers[driver] = querier
 		}
 	}
-	challenges := &service.AuthChallengeService{Store: authChallenges, SMS: identity.OTP, EmailSend: notifier.SendMail, SiteName: notifier.SiteName, Key: []byte(cfg.SecretKey)}
+	challenges := &service.AuthChallengeService{Store: authChallenges, SMS: identity.OTP, EmailCodeSend: notifier.SendEmailCode, SiteName: notifier.SiteName, Key: []byte(cfg.SecretKey)}
 	auth := &handler.Auth{
 		Users:        users,
 		Sessions:     store,
@@ -348,6 +351,7 @@ func Build(cfg *config.Config, version string) (*App, error) {
 		Gateways: gatewaysRepo, Payment: paymentSvc,
 		OrderQueriers: orderQueriers}
 	notifier.StartMail()
+	notifier.StartSMS()
 	cronRef := cronJobs.Start()
 	app := &App{
 		Server: &http.Server{

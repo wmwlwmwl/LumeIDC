@@ -16,8 +16,10 @@ export function useAdminSettings() {
     try {
       const data = await fetchAdminSettings()
       for (const k of Object.keys(data)) cfg[k] = data[k]
+      return true
     } catch (err: unknown) {
       ElMessage.error((err as Error).message || '读取设置失败')
+      return false
     } finally {
       loading.value = false
     }
@@ -36,6 +38,7 @@ export function useAdminSettings() {
   }
 
   async function save(section: string, body: Record<string, string>, key = section) {
+    if (saving.value) return false
     saving.value = key
     try {
       const res = await saveAdminSettings(section, body)
@@ -43,12 +46,14 @@ export function useAdminSettings() {
       const ok = res.ok === true || String(res.ok) === '1'
       if (!ok) {
         ElMessage.error(res.msg || '保存失败')
-        return
+        return false
       }
       ElMessage.success('已保存')
       // 不做全量重拉：load() 会覆盖其它分区尚未保存的表单改动（如通知页同时编辑邮件与短信）
+      return true
     } catch (err: unknown) {
       ElMessage.error((err as Error).message || '保存失败')
+      return false
     } finally {
       saving.value = ''
     }

@@ -39,6 +39,8 @@ export const adminPageRoutes: RouteRecordRaw[] = [
   { path: 'site', name: 'admin-site', component: () => import('@views/AdminSite.vue'), meta: { title: '站点设置', icon: 'ri:global-line' } },
   { path: 'settings', redirect: { name: 'admin-notify-settings' } },
   { path: 'settings/notify', name: 'admin-notify-settings', component: () => import('@views/AdminNotifySettings.vue'), meta: { title: '通知设置', icon: 'ri:mail-send-line' } },
+  { path: 'email-templates', name: 'admin-email-templates', component: () => import('@views/AdminEmailTemplates.vue'), meta: { title: '邮件模板', icon: 'ri:mail-send-line' } },
+  { path: 'sms-templates', name: 'admin-sms-templates', component: () => import('@views/AdminSMSTemplates.vue'), meta: { title: '短信模板', icon: 'ri:message-2-line' } },
   { path: 'settings/auth', name: 'admin-auth-settings', component: () => import('@views/AdminAuthSettings.vue'), meta: { title: '登录与验证', icon: 'ri:shield-keyhole-line' } },
   { path: 'settings/identity', name: 'admin-identity-settings', component: () => import('@views/AdminIdentitySettings.vue'), meta: { title: '实名认证', icon: 'ri:id-card-line' } },
   { path: 'logs', name: 'admin-logs', component: () => import('@views/AdminLogs.vue'), meta: { title: '审计日志', icon: 'ri:file-text-line' } },
@@ -106,6 +108,8 @@ export const adminMenu: AppRouteRecord[] = [
     children: [
       leaf('/site', 'admin-site', '站点设置', 'ri:global-line'),
       leaf('/settings/notify', 'admin-notify-settings', '通知设置', 'ri:mail-send-line'),
+      leaf('/email-templates', 'admin-email-templates', '邮件模板', 'ri:mail-send-line'),
+      leaf('/sms-templates', 'admin-sms-templates', '短信模板', 'ri:message-2-line'),
       leaf('/settings/auth', 'admin-auth-settings', '登录与验证', 'ri:shield-keyhole-line'),
       leaf('/settings/identity', 'admin-identity-settings', '实名认证', 'ri:id-card-line'),
     ],

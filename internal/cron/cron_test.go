@@ -53,7 +53,7 @@ func TestReminderMarksOnlyAfterEnqueue(t *testing.T) {
 	INSERT INTO settings VALUES('notify_email_forward_enabled','1');
 	INSERT INTO tickets VALUES(1,1,'工单','open',now()-interval '2 days',NULL);
 	INSERT INTO services VALUES(1,1,1,now()+interval '1 day',false)`)
-	for _, name := range []string{"020_notifications.sql", "045_notifications_enhance.sql", "060_mail_outbox.sql"} {
+	for _, name := range []string{"020_notifications.sql", "045_notifications_enhance.sql", "060_mail_outbox.sql", "064_email_templates.sql"} {
 		b, err := fs.ReadFile(db.Migrations(), "migrations/"+name)
 		if err != nil {
 			t.Fatal(err)

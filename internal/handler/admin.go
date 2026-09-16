@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"lumeidc/internal/captcha"
@@ -30,6 +31,7 @@ type Admin struct {
 	AdminLog      *repo.AdminLog
 	Stats         *repo.Stats
 	Notifier      *service.Notifier
+	emailTestMu   sync.Mutex
 	Updater       *update.Client // 系统在线更新（nil 时页面提示未启用）
 	// ListenSwitcher 热切换监听端口（后台站点设置调用；nil 时仅保存不切换）。
 	ListenSwitcher func(addr string) error
@@ -67,6 +69,22 @@ func (a *Admin) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /admin/settings", a.adminSettings)
 	mux.HandleFunc("POST /admin/settings", a.adminSettingsSave)
 	mux.HandleFunc("POST /admin/settings/test-email", a.adminTestEmail)
+	mux.HandleFunc("GET /admin/email-templates", a.adminEmailTemplates)
+	mux.HandleFunc("POST /admin/email-templates/master", a.adminEmailTemplateMaster)
+	mux.HandleFunc("POST /admin/email-templates/save", a.adminEmailTemplateSave)
+	mux.HandleFunc("POST /admin/email-templates/reset", a.adminEmailTemplateReset)
+	mux.HandleFunc("POST /admin/email-templates/preview", a.adminEmailTemplatePreview)
+	mux.HandleFunc("POST /admin/email-templates/test", a.adminEmailTemplateTest)
+	mux.HandleFunc("GET /admin/sms-providers", a.adminSMSProviders)
+	mux.HandleFunc("POST /admin/sms-templates/remote", a.adminSMSTemplateRemote)
+	mux.HandleFunc("GET /admin/sms-templates", a.adminSMSTemplates)
+	mux.HandleFunc("POST /admin/sms-templates/save", a.adminSMSTemplateSave)
+	mux.HandleFunc("POST /admin/sms-templates/delete", a.adminSMSTemplateDelete)
+	mux.HandleFunc("POST /admin/sms-templates/preview", a.adminSMSTemplatePreview)
+	mux.HandleFunc("POST /admin/sms-templates/unlock", a.adminSMSTemplateUnlock)
+	mux.HandleFunc("GET /admin/sms-scenes", a.adminSMSScenes)
+	mux.HandleFunc("POST /admin/sms-scenes/save", a.adminSMSBindingSave)
+	mux.HandleFunc("GET /admin/sms-deliveries", a.adminSMSDeliveries)
 	mux.HandleFunc("GET /admin/site", a.adminSite)
 	mux.HandleFunc("POST /admin/site", a.adminSiteSave)
 	mux.HandleFunc("GET /admin/totp", a.totpSetup)

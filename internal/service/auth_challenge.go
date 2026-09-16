@@ -17,9 +17,10 @@ import (
 
 // AuthChallengeService provides rate-limited, one-time email/phone OTP challenges.
 type AuthChallengeService struct {
-	Store     *repo.AuthChallenges
-	SMS       PhoneOTPProvider
-	EmailSend func(context.Context, string, string, string) error
+	Store         *repo.AuthChallenges
+	SMS           PhoneOTPProvider
+	EmailSend     func(context.Context, string, string, string) error
+	EmailCodeSend func(context.Context, string, string) error
 	// SiteName 返回站点名称，用于验证码邮件主题与正文签名（如「站点名 验证码」）；nil 时回退 LumeIDC。
 	SiteName func(context.Context) string
 	Key      []byte
@@ -68,7 +69,14 @@ func (s *AuthChallengeService) Issue(ctx context.Context, channel, purpose, dest
 			_ = s.Store.Invalidate(ctx, id, time.Now())
 			return errors.New("短信服务未配置")
 		}
-		if err := s.SMS.Send(ctx, normalized, code); err != nil {
+		if err := s.SMS.SendPurpose(ctx, normalized, code, purpose); err != nil {
+			_ = s.Store.Invalidate(ctx, id, time.Now())
+			return errors.New("验证码发送失败，请稍后重试")
+		}
+		return nil
+	}
+	if s.EmailCodeSend != nil {
+		if err := s.EmailCodeSend(ctx, normalized, code); err != nil {
 			_ = s.Store.Invalidate(ctx, id, time.Now())
 			return errors.New("验证码发送失败，请稍后重试")
 		}
