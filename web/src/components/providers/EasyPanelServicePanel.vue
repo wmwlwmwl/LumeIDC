@@ -104,7 +104,7 @@ async function resetPassword() {
                 <el-button v-if="password" size="small" text @click="copy">复制</el-button>
               </b>
             </div>
-            <div v-if="data.host.panel_url" class="easypanel-info-row">
+            <div v-if="data.host.panel_url" class="easypanel-info-row easypanel-info-row--wide">
               <span>面板地址</span>
               <b class="easypanel-info-cell easypanel-info-cell--wide">
                 <a
@@ -371,8 +371,7 @@ async function resetPassword() {
   white-space: nowrap;
   min-width: 0;
 }
-/* 面板地址行独占整行：无复制按钮后放开 65% 上限，地址能多显示一截。
-   仍保留单行省略号，完整地址看 title 提示或右键复制链接地址。 */
+/* 面板地址行独占整行：无复制按钮后放开 65% 上限，地址能多显示一截。 */
 .easypanel-info-row .easypanel-info-cell--wide {
   max-width: 100%;
 }
@@ -382,5 +381,30 @@ async function resetPassword() {
 }
 .easypanel-info-cell__link:hover {
   text-decoration: underline;
+}
+/* 面板地址不截断：放得下就是一行，放不下就换行完整显示。
+   截断后只剩域名前缀，用户根本认不出是哪个面板；触屏又没有 hover，title 提示也出不来。
+   不按视口宽做断点——真正的约束是「格子里有多少可用宽」：
+   phone 档 ~218px、laptop 档只有 ~204px，都会截断，而 1024px 视口并不会命中窄屏断点。
+   overflow-wrap: anywhere 必须有：URL 没有空格，默认不会断行，会直接溢出。
+   注意这条得写在上面 .easypanel-info-cell__link 的 nowrap 规则之后才压得住。 */
+.easypanel-info-cell--wide .easypanel-info-cell__link {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+/* 值占两行时让标签跟首行对齐，而不是浮在两行中间。
+   这一行必须同时退出拉伸（flex: 0 0 auto）：行高由内容决定时 flex-start 才等价于居中，
+   否则桌面档那行会被拉到 63px（内容只占 19px），标签被顶到行顶、比相邻行高出 12px。
+   让出的高度照旧由上面两行（flex: 1 1 auto）继续摊平，不会堆到页脚上方。
+   选择器带 .easypanel-info-list 前缀：上面 `.easypanel-info-list > div`（0,1,1）
+   的 align-items 优先级高于单个类（0,1,0），不这样写压不过去。 */
+.easypanel-info-list > .easypanel-info-row--wide {
+  flex: 0 0 auto;
+  align-items: flex-start;
+}
+.easypanel-info-row--wide > span {
+  line-height: 1.5;
 }
 </style>
