@@ -438,20 +438,37 @@ func (c *Console) UpgradeTargets(ctx context.Context, userID, serviceID int64) [
 	if err != nil {
 		return nil
 	}
-	var curPID, curServerID int64
+	// curProductID 本地产品 ID；curPID 上游商品 PID。二者不可混用——
+	// 旧实现用 upstream_pid 去排除「当前产品自己」，而 EP 等本地定价产品的 upstream_pid=0，
+	// 导致 p.id<>0 恒真、当前产品也会出现在可升级列表里。
+	var curPID, curServerID, curProductID int64
 	if err := c.db.QueryRowContext(ctx,
-		`SELECT p.upstream_pid, coalesce(sv.server_id,p.server_id) FROM services sv JOIN products p ON p.id=sv.product_id WHERE sv.id=$1`,
-		serviceID).Scan(&curPID, &curServerID); err != nil {
+		`SELECT p.upstream_pid, coalesce(sv.server_id,p.server_id), sv.product_id
+		 FROM services sv JOIN products p ON p.id=sv.product_id WHERE sv.id=$1`,
+		serviceID).Scan(&curPID, &curServerID, &curProductID); err != nil {
 		return nil
 	}
-	if up, ok := prov.(server.UpgradeTargetProvider); ok {
-		return c.upstreamTargets(ctx, cfg, hostID, curPID, curServerID, up)
+	// 白名单：启用后只允许升级到白名单内产品；空白名单即隐藏入口。
+	// 未启用（默认）时 allowed 为 nil，表示不过滤，维持旧行为。
+	var allowed map[int64]bool
+	if c.Products != nil {
+		if on, err := c.Products.UpgradeWhitelistEnabled(ctx, curProductID); err == nil && on {
+			ids, err := c.Products.UpgradeTargetIDs(ctx, curProductID)
+			if err != nil || len(ids) == 0 {
+				return nil
+			}
+			allowed = ids
+		}
 	}
-	return c.sameServerTargets(ctx, curPID, curServerID)
+	if up, ok := prov.(server.UpgradeTargetProvider); ok {
+		return c.upstreamTargets(ctx, cfg, hostID, curPID, curServerID, up, allowed)
+	}
+	return c.sameServerTargets(ctx, curProductID, curServerID, allowed)
 }
 
 // upstreamTargets 上游探测目标 → 本地产品映射。上游返回空即为空，不回退。
-func (c *Console) upstreamTargets(ctx context.Context, cfg server.Config, hostID, curPID, curServerID int64, up server.UpgradeTargetProvider) []UpgradeTargetView {
+// allowed 非 nil 时取「上游白名单 ∩ 本地白名单」。
+func (c *Console) upstreamTargets(ctx context.Context, cfg server.Config, hostID, curPID, curServerID int64, up server.UpgradeTargetProvider, allowed map[int64]bool) []UpgradeTargetView {
 	upstream, _ := up.UpgradeTargets(ctx, cfg, hostID) // best-effort：失败/无能力均视为无目标
 	var out []UpgradeTargetView
 	for _, t := range upstream {
@@ -462,16 +479,21 @@ func (c *Console) upstreamTargets(ctx context.Context, cfg server.Config, hostID
 		if ferr != nil || pid <= 0 {
 			continue // 本地未上架对应上游商品，跳过
 		}
+		if allowed != nil && !allowed[pid] {
+			continue
+		}
 		out = append(out, UpgradeTargetView{ProductID: pid, UpstreamPID: t.UpstreamPID, Name: t.Name})
 	}
 	return out
 }
 
 // sameServerTargets 上游未实现升级能力时回退：同服务器的其它本地产品（本地升降级）。
-func (c *Console) sameServerTargets(ctx context.Context, curPID, curServerID int64) []UpgradeTargetView {
+// 排除：当前产品自己、已隐藏、上游已下架；allowed 非 nil 时还需在白名单内。
+func (c *Console) sameServerTargets(ctx context.Context, curProductID, curServerID int64, allowed map[int64]bool) []UpgradeTargetView {
 	rows, err := c.db.QueryContext(ctx,
 		`SELECT p.id, coalesce(p.upstream_pid,0), p.name FROM products p
-		 WHERE p.server_id=$1 AND p.hidden=false AND p.id<>$2 ORDER BY p.id`, curServerID, curPID)
+		 WHERE p.server_id=$1 AND p.hidden=false AND coalesce(p.upstream_offline_reason,'')=''
+		   AND p.id<>$2 ORDER BY p.id`, curServerID, curProductID)
 	if err != nil {
 		return nil
 	}
@@ -480,6 +502,9 @@ func (c *Console) sameServerTargets(ctx context.Context, curPID, curServerID int
 	for rows.Next() {
 		var v UpgradeTargetView
 		if rows.Scan(&v.ProductID, &v.UpstreamPID, &v.Name) == nil {
+			if allowed != nil && !allowed[v.ProductID] {
+				continue
+			}
 			out = append(out, v)
 		}
 	}

@@ -259,6 +259,25 @@ func (p Provider) Terminate(ctx context.Context, cfg server.Config, upstreamHost
 	return p.Suspend(ctx, cfg, upstreamHostID)
 }
 
+// hostGonePhrases 上游表达「该实例已不存在」的常见措辞。
+// 实测（2026-09-17，ccyidc 上游）：对已释放/不存在的 host_id，魔方财务回
+// HTTP 200 + {"status":406,"msg":"未找到该产品"}——不给 domainstatus，只给业务错误码 + 中文 msg，
+// 与账单失效同一套路（见 upstreamInvoiceUnusable）。因此这里必须靠文案判定。
+// 只匹配资源缺失类措辞，绝不匹配 token/权限/参数类——否则鉴权异常会被误判成实例已删，
+// 进而批量误删本地服务（同步侧另有按服务器的批量护栏兜底）。
+var hostGonePhrases = []string{"不存在", "未找到", "已删除", "已被删除", "无此", "not found", "no such host"}
+
+// isHostGoneMsg 判断上游业务错误文案是否为「实例不存在」。
+func isHostGoneMsg(msg string) bool {
+	low := strings.ToLower(msg)
+	for _, p := range hostGonePhrases {
+		if strings.Contains(low, p) {
+			return true
+		}
+	}
+	return false
+}
+
 func (p Provider) Status(ctx context.Context, cfg server.Config, upstreamHostID int64) (server.ServiceStatus, error) {
 	var out struct {
 		Data struct {
@@ -272,6 +291,16 @@ func (p Provider) Status(ctx context.Context, cfg server.Config, upstreamHostID 
 	}
 	if err := getJSON(ctx, cfg,
 		"/host/header?host_id="+strconv.FormatInt(upstreamHostID, 10)+"&source=API", &out); err != nil {
+		// 只有业务错误（上游明确答复）才可能是"实例已不存在"；
+		// 网络/超时/HTTP/鉴权失败原样上抛，由同步侧区分为"我方故障"，不计缺失分。
+		if isBizError(err) {
+			if isHostGoneMsg(err.Error()) {
+				// 上游已释放：返回 terminated 走既有映射，本地随即置 status=3，不再挂幽灵服务。
+				return server.ServiceStatus{Status: "terminated"}, nil
+			}
+			// 业务错误但措辞未识别：标记为"实例不可见"，由同步侧累计次数兜底判定。
+			return server.ServiceStatus{}, fmt.Errorf("%w: %s", server.ErrHostMissing, err.Error())
+		}
 		return server.ServiceStatus{}, err
 	}
 	st := out.Data.HostData.DomainStatus

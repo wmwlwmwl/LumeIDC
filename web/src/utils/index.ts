@@ -26,3 +26,6 @@ export * from './form'
 
 // 格式化相关
 export * from './format'
+
+// 剪贴板相关
+export * from './clipboard'

@@ -98,7 +98,8 @@ const totals = computed(() => {
   return { total: grand, lines: lines.map((l) => ({ ...l, price: pRate ? l.price * (1 + pRate) : l.price })) }
 })
 
-// 差价 = 新套餐月价 - 当前月价（后端按实际周期与差额核算，这里仅作展示预估）
+// 差价预估：后端按「剩余天数 × 两侧周期日价之差」核算（proration），
+// 这里用月价差做粗略展示，仅供参考，实际金额以生成的订单为准。
 const diff = computed(() => totals.value.total - Number(form.value?.current_monthly || 0))
 const isSame = computed(() => Math.abs(diff.value) < 0.005)
 
@@ -164,8 +165,8 @@ async function submit() {
   const message = isSame.value
     ? '套餐价格无变化，确认提交变更？'
     : up
-      ? `升级需补差价 ￥${formatMoney(diff.value)}，确认下单？`
-      : `降级将退回差价 ￥${formatMoney(Math.abs(diff.value))} 至余额，确认继续？`
+      ? `升级需补差价 ￥${formatMoney(diff.value)}（按剩余天数折算，以订单金额为准），确认下单？`
+      : `降级不退还差价，确认继续？`
   const ok = await ElMessageBox.confirm(message, title, {
     type: 'warning',
     confirmButtonText: '确认',
@@ -300,12 +301,13 @@ async function submit() {
               <div><span>目标月价</span><em></em><b>￥{{ formatMoney(totals.total) }}</b></div>
             </div>
             <div class="su-summary__diff" :class="isSame ? 'is-same' : diff > 0 ? 'is-up' : 'is-down'">
-              <span>{{ isSame ? '价格无变化' : diff > 0 ? '需补差价' : '退回差价' }}</span>
+              <span>{{ isSame ? '价格无变化' : diff > 0 ? '需补差价' : '差价不退' }}</span>
               <div v-if="!isSame">
                 <strong>￥{{ formatMoney(Math.abs(diff)) }}</strong>
                 <small>{{ diff > 0 ? '升级' : '降级' }}</small>
               </div>
             </div>
+            <p class="su-hint">实际差价按剩余天数折算，以订单金额为准；降级不退还差价。</p>
             <el-button type="primary" size="large" class="su-submit" :loading="submitting" @click="submit">
               {{ isSame ? '确认变更' : diff > 0 ? '确认升级' : '确认降级' }} <el-icon><ArrowRight /></el-icon>
             </el-button>

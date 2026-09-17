@@ -4,6 +4,7 @@ import { ref, reactive, computed, onMounted, h } from 'vue'
 import { ElMessage, ElMessageBox, ElTag, ElButton } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
 import type { ColumnOption } from '@/types'
+import { copyText } from '@/utils/clipboard'
 import ArtButtonTable from '../components/core/forms/art-button-table/index.vue'
 import { fetchAdminGateways, saveAdminGateway, deleteAdminGateway, type AdminGateway } from '../admin/api'
 
@@ -304,11 +305,9 @@ async function del(row: AdminGateway) {
 
 // 上游网关侧配置的异步通知地址（旧 SSR 页同款提示，点击复制）
 const CALLBACK_HINT = '/pay/notify?code=网关编码'
-function copyCallback() {
-  void navigator.clipboard
-    ?.writeText(CALLBACK_HINT)
-    .then(() => ElMessage.success('回调地址已复制'))
-    .catch(() => ElMessage.error('复制失败，请手动复制'))
+async function copyCallback() {
+  if (await copyText(CALLBACK_HINT)) ElMessage.success('回调地址已复制')
+  else ElMessage.error('复制失败，请手动复制')
 }
 </script>
 

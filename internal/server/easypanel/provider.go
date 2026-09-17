@@ -289,7 +289,13 @@ func (p Provider) HostOverview(ctx context.Context, cfg server.Config, upstreamH
 		Username: strField(vh, "name"),
 		Status:   "运行中",
 		OSName:   strField(vh, "module"), // php / iis
-		PanelURL: c.base + "/vhost/index.php?c=session&a=login",
+		// 展示用：不带参数时 EP 自己会跳到 ?c=session&a=loginForm（登录表单页）。
+		PanelURL: c.base + "/vhost/index.php",
+		// 自动登录用：a=login 才是"处理登录提交"的入口。
+		// 2026-09-18 实测：GET 访问 /vhost/index.php 返回
+		// window.top.location.href="?c=session&a=loginForm"，证实 loginForm 为表单页、
+		// login 为提交入口；两者混用会让用户点展示链接时直接收到"账号密码错误"。
+		PanelLoginURL: c.base + "/vhost/index.php?c=session&a=login",
 	}
 	d.WebQuota = humanQuota(numField(vh, "web_quota"))
 	d.DBQuota = humanQuota(numField(vh, "db_quota"))

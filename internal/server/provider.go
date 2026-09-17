@@ -47,6 +47,15 @@ func IsRetryLater(err error) bool {
 	return errors.As(err, &rle)
 }
 
+// ErrHostMissing 上游明确回了业务错误、但原因不明（典型：该实例已被上游删除/释放）。
+// 它与网络不通、超时、鉴权失败严格区分：后者是"我方或链路故障"，不能据此推断资源已消失。
+// Provider 用 %w 包装本错误后，SyncUpstreamStatus 才把它计入 upstream_miss_count；
+// 未包装的错误一律只记日志、不计分，避免上游抖动误判成资源消失。
+var ErrHostMissing = errors.New("upstream host missing")
+
+// IsHostMissing 检查错误是否为"上游该实例不可见"（Provider 已用 %w 包装 ErrHostMissing）。
+func IsHostMissing(err error) bool { return errors.Is(err, ErrHostMissing) }
+
 // PriceTolerance 上游账单与本地金额的容差（人民币分）：口径差异在 2 分内视为一致。
 // 开通前比价、续费前比价、升级差价核对共用。
 // ponytail: 一期按人民币分固定 0.02；多币种二期再按汇率/比例。
@@ -178,9 +187,13 @@ type UpgradeTargetProvider interface {
 // UpgradeRequest 上游升降级请求（host 维度换商品）。
 type UpgradeRequest struct {
 	OrderID    int64   // 本地升级订单号：拼账单检查点键（同一服务可能多次升级，不能只看服务）
-	TargetPID  int64   // 上游目标商品 id
+	TargetPID  int64   // 上游目标商品 id；弹性模式（PIDOptional）可为 0，改由 ConfigOpts 描述配置
 	Cycle      string  // monthly/quarterly/yearly
-	DiffAmount float64 // 本地差价（目标月售价 − 当前月售价），供上游账单核对
+	DiffAmount float64 // 本地差价（目标周期售价折算后的差额），供上游账单核对
+	// ConfigOpts 目标配置选择（如 web_quota/db_quota/flow_limit）。
+	// 供弹性模式上游（EasyPanel）据此变更实例配额——这类上游没有"商品"概念，
+	// 升级的实际含义是把这些配额参数改掉。
+	ConfigOpts map[string]string
 }
 
 // HostUpgradeProvider 可选：上游 host 升降级执行能力（换商品）。
@@ -280,9 +293,14 @@ type HostDetail struct {
 	Status    string // 实例状态（实时，如 运行中/硬重启中）
 	OSName    string // 系统名称，如 Ubuntu
 	OSVersion string // 系统版本，如 Ubuntu-20.04.1-x64
-	// PanelURL 主机面板登录地址（如 EasyPanel 用户面板）。非空时详情页显示"登录主机面板"，
-	// POST username+passwd 自动登录；Password 为空时由调用方用 password_crypt 解密填充。
+	// PanelURL 主机面板地址，**仅用于展示**（详情页给用户看、可点开手动登录）。
+	// Password 为空时由调用方用 password_crypt 解密填充。
 	PanelURL string
+	// PanelLoginURL 自动登录的**表单提交地址**（POST username+passwd）。
+	// 与 PanelURL 必须分开：EasyPanel 的 a=login 是"处理登录提交"，a=loginForm 才是
+	// "显示登录表单"。用同一个地址会导致用户点开展示链接（GET）时被当成一次空凭证
+	// 登录提交，直接报"账号密码错误"。为空时前端回退用 PanelURL。
+	PanelLoginURL string
 	// 以下字段取自 /host/header 的 host_data / config_options，详情页「实例信息」面板展示用。
 	AdditionalIPs []string // 附加 IP
 	BWLimit       string   // 带宽限额

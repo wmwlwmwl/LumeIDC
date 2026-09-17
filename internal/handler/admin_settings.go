@@ -49,6 +49,8 @@ func (a *Admin) adminSettings(w http.ResponseWriter, r *http.Request) {
 		"external_captcha_register_code_enabled", "external_captcha_forgot_code_enabled",
 		"external_captcha_profile_code_enabled",
 		"external_captcha_phone_login_code_enabled",
+		// 服务生命周期天数：到期停机 / 删除 / 到期提醒
+		"service_suspend_after_days", "service_terminate_after_days", "service_expire_warn_days",
 		mailAccountsKey, mailCooldownKey,
 	)
 	if err != nil {
@@ -124,6 +126,10 @@ func (a *Admin) adminSettings(w http.ResponseWriter, r *http.Request) {
 		"external_captcha_forgot_code_enabled":      get("external_captcha_forgot_code_enabled"),
 		"external_captcha_profile_code_enabled":     get("external_captcha_profile_code_enabled"),
 		"external_captcha_phone_login_code_enabled": get("external_captcha_phone_login_code_enabled"),
+		// 生命周期天数：库中无记录时回退默认值，前端首次打开不至于显示空白
+		"service_suspend_after_days":   fallbackStr(get("service_suspend_after_days"), "0"),
+		"service_terminate_after_days": fallbackStr(get("service_terminate_after_days"), "3"),
+		"service_expire_warn_days":     fallbackStr(get("service_expire_warn_days"), "3"),
 	}
 	if a.Notifier != nil {
 		if routes, routeErr := a.Notifier.PublicSMSRoutes(r.Context()); routeErr == nil {
@@ -243,6 +249,47 @@ func defaultOne(v string) string {
 		return "1"
 	}
 	return v
+}
+
+// fallbackStr 空值回退：设置键从未保存过时库中无记录，需给出默认值供前端展示。
+func fallbackStr(v, fallback string) string {
+	if strings.TrimSpace(v) == "" {
+		return fallback
+	}
+	return v
+}
+
+// dayInRange 读取一个天数值：空值取 fallback（未配置即默认），非数字或越界报错。
+func (c *settingsSaveCtx) dayInRange(key string, min, max, fallback int) (int, bool) {
+	raw := strings.TrimSpace(c.fv(key))
+	if raw == "" {
+		return fallback, true
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < min || n > max {
+		c.fail(fmt.Sprintf("%s 必须是 %d~%d 之间的整数", key, min, max))
+		return 0, false
+	}
+	return n, true
+}
+
+// saveLifecycle 校验并保存服务生命周期天数；返回 false 表示校验失败且已写响应。
+// 删除天数不得早于停机天数——否则服务会在还没停机时就被标记删除。
+func (c *settingsSaveCtx) saveLifecycle() bool {
+	suspend, ok1 := c.dayInRange("service_suspend_after_days", 0, 365, 0)
+	terminate, ok2 := c.dayInRange("service_terminate_after_days", 1, 3650, 3)
+	warn, ok3 := c.dayInRange("service_expire_warn_days", 1, 365, 3)
+	if !ok1 || !ok2 || !ok3 {
+		return false
+	}
+	if suspend > terminate {
+		c.fail("删除天数不能小于停机天数")
+		return false
+	}
+	c.set("service_suspend_after_days", strconv.Itoa(suspend))
+	c.set("service_terminate_after_days", strconv.Itoa(terminate))
+	c.set("service_expire_warn_days", strconv.Itoa(warn))
+	return true
 }
 
 func (c *settingsSaveCtx) saveCaptcha() {
@@ -512,6 +559,10 @@ func (a *Admin) adminSettingsSave(w http.ResponseWriter, r *http.Request) {
 	case "manual_identity":
 		c.saveManualIdentity()
 		c.success()
+	case "lifecycle":
+		if c.saveLifecycle() {
+			c.success()
+		}
 	case "external_captcha":
 		if c.saveExternalCaptcha() {
 			c.success()

@@ -121,7 +121,7 @@ func (h *Pages) serviceUpgradeForm(w http.ResponseWriter, r *http.Request) {
 }
 
 // serviceUpgradeOrder POST /services/{serviceID}/upgrade — 创建升降级订单。
-// 升级（diff>0）跳支付；降级（diff<0）0 元单直接余额核销并退差价。
+// 升级（diff>0）跳支付；降级（diff<0）0 元单直接核销，差价不退还（仅记 orders.diff_amount 供审计）。
 func (h *Pages) serviceUpgradeOrder(w http.ResponseWriter, r *http.Request) {
 	userID, ok := middleware.RequireUser(w, r)
 	if !ok {
@@ -185,7 +185,8 @@ func (h *Pages) serviceUpgradeOrder(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/pay/"+strconv.FormatInt(invID, 10), http.StatusSeeOther)
 		return
 	}
-	// 降级：0 元单直接余额核销（不可走 MarkPaidByBalance 的正数校验），差价已在核销事务内退回。
+	// 降级：0 元单直接核销（不可走 MarkPaidByBalance 的正数校验）；差价不再退到余额，
+	// 与魔方系默认一致——降级只降配置，不返还差额。
 	no, qerr := h.Invoices.NoByID(r.Context(), invID)
 	if qerr != nil {
 		jsonStatus(w, r, http.StatusInternalServerError, "创建降级订单失败")
@@ -200,11 +201,11 @@ func (h *Pages) serviceUpgradeOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if wantsJSON(r) {
-		writeJSON(w, map[string]any{"ok": 1, "diff_up": false, "msg": "降级成功，差价已退回余额", "redirect": "/services/" + strconv.FormatInt(serviceID, 10)})
+		writeJSON(w, map[string]any{"ok": 1, "diff_up": false, "msg": "降级成功，差价不予退还", "redirect": "/services/" + strconv.FormatInt(serviceID, 10)})
 		return
 	}
 	if sess := middleware.FromSession(r.Context()); sess != nil {
-		sess.SetFlash("降级成功，差价已退回余额")
+		sess.SetFlash("降级成功，差价不予退还")
 	}
 	http.Redirect(w, r, "/services/"+strconv.FormatInt(serviceID, 10), http.StatusSeeOther)
 }

@@ -6,15 +6,14 @@ import { ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { CopyDocument, InfoFilled } from '@element-plus/icons-vue'
 import { refreshServiceHost, type DetailData } from '../../../api/user'
+import { copyText } from '@/utils/clipboard'
 
 const props = defineProps<{ data: DetailData; serviceId: number }>()
 const emit = defineEmits<{ refresh: [] }>()
 
-function copy(value: string) {
-  void navigator.clipboard
-    ?.writeText(value)
-    .then(() => ElMessage.success('已复制'))
-    .catch(() => ElMessage.error('复制失败，请手动复制'))
+async function copy(value: string) {
+  if (await copyText(value)) ElMessage.success('已复制')
+  else ElMessage.error('复制失败，请手动复制')
 }
 
 const refreshingHost = ref(false)
@@ -50,11 +49,13 @@ async function refreshHost() {
       </div>
       <div v-if="data.host.password" class="zjmf-info-row">
         <span class="zjmf-info-label">密码</span>
-        <b class="zjmf-info-value zjmf-mono">{{ data.host.password }}</b>
-        <el-button class="zjmf-copy-btn" size="small" text @click="copy(data.host.password)">
-          <el-icon :size="13"><CopyDocument /></el-icon>
-          复制
-        </el-button>
+        <b class="zjmf-info-cell">
+          <span class="zjmf-info-value zjmf-mono">{{ data.host.password }}</span>
+          <el-button class="zjmf-copy-btn" size="small" text @click="copy(data.host.password)">
+            <el-icon :size="13"><CopyDocument /></el-icon>
+            复制
+          </el-button>
+        </b>
       </div>
       <div v-if="data.host.ip" class="zjmf-info-row">
         <span class="zjmf-info-label">实例 IP</span>
@@ -95,8 +96,13 @@ async function refreshHost() {
 </template>
 
 <style scoped>
-/* 盒样式（背景/描边/圆角/阴影）交由全局 art-card 按 data-box-mode 接管 */
+/* 盒样式（背景/描边/圆角/阴影）交由全局 art-card 按 data-box-mode 接管。
+   本卡在 .zjmf-primary-grid 里是 align-items:stretch 的拉伸项：高度由更高的
+   「实例控制台」决定，所以要用 flex 列让信息表吃掉剩余高度，否则最后一行下面
+   会堆一大块空白。 */
 .zjmf-card {
+  display: flex;
+  flex-direction: column;
   padding: 20px 22px;
 }
 .zjmf-card__header {
@@ -137,7 +143,12 @@ async function refreshHost() {
 /* --- 实例信息表格 --- */
 .zjmf-info-table {
   display: grid;
+  /* 吃掉卡片剩余高度，剩余空间只摊到行间距上（与 EasyPanel 侧思路一致）。
+     注意别用 grid-auto-rows: 1fr：那会把每行都撑到最高那行的高度，
+     本卡会顶得比左卡还高，空白反而转嫁给左卡。 */
+  flex: 1 1 auto;
   grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-content: space-between;
   column-gap: 28px;
 }
 .zjmf-info-row {
@@ -149,6 +160,10 @@ async function refreshHost() {
   font-size: 12.5px;
   border-bottom: 1px dashed var(--art-card-border);
 }
+/* 末行只剩一个字段时（字段数为奇数）独占整行：否则右半格空着，行被拉高后更显眼 */
+.zjmf-info-row:last-child:nth-child(odd) {
+  grid-column: 1 / -1;
+}
 .zjmf-info-row:last-child {
   border-bottom: none;
 }
@@ -158,12 +173,30 @@ async function refreshHost() {
   font-weight: 450;
 }
 .zjmf-info-value {
-  max-width: 65%;
+  /* 不再限制 65%：值是 flex 项且标签 flex:0 0 auto 不会缩，值本来就该用满剩余宽度。
+     半宽列里 65% 会把 Windows-2022-Datacenter-cn 这种值提前挤成两行。 */
+  max-width: 100%;
   color: var(--art-gray-800);
   font-weight: 600;
   text-align: right;
+  /* 不要用 word-break: break-all：它会在任意字符处断行，把
+     Windows-2022-Datacenter-cn 切成 Windows-2022-Da / tacent er-cn。
+     overflow-wrap: anywhere 只在必要时断，优先落在连字符这类自然位置；
+     长 IP / 长密码这类无分隔串照样能换行（它同样参与 min-content 计算）。 */
   overflow-wrap: anywhere;
-  word-break: break-all;
+}
+/* 带操作按钮的值：值 + 按钮包成右对齐的一格，避免 3 个子元素走 space-between
+   时值被推到行中间（密码行原来的问题）。 */
+.zjmf-info-cell {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.zjmf-info-cell .zjmf-copy-btn {
+  margin-left: 0;
 }
 .zjmf-mono {
   font-family: ui-monospace, SFMono-Regular, Consolas, 'Liberation Mono', monospace;

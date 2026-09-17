@@ -6,6 +6,7 @@ import { Search } from '@element-plus/icons-vue'
 import type { ColumnOption } from '@/types'
 import { http } from '../http/index'
 import { formatDate, formatMoney } from '@/utils/format'
+import { copyText } from '@/utils/clipboard'
 import PublicPageHead from '@/components/public/PublicPageHead.vue'
 import ArtStatsCard from '@/components/core/cards/art-stats-card/index.vue'
 
@@ -103,11 +104,9 @@ function kindLabel(kind: string): string {
 function money(v: string): string {
   return `￥${formatMoney(v)}`
 }
-function copyNo(no: string) {
-  void navigator.clipboard
-    ?.writeText(no)
-    .then(() => ElMessage.success('账单号已复制'))
-    .catch(() => ElMessage.error('复制失败，请手动复制'))
+async function copyNo(no: string) {
+  if (await copyText(no)) ElMessage.success('账单号已复制')
+  else ElMessage.error('复制失败，请手动复制')
 }
 function isPayable(row: Invoice): boolean {
   return row.status === '未支付'

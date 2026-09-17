@@ -590,6 +590,134 @@ func (p *Payment) RefundUpgrade(ctx context.Context, adminID, serviceID int64, r
 	return nil
 }
 
+// defaultUpstreamMissThreshold 连续多少次「上游不可见」才判定资源已消失。
+// 同步每 30s 一轮，20 次 ≈ 10 分钟：足以排除单次抖动，又不至于让服务挂上一整天。
+const defaultUpstreamMissThreshold = 20
+
+// 批量误删护栏：同一台上游服务器本轮缺失数 ≥ missBatchMin 且占比 ≥ missBatchRatio 时，
+// 判定为「上游整体异常」（接口挂了、鉴权失效、上游维护），本轮只告警不删除。
+// ponytail: 本地标记删除不可逆，宁可漏删一轮，也不能因上游一次抖动整站误删。
+const missBatchMin, missBatchRatio = 5, 0.5
+
+// syncProbe 单条服务的上游探测结果（探测与写库分离，便于按服务器聚合判定整体异常）。
+type syncProbe struct {
+	serviceID int64
+	serverID  int64
+	status    string
+	hostname  string
+	err       error
+}
+
+// gone 判定探测结果是否意味着「上游该实例已不存在」：
+// 快路径为上游明确回 terminated/deleted 等终态；慢路径为 Provider 标记 ErrHostMissing。
+func (p syncProbe) gone() bool {
+	if p.err != nil {
+		return server.IsHostMissing(p.err)
+	}
+	st, ok := mapUpstreamStatus(p.status)
+	return ok && st == 3
+}
+
+// applySyncProbes 应用一轮探测结果：先按服务器剔除「上游整体异常」，再逐条落地。
+func (lc *Lifecycle) applySyncProbes(ctx context.Context, probes []syncProbe) {
+	if len(probes) == 0 {
+		return
+	}
+	type agg struct{ total, missing int }
+	byServer := make(map[int64]*agg)
+	for _, p := range probes {
+		a := byServer[p.serverID]
+		if a == nil {
+			a = &agg{}
+			byServer[p.serverID] = a
+		}
+		a.total++
+		if p.gone() {
+			a.missing++
+		}
+	}
+	broken := make(map[int64]bool, len(byServer))
+	for sid, a := range byServer {
+		if a.missing >= missBatchMin && float64(a.missing)/float64(a.total) >= missBatchRatio {
+			broken[sid] = true
+			log.Printf("[sync] 服务器 %d 本轮 %d/%d 条服务上游不可见，判定为上游整体异常，本轮不做删除",
+				sid, a.missing, a.total)
+		}
+	}
+	threshold := lc.upstreamMissThreshold(ctx)
+	for _, p := range probes {
+		switch {
+		case p.err != nil && !server.IsHostMissing(p.err):
+			// 网络/超时/鉴权/解析失败属于我方或链路故障，与资源是否消失无关，不计缺失分。
+			log.Printf("[sync] service %d 状态查询失败: %v", p.serviceID, p.err)
+		case p.err != nil:
+			if broken[p.serverID] {
+				continue
+			}
+			lc.countUpstreamMiss(ctx, p.serviceID, threshold)
+		default:
+			st, ok := mapUpstreamStatus(p.status)
+			if !ok {
+				// 未知上游状态只记录不覆盖本地
+				log.Printf("[sync] service %d 未知上游状态: %s", p.serviceID, p.status)
+				continue
+			}
+			if st == 3 && broken[p.serverID] {
+				log.Printf("[sync] service %d 上游报已删除，但所属服务器本轮整体异常，暂不处理", p.serviceID)
+				continue
+			}
+			lc.applyUpstreamStatus(ctx, p.serviceID, st, p.hostname)
+		}
+	}
+}
+
+// applyUpstreamStatus 落地上游状态，并清零缺失计数——能查到就说明资源还在。
+func (lc *Lifecycle) applyUpstreamStatus(ctx context.Context, serviceID int64, status int16, hostname string) {
+	if _, err := lc.db.ExecContext(ctx,
+		`UPDATE services SET status=$2, hostname=coalesce(nullif($3,''), hostname),
+		        upstream_miss_count=0, upstream_miss_since=NULL
+		 WHERE id=$1 AND status<3`, serviceID, status, hostname); err != nil {
+		log.Printf("[sync] service %d 状态更新失败: %v", serviceID, err)
+	}
+}
+
+// countUpstreamMiss 累计一次「上游不可见」，达到阈值即标记本地已删除。
+// 计数与判定放在同一条语句里，避免读回再写产生竞态。
+func (lc *Lifecycle) countUpstreamMiss(ctx context.Context, serviceID int64, threshold int) {
+	var dropped bool
+	err := lc.db.QueryRowContext(ctx,
+		`WITH bump AS (
+			UPDATE services SET upstream_miss_count = upstream_miss_count + 1,
+			       upstream_miss_since = coalesce(upstream_miss_since, now())
+			 WHERE id=$1 AND status < 3
+			 RETURNING id, upstream_miss_count
+		 )
+		 UPDATE services SET status=3
+		  WHERE id IN (SELECT id FROM bump WHERE upstream_miss_count >= $2)
+		 RETURNING true`, serviceID, threshold).Scan(&dropped)
+	switch {
+	case err == sql.ErrNoRows:
+		// 未达阈值（或服务已终止）：静默等待下一轮
+	case err != nil:
+		log.Printf("[sync] service %d 累计上游缺失失败: %v", serviceID, err)
+	default:
+		log.Printf("[sync] service %d 上游持续不可见已达 %d 次，已标记删除（请核对上游是否真的释放）",
+			serviceID, threshold)
+	}
+}
+
+// upstreamMissThreshold 读取后台缺失阈值（隐藏键 upstream_miss_threshold），缺省 20。
+func (lc *Lifecycle) upstreamMissThreshold(ctx context.Context) int {
+	var v string
+	if err := lc.db.QueryRowContext(ctx,
+		`SELECT value FROM settings WHERE key='upstream_miss_threshold'`).Scan(&v); err == nil {
+		if n, e := strconv.Atoi(strings.TrimSpace(v)); e == nil && n >= 1 && n <= 100000 {
+			return n
+		}
+	}
+	return defaultUpstreamMissThreshold
+}
+
 // SyncUpstreamStatus 将本地服务状态同步为上游真实状态（按上游）。
 // ponytail: 仅覆盖已绑定上游 host 的服务；查询密集度=服务数/周期，规模大时建议增量+过期过滤。
 // 跳过过渡中（transition_state!=”）和已终止（status=3）的服务，避免复活或干扰进行中的操作。
@@ -622,10 +750,11 @@ func (lc *Lifecycle) SyncUpstreamStatus(ctx context.Context) {
 	}()
 
 	const pageSize = 100
+	var probes []syncProbe
 	offset := 0
 	for {
 		rows, err := lc.db.QueryContext(ctx,
-			`SELECT sv.id, srv.api_url, srv.api_username, srv.api_key, sv.upstream_host_id,
+			`SELECT sv.id, srv.id, srv.api_url, srv.api_username, srv.api_key, sv.upstream_host_id,
 			        coalesce(nullif(sv.upstream_provider,''),srv.provider,'')
 			 FROM services sv
 			 JOIN servers srv ON srv.id=sv.server_id
@@ -637,6 +766,7 @@ func (lc *Lifecycle) SyncUpstreamStatus(ctx context.Context) {
 		}
 		type row struct {
 			id       int64
+			serverID int64
 			cfg      server.Config
 			host     int64
 			provider string
@@ -644,7 +774,7 @@ func (lc *Lifecycle) SyncUpstreamStatus(ctx context.Context) {
 		var list []row
 		for rows.Next() {
 			var r row
-			if err := rows.Scan(&r.id, &r.cfg.APIURL, &r.cfg.APIUsername, &r.cfg.APIKey, &r.host, &r.provider); err != nil {
+			if err := rows.Scan(&r.id, &r.serverID, &r.cfg.APIURL, &r.cfg.APIUsername, &r.cfg.APIKey, &r.host, &r.provider); err != nil {
 				log.Printf("[sync] 读取服务失败: %v", err)
 				continue
 			}
@@ -671,24 +801,13 @@ func (lc *Lifecycle) SyncUpstreamStatus(ctx context.Context) {
 			cc, cancel := context.WithTimeout(ctx, opTimeout)
 			up, err := prov.Status(cc, r.cfg, r.host)
 			cancel()
-			if err != nil {
-				log.Printf("[sync] service %d 状态查询失败: %v", r.id, err)
-				continue
-			}
-			st, ok := mapUpstreamStatus(up.Status)
-			if !ok {
-				// 未知上游状态只记录不覆盖本地
-				log.Printf("[sync] service %d 未知上游状态: %s", r.id, up.Status)
-				continue
-			}
-			if _, err := lc.db.ExecContext(ctx,
-				`UPDATE services SET status=$2, hostname=coalesce(nullif($3,''), hostname)
-			 WHERE id=$1 AND status<3`, r.id, st, up.Hostname); err != nil {
-				log.Printf("[sync] service %d 状态更新失败: %v", r.id, err)
-			}
+			// 探测与写库分离：攒满一轮再统一判定，才能按服务器聚合识别"上游整体异常"。
+			probes = append(probes, syncProbe{serviceID: r.id, serverID: r.serverID,
+				status: up.Status, hostname: up.Hostname, err: err})
 		}
 		offset += len(list)
 	}
+	lc.applySyncProbes(ctx, probes)
 }
 
 // mapUpstreamStatus 上游 domainstatus -> 本地 status；未知状态返回 false 不改动。
@@ -757,7 +876,14 @@ func (lc *Lifecycle) Upgrade(ctx context.Context, serviceID int64, cycle string,
 		return err
 	}
 	if hp, ok := prov.(server.HostUpgradeProvider); ok {
-		if targetUpstreamPID <= 0 {
+		// 弹性模式（PIDOptional，如 EasyPanel）没有"上游商品"概念，
+		// 升级靠订单里的配置项描述，因此只有要求 PID 的供应商才必须绑定 upstream_pid。
+		// 若不加此判断，EP 弹性产品（upstream_pid=0）的升级会被一律判成"目标产品暂不可用"而退款回滚。
+		pidOptional := false
+		if po, ok2 := prov.(server.PIDOptionalProvider); ok2 && po.PIDOptional() {
+			pidOptional = true
+		}
+		if targetUpstreamPID <= 0 && !pidOptional {
 			log.Printf("[lifecycle] service %d 升级目标产品未绑定上游商品，退款回滚（订单 %d）", serviceID, orderID)
 			lc.rollbackUpgrade(ctx, userID, diffAmount, orderID)
 			lc.clearUpgradeState(ctx, serviceID)
@@ -772,6 +898,8 @@ func (lc *Lifecycle) Upgrade(ctx context.Context, serviceID int64, cycle string,
 		}
 		perr := hp.Upgrade(cctx, cfg, s.UpstreamHost, server.UpgradeRequest{
 			OrderID: orderID, TargetPID: targetUpstreamPID, Cycle: cycle, DiffAmount: diffAmount,
+			// 弹性模式上游靠这些配置项变更实例配额；缺了就退化成"只改本地记录"。
+			ConfigOpts: upgradeConfigOpts(snapshot),
 		}, ck)
 		if cctx.Err() != nil {
 			return &server.ManualReviewError{Msg: "升级执行超时或中断，上游结果未知，请核对账单和实例"}
@@ -796,6 +924,22 @@ func (lc *Lifecycle) Upgrade(ctx context.Context, serviceID int64, cycle string,
 		return &server.ManualReviewError{Msg: fmt.Sprintf("上游升级已返回成功，但保存终态检查点失败，请人工核对: %v", err)}
 	}
 	return nil
+}
+
+// upgradeConfigOpts 从升级订单的配置快照里取出目标配置选择。
+// 弹性模式上游（EasyPanel）以这些字段描述实例配额，是升级真正落到上游的唯一依据。
+// 快照缺失或格式异常返回 nil——由 Provider 侧兜底（会认为无配额可改）。
+func upgradeConfigOpts(snapshot []byte) map[string]string {
+	if len(snapshot) == 0 {
+		return nil
+	}
+	var saved struct {
+		Selection map[string]string `json:"selection"`
+	}
+	if err := json.Unmarshal(snapshot, &saved); err != nil {
+		return nil
+	}
+	return saved.Selection
 }
 
 // markUpgradePending 记录升级待处理原因（展示在后台服务列表「失败原因」列），
@@ -851,7 +995,7 @@ func localUpgradeApply(ctx context.Context, q interface {
 }
 
 // rollbackUpgrade 升级失败回滚资金：使用户保持"未升级且无资金损失"。
-// diff>0 升级场景：支付时已收差价 → 退回余额；diff<0 降级场景：支付时已退差 → 扣回。
+// diff>0 升级场景：支付时已收差价 → 退回余额；diff<0 降级场景：不退款也不扣款（见 prepareUpgrade）。
 // 注意：这里写的是用户可见的余额流水，只写中性原因；技术细节（上游报错原文）由调用方记服务端日志。
 func (lc *Lifecycle) rollbackUpgrade(ctx context.Context, userID int64, diffAmount float64, orderID int64) {
 	tx, err := lc.db.BeginTx(ctx, nil)
@@ -871,18 +1015,9 @@ func (lc *Lifecycle) rollbackUpgrade(ctx context.Context, userID int64, diffAmou
 		signed, typ = "+"+amountStr, "refund"
 		note = "升级失败退款 订单#" + strconv.FormatInt(orderID, 10)
 	} else if diffAmount < 0 {
-		// 已退差额需扣回；余额不足时（用户已花掉）跳过扣款并告警，由人工核销
-		res, err := tx.ExecContext(ctx,
-			`UPDATE users SET balance=balance-$2::numeric WHERE id=$1 AND balance>=$2::numeric`, userID, amountStr)
-		if err != nil {
-			log.Printf("[lifecycle] 升级回滚扣回失败（订单 %d）: %v", orderID, err)
-			return
-		}
-		if n, _ := res.RowsAffected(); n == 0 {
-			log.Printf("[lifecycle] 升级回滚：订单 %d 用户余额不足，未扣回 %s 元，需人工核销", orderID, amountStr)
-		}
-		signed, typ = "-"+amountStr, "consume"
-		note = "升级失败扣回降级退款 订单#" + strconv.FormatInt(orderID, 10)
+		// 降级不再退差价（见 prepareUpgrade），所以这里没有"已退的差额"需要扣回。
+		// 旧实现会在此扣减用户余额，在"根本没退过钱"的前提下会把余额扣成负数。
+		return
 	} else {
 		return
 	}

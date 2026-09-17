@@ -59,6 +59,8 @@ export interface DetailData {
     username?: string
     password?: string
     panel_url?: string
+    // 自动登录表单的提交地址（POST）；为空时回退用 panel_url
+    panel_login_url?: string
     status?: string
     os?: string
     ip?: string

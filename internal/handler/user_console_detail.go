@@ -79,7 +79,11 @@ func (h *Pages) serviceDetail(w http.ResponseWriter, r *http.Request) {
 		ov := d.HostSnapshot
 		host = map[string]any{
 			"username": ov.Detail.Username, "password": ov.Detail.Password,
-			"panel_url": ov.Detail.PanelURL, "status": ov.Detail.Status,
+			"panel_url": panelDisplayURL(ov.Detail.PanelURL),
+			// 自动登录表单的提交地址；旧快照没有该字段，回退到 panel_url
+			// （旧快照的 panel_url 本身就是 a=login 提交入口，语义刚好对得上）。
+			"panel_login_url": panelLoginURL(ov.Detail.PanelLoginURL, ov.Detail.PanelURL),
+			"status":          ov.Detail.Status,
 			"os": ov.Detail.OSName, "ip": ov.Detail.IP,
 			"additional_ips": ov.Detail.AdditionalIPs, "bw_limit": ov.Detail.BWLimit,
 			"bw_usage": ov.Detail.BWUsage, "datacenter": ov.Detail.Datacenter,
@@ -241,6 +245,25 @@ func (h *Pages) consoleAction(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	http.Redirect(w, r, dest, http.StatusSeeOther)
+}
+
+// panelDisplayURL 面板展示地址：存量快照里存的是带 ?c=session&a=login 的提交地址，
+// 直接展示会让用户点开（GET）时被当成一次空凭证登录提交而报"账号密码错误"。
+// 这里把历史数据里的提交参数剥掉，还原成可点开的面板首页。
+func panelDisplayURL(raw string) string {
+	if i := strings.Index(raw, "?c=session&a=login"); i > 0 {
+		return raw[:i]
+	}
+	return raw
+}
+
+// panelLoginURL 自动登录表单的提交地址：新快照有独立 PanelLoginURL；
+// 旧快照没有，回退到 panel_url（旧值本身即 a=login 提交入口）。
+func panelLoginURL(loginURL, panelURL string) string {
+	if strings.TrimSpace(loginURL) != "" {
+		return loginURL
+	}
+	return panelURL
 }
 
 // reinstallOptions GET — 返回可用 OS 列表 JSON。

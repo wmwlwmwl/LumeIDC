@@ -3,6 +3,7 @@ import { ref, computed, useSlots } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { InfoFilled } from '@element-plus/icons-vue'
 import { consoleAction, refreshServiceHost, type DetailData } from '../../api/user'
+import { copyText } from '@/utils/clipboard'
 
 const props = defineProps<{ data: DetailData }>()
 const slots = useSlots()
@@ -33,11 +34,12 @@ async function refreshHost() {
   }
 }
 
-function copy() {
-  void navigator.clipboard
-    ?.writeText(password.value)
-    .then(() => ElMessage.success('已复制'))
-    .catch(() => ElMessage.error('复制失败，请手动复制'))
+// 密码必须能复制到别处（面板 / FTP 都要用），保留复制按钮；
+// 面板地址不设复制按钮：链接本身可点，右键「复制链接地址」即可拿到完整 href，
+// 单独放按钮反而挤占宽度、把地址截得更短。
+async function copy() {
+  if (await copyText(password.value)) ElMessage.success('已复制')
+  else ElMessage.error('复制失败，请手动复制')
 }
 
 async function resetPassword() {
@@ -91,19 +93,27 @@ async function resetPassword() {
             <el-tag v-if="data.host.status" size="small" :type="hostOnline ? 'success' : 'info'">{{ data.host.status }}</el-tag>
           </div>
           <div class="easypanel-info-list">
-            <div>
+            <div class="easypanel-info-row">
               <span>站点账号</span>
-              <b>{{ data.host.username || '-' }}</b>
+              <b class="easypanel-info-cell" :title="data.host.username || ''">{{ data.host.username || '-' }}</b>
             </div>
-            <div>
+            <div class="easypanel-info-row">
               <span>站点密码</span>
-              <b>{{ password || '-' }}</b>
-              <el-button v-if="password" size="small" text @click="copy">复制</el-button>
+              <b class="easypanel-info-cell">
+                <span class="easypanel-info-cell__text" :title="password">{{ password || '-' }}</span>
+                <el-button v-if="password" size="small" text @click="copy">复制</el-button>
+              </b>
             </div>
-            <div v-if="data.host.panel_url">
+            <div v-if="data.host.panel_url" class="easypanel-info-row">
               <span>面板地址</span>
-              <b>
-                <a class="easypanel-panel-link" :href="data.host.panel_url" target="_blank" rel="noopener">{{ data.host.panel_url }}</a>
+              <b class="easypanel-info-cell easypanel-info-cell--wide">
+                <a
+                  class="easypanel-info-cell__link easypanel-panel-link"
+                  :href="data.host.panel_url"
+                  target="_blank"
+                  rel="noopener"
+                  :title="data.host.panel_url"
+                >{{ data.host.panel_url }}</a>
               </b>
             </div>
           </div>
@@ -111,7 +121,15 @@ async function resetPassword() {
             <span class="easypanel-footer-label">站点面板</span>
             <div class="easypanel-footer-actions">
               <el-button size="small" plain :loading="busy" @click="resetPassword">重置站点密码</el-button>
-              <form v-if="data.host.panel_url" :action="data.host.panel_url" method="post" target="_blank" rel="noopener">
+              <!-- 提交地址与展示地址必须分开：展示地址是面板首页（可手动登录），
+                   提交地址是 a=login 登录入口；用展示地址提交会被当成空凭证登录而报错。 -->
+              <form
+                v-if="data.host.panel_login_url || data.host.panel_url"
+                :action="data.host.panel_login_url || data.host.panel_url"
+                method="post"
+                target="_blank"
+                rel="noopener"
+              >
                 <input type="hidden" name="username" :value="data.host.username || ''">
                 <input type="hidden" name="passwd" :value="password">
                 <el-button native-type="submit" type="primary" size="small">登录主机面板</el-button>
@@ -248,6 +266,13 @@ async function resetPassword() {
   color: var(--art-gray-400);
   font-size: 11.5px;
 }
+/* 信息列表吃掉卡片的剩余高度：两卡在 grid 里 align-items:stretch 等高，
+   账户卡只有 3 行、右卡最多 8 行，若不接管剩余高度，空白会整块堆在页脚上方。 */
+.easypanel-info-list {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+}
 .easypanel-info-list > div {
   display: flex;
   align-items: center;
@@ -316,5 +341,46 @@ async function resetPassword() {
   .easypanel-grid {
     grid-template-columns: 1fr;
   }
+}
+/* 账户信息行：标签左、值右对齐；长值省略号 + tooltip；操作按钮挂在值右侧。
+   之前站点账号裸 b、站点密码 b+复制、面板地址 a 撑满整行：每行宽度处理不一，对齐混乱。 */
+.easypanel-info-row {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 12px;
+}
+.easypanel-info-row > span {
+  flex: 0 0 auto;
+}
+.easypanel-info-cell {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  font-weight: 500;
+  text-align: right;
+}
+.easypanel-info-cell__text,
+.easypanel-info-cell__link {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+/* 面板地址行独占整行：无复制按钮后放开 65% 上限，地址能多显示一截。
+   仍保留单行省略号，完整地址看 title 提示或右键复制链接地址。 */
+.easypanel-info-row .easypanel-info-cell--wide {
+  max-width: 100%;
+}
+.easypanel-info-cell__link {
+  color: var(--art-color-primary, #185fa5);
+  text-decoration: none;
+}
+.easypanel-info-cell__link:hover {
+  text-decoration: underline;
 }
 </style>

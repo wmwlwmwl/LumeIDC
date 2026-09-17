@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 	"time"
 
@@ -27,7 +28,45 @@ type Jobs struct {
 	Products      *repo.Products
 	Gateways      *repo.Gateways
 	Payment       *service.Payment
+	Settings      *repo.Settings // 后台配置读取（生命周期天数等）；为 nil 时全部走默认值
 	OrderQueriers map[string]gateway.OrderQuerier
+}
+
+// 生命周期天数默认值：到期即停、到期 3 天后标记删除、到期前 3 天提醒。
+// ponytail: 上游（魔方财务）通常 1~7 天就真实销毁实例，本地删除阈值若远大于上游，
+// 会出现"机器已没、本地仍显示可续费"的幽灵服务，故默认取 3 天而非 30 天。
+const (
+	defaultSuspendAfterDays   = 0
+	defaultTerminateAfterDays = 3
+	defaultExpireWarnDays     = 3
+)
+
+// lifecycleDays 读取后台配置的生命周期天数；缺失、非数字或越界一律回退默认值，
+// 保证配置写坏时不会把服务提前删掉或永久不删。
+func (j *Jobs) lifecycleDays(ctx context.Context) (suspend, terminate, warn int) {
+	suspend, terminate, warn = defaultSuspendAfterDays, defaultTerminateAfterDays, defaultExpireWarnDays
+	if j.Settings == nil {
+		return
+	}
+	vals, err := j.Settings.GetMany(ctx,
+		"service_suspend_after_days", "service_terminate_after_days", "service_expire_warn_days")
+	if err != nil {
+		log.Printf("[cron] 读取生命周期配置失败，按默认值执行: %v", err)
+		return
+	}
+	if n, e := strconv.Atoi(strings.TrimSpace(vals["service_suspend_after_days"])); e == nil && n >= 0 && n <= 365 {
+		suspend = n
+	}
+	if n, e := strconv.Atoi(strings.TrimSpace(vals["service_terminate_after_days"])); e == nil && n >= 1 && n <= 3650 {
+		terminate = n
+	}
+	if n, e := strconv.Atoi(strings.TrimSpace(vals["service_expire_warn_days"])); e == nil && n >= 1 && n <= 365 {
+		warn = n
+	}
+	if terminate < suspend {
+		terminate = suspend // 删除不得早于停机
+	}
+	return
 }
 
 func (j *Jobs) Start() *cron.Cron {
@@ -40,14 +79,18 @@ func (j *Jobs) Start() *cron.Cron {
 		}
 	})
 	c.AddFunc("@every 10m", func() {
-		j.runExpired(context.Background(),
-			`SELECT id FROM services WHERE status=1 AND expires_at < now()`, "停机",
-			func(ctx context.Context, id int64) error { return j.Lifecycle.Suspend(ctx, id) })
+		ctx := context.Background()
+		suspend, _, _ := j.lifecycleDays(ctx)
+		j.runExpired(ctx,
+			`SELECT id FROM services WHERE status=1 AND expires_at < now() - make_interval(days => $1)`, "停机",
+			func(ctx context.Context, id int64) error { return j.Lifecycle.Suspend(ctx, id) }, suspend)
 	})
 	c.AddFunc("@every 1h", func() {
-		j.runExpired(context.Background(),
-			`SELECT id FROM services WHERE status=2 AND expires_at < now() - interval '30 days'`, "删除",
-			func(ctx context.Context, id int64) error { return j.Lifecycle.Terminate(ctx, id) })
+		ctx := context.Background()
+		_, terminate, _ := j.lifecycleDays(ctx)
+		j.runExpired(ctx,
+			`SELECT id FROM services WHERE status=2 AND expires_at < now() - make_interval(days => $1)`, "删除",
+			func(ctx context.Context, id int64) error { return j.Lifecycle.Terminate(ctx, id) }, terminate)
 	})
 	c.AddFunc("@every 10m", func() { j.releaseExpiredStock(context.Background()) })
 	c.AddFunc("@every 10m", func() { j.expireInvoices(context.Background()) })
@@ -233,12 +276,13 @@ func (j *Jobs) expireInvoices(ctx context.Context) {
 }
 
 // runExpired 对满足条件的到期服务批量执行生命周期操作（停机/删除共用）。
-// query 返回待处理服务 id；opName 用于日志（如 "停机"/"删除"）；op 为对单个服务的操作。
-func (j *Jobs) runExpired(ctx context.Context, query, opName string, op func(context.Context, int64) error) {
+// query 返回待处理服务 id；opName 用于日志（如 "停机"/"删除"）；op 为对单个服务的操作；
+// args 为 query 的占位参数（如停机/删除天数），由调用方按后台配置传入。
+func (j *Jobs) runExpired(ctx context.Context, query, opName string, op func(context.Context, int64) error, args ...any) {
 	if j.Lifecycle == nil {
 		return
 	}
-	rows, err := j.DB.QueryContext(ctx, query)
+	rows, err := j.DB.QueryContext(ctx, query, args...)
 	if err != nil {
 		log.Printf("[cron] 查询待%s服务失败: %v", opName, err)
 		return
@@ -265,16 +309,18 @@ func (j *Jobs) runExpired(ctx context.Context, query, opName string, op func(con
 	}
 }
 
-// notifyExpiringSoon 服务到期前 3 天向用户发送提醒（站内信+邮件），每个服务仅提醒一次。
+// notifyExpiringSoon 服务到期前向用户发送提醒（站内信+邮件），每个服务仅提醒一次。
+// 提前天数由后台配置 service_expire_warn_days 决定，默认 3 天。
 func (j *Jobs) notifyExpiringSoon(ctx context.Context) {
 	if j.Notifier == nil {
 		return
 	}
+	_, _, warn := j.lifecycleDays(ctx)
 	rows, err := j.DB.QueryContext(ctx,
 		`SELECT sv.id, sv.user_id, coalesce(u.email,''), sv.expires_at
 		 FROM services sv JOIN users u ON u.id=sv.user_id
 		 WHERE sv.status=1 AND sv.expire_warn_sent=false
-		   AND sv.expires_at BETWEEN now() AND now() + interval '3 days'`)
+		   AND sv.expires_at BETWEEN now() AND now() + make_interval(days => $1)`, warn)
 	if err != nil {
 		log.Printf("[cron] 查询即将到期服务失败: %v", err)
 		return

@@ -124,7 +124,12 @@ const form = reactive({
   requires_identity: false,
   profit_type: '0',
   profit_value: '0',
+  upgrade_whitelist_enabled: false,
+  upgrade_targets: [] as number[],
 })
+
+// 可升级候选（同服务器其它在售产品），由后端按当前产品算出，供白名单勾选
+const upgradeCandidates = ref<{ id: number; name: string }[]>([])
 
 const specValues = reactive<Record<string, string>>({})
 const dynGroups = reactive<Record<string, { name: string; options: { value: string; label: string }[] }[]>>({})
@@ -285,7 +290,10 @@ async function load() {
       form.requires_identity = !!d.product.requires_identity
       form.profit_type = String(d.product.profit_type ?? 0)
       form.profit_value = String(d.product.profit_value ?? 0)
+      form.upgrade_whitelist_enabled = !!d.product.upgrade_whitelist_enabled
+      form.upgrade_targets = d.product.upgrade_targets || []
     }
+    upgradeCandidates.value = d.upgrade_candidates || []
     form.monthly = d.prices?.monthly || form.monthly
     form.quarterly = d.prices?.quarterly || ''
     form.yearly = d.prices?.yearly || ''
@@ -461,6 +469,8 @@ async function save() {
       stock: Number(form.stock),
       hidden: form.hidden ? '1' : '0',
       requires_identity: form.requires_identity ? '1' : '0',
+      upgrade_whitelist_enabled: form.upgrade_whitelist_enabled ? '1' : '0',
+      upgrade_targets: JSON.stringify(form.upgrade_targets),
       profit_type: markupFree.value ? '0' : form.profit_type,
       profit_value: markupFree.value ? '0' : form.profit_value,
       configoption: JSON.stringify(configOptions.value),
@@ -594,6 +604,33 @@ async function save() {
           </el-form-item>
         </div>
         <p class="text-xs text-g-500">开启实名后，用户必须通过人工或已配置实名插件后才能购买或续费此产品。</p>
+
+        <el-divider content-position="left">可升级范围</el-divider>
+        <div class="grid gap-4 sm:grid-cols-3">
+          <el-form-item label="升级白名单">
+            <el-switch
+              v-model="form.upgrade_whitelist_enabled"
+              active-text="仅限白名单"
+              inactive-text="同服务器全部"
+            />
+          </el-form-item>
+          <el-form-item v-if="form.upgrade_whitelist_enabled" label="可升级到" class="sm:col-span-2">
+            <el-select
+              v-model="form.upgrade_targets"
+              multiple
+              filterable
+              clearable
+              class="w-full"
+              placeholder="选择允许升级到的产品"
+            >
+              <el-option v-for="c in upgradeCandidates" :key="c.id" :label="c.name" :value="c.id" />
+            </el-select>
+          </el-form-item>
+        </div>
+        <p class="text-xs text-g-500">
+          未启用时，用户可升级到同一上游服务器下的全部在售产品（旧行为）。启用后仅允许升级到所选产品；
+          一个都不选则该产品不显示升级入口。降级同样受此范围约束。
+        </p>
 
         <el-divider content-position="left">配置项</el-divider>
         <div class="mb-3 flex flex-wrap items-center justify-between gap-2">

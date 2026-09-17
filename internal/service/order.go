@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+	"strings"
 	"time"
 
 	"lumeidc/internal/money"
@@ -491,6 +492,24 @@ func (o *Orders) CreateRenewOrder(ctx context.Context, userID, serviceID int64, 
 // CreateUpgradeOrder 服务升降级（本地为主）：目标产品须与当前服务同服务器。
 // diff>0 升级补差价；diff<0 降级退余额（amount=0，支付时退 abs(diff) 到余额）。
 // 差额口径 = 目标月售价 − 当前月售价（MonthlySellPrice，两侧 monthly 归一；不含剩余天数折算，见 ponytail）。
+// frozenRenewPrice 取服务在指定周期上的自定义续费价（后台编辑服务时可单独设置，054 迁移）。
+// 未设置或为空返回空串，调用方回退到产品周期价。
+func frozenRenewPrice(cycle string, m, q, y sql.NullString) string {
+	var v sql.NullString
+	switch cycle {
+	case "quarterly":
+		v = q
+	case "yearly":
+		v = y
+	default:
+		v = m
+	}
+	if !v.Valid {
+		return ""
+	}
+	return strings.TrimSpace(v.String)
+}
+
 func (o *Orders) CreateUpgradeOrder(ctx context.Context, userID, serviceID, targetProductID int64, cycle string, selection map[string]string) (orderID, invoiceID int64, amount string, diff float64, err error) {
 	col, ok := cycleCol[cycle]
 	if !ok {
@@ -554,6 +573,25 @@ func (o *Orders) CreateUpgradeOrder(ctx context.Context, userID, serviceID, targ
 	if targetRepo.Hidden {
 		return 0, 0, "", 0, fmt.Errorf("目标产品已下架")
 	}
+	// 上游已下架：与新建订单同口径——上游停售的商品不能再作为升级目标，
+	// 否则升级成功但上游无法交付。
+	if targetRepo.UpstreamOfflineReason != "" {
+		return 0, 0, "", 0, fmt.Errorf("目标产品已被上游下架")
+	}
+	// 库存校验（与 CreateOrder 同口径：stock>0 扣未过期预留，stock=0 视为售罄，<0 不限）
+	if targetRepo.Stock > 0 {
+		var reserved int
+		if err := tx.QueryRowContext(ctx,
+			`SELECT count(*) FROM stock_reservations WHERE product_id=$1 AND status='reserved' AND expires_at>now()`,
+			targetProductID).Scan(&reserved); err != nil {
+			return 0, 0, "", 0, fmt.Errorf("库存校验失败")
+		}
+		if reserved >= targetRepo.Stock {
+			return 0, 0, "", 0, fmt.Errorf("目标产品已售罄")
+		}
+	} else if targetRepo.Stock == 0 {
+		return 0, 0, "", 0, fmt.Errorf("目标产品已售罄")
+	}
 	var curServerID sql.NullInt64
 	if err := tx.QueryRowContext(ctx,
 		`SELECT coalesce(sv.server_id, p.server_id) FROM services sv JOIN products p ON p.id=sv.product_id WHERE sv.id=$1`,
@@ -598,7 +636,9 @@ func (o *Orders) CreateUpgradeOrder(ctx context.Context, userID, serviceID, targ
 		return 0, 0, "", 0, fmt.Errorf("目标产品未提供所选计费周期")
 	}
 
-	// 差价：当前月售价 vs 目标月售价（统一 MonthlySellPrice 口径）
+	// 差价：按剩余天数折算（proration）。
+	// 旧实现固定按月口径相减（目标月价 − 当前月价），用户选季付/年付时收的仍只是
+	// "一个月的差价"，与实际周期严重不符。现按未使用天数折算，两侧各用自身周期的日价。
 	curSelection := map[string]string{}
 	if svcSnap != "" {
 		var saved struct {
@@ -607,15 +647,40 @@ func (o *Orders) CreateUpgradeOrder(ctx context.Context, userID, serviceID, targ
 		_ = json.Unmarshal([]byte(svcSnap), &saved)
 		curSelection = saved.Selection
 	}
-	currentMonthly, err := MonthlySellPrice(ctx, o.Products, svcProductID, curSelection)
-	if err != nil {
-		return 0, 0, "", 0, fmt.Errorf("计算当前价格失败: %w", err)
+	var expiresAt time.Time
+	var renewM, renewQ, renewY sql.NullString
+	if err := tx.QueryRowContext(ctx,
+		`SELECT expires_at, renew_monthly::text, renew_quarterly::text, renew_yearly::text
+		 FROM services WHERE id=$1`, serviceID).Scan(&expiresAt, &renewM, &renewQ, &renewY); err != nil {
+		return 0, 0, "", 0, fmt.Errorf("读取服务到期时间失败")
 	}
-	targetMonthly, err := MonthlySellPrice(ctx, o.Products, targetProductID, selection)
+	// 剩余天数向上取整：不足一天按一天，避免临到期时算出接近 0 的差价被当成"等价"拒绝。
+	remainDays := math.Ceil(time.Until(expiresAt).Hours() / 24)
+	if remainDays <= 0 {
+		return 0, 0, "", 0, fmt.Errorf("服务已到期，请先续费后再升降级")
+	}
+	curCycle := svcCycle
+	if curCycle == "" {
+		curCycle = "monthly"
+	}
+	// 当前周期价：管理员为该服务单独指定的续费价优先（后台编辑服务可设），否则按产品周期价计算。
+	curPrice := 0.0
+	if v, perr := strconv.ParseFloat(frozenRenewPrice(curCycle, renewM, renewQ, renewY), 64); perr == nil && v > 0 {
+		curPrice = v
+	} else {
+		curPrice, err = CycleSellPrice(ctx, o.Products, svcProductID, curCycle, curSelection)
+		if err != nil {
+			return 0, 0, "", 0, fmt.Errorf("计算当前价格失败: %w", err)
+		}
+	}
+	tgtPrice, err := CycleSellPrice(ctx, o.Products, targetProductID, cycle, selection)
 	if err != nil {
 		return 0, 0, "", 0, fmt.Errorf("计算目标价格失败: %w", err)
 	}
-	diff = mathRound(targetMonthly - currentMonthly)
+	diff, err = ProratedDiff(curPrice, curCycle, tgtPrice, cycle, remainDays)
+	if err != nil {
+		return 0, 0, "", 0, err
+	}
 	if diff == 0 {
 		return 0, 0, "", 0, fmt.Errorf("目标配置与原配置等价，无需升降级")
 	}
@@ -644,6 +709,14 @@ func (o *Orders) CreateUpgradeOrder(ctx context.Context, userID, serviceID, targ
 		userID, targetProductID, psID, cycle, orderAmount, serviceID, requiresIdentity, targetProductID, diff, snap).Scan(&orderID)
 	if err != nil {
 		return 0, 0, "", 0, err
+	}
+	// 占住目标产品库存（30 分钟有效），与新建订单一致；未支付由 cron 回收。
+	if targetRepo.Stock > 0 {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO stock_reservations(order_id,product_id,expires_at) VALUES($1,$2,now()+interval '30 minutes')`,
+			orderID, targetProductID); err != nil {
+			return 0, 0, "", 0, err
+		}
 	}
 	no, err := genInvoiceNo()
 	if err != nil {

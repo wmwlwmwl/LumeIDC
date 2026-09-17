@@ -928,9 +928,12 @@ func (p *Payment) renewAsync(serviceID int64, cycle string, orderID int64) {
 	}()
 }
 
-// prepareUpgrade 支付事务内的升级预处理：标记服务"升级中"防并发 + 降级先退差额到余额。
+// prepareUpgrade 支付事务内的升级预处理：标记服务"升级中"防并发。
 // 不动 expires_at（保留已购时长）。不在此换产品——真实升降级由 Lifecycle.Upgrade
-// 在上游成功后统一落地（本地换产品/周期/快照），失败时自动回滚退款。
+// 在上游成功后统一落地（本地换产品/周期/快照），失败时自动回滚补款。
+// 降级（diffAmount<0）**不退差价**：与魔方财务/魔方v10 的默认策略一致——
+// 降级只变更配置，差额不返还。旧实现会把 |diff| 退到余额，存在
+// "先买高配用一阵、再降配把差价套现"的套利路径；差额仍记在 orders.diff_amount 供审计。
 func (p *Payment) prepareUpgrade(ctx context.Context, tx *sql.Tx, userID, svcID int64, diffAmount float64, orderID int64) error {
 	var st int16
 	var tr string
@@ -945,18 +948,7 @@ func (p *Payment) prepareUpgrade(ctx context.Context, tx *sql.Tx, userID, svcID 
 		svcID); err != nil {
 		return err
 	}
-	if diffAmount < 0 {
-		refund := strconv.FormatFloat(-diffAmount, 'f', 2, 64)
-		if _, err := tx.ExecContext(ctx, `UPDATE users SET balance=balance+$2::numeric WHERE id=$1`, userID, refund); err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO balance_logs(user_id,amount,balance_after,type,note)
-			 SELECT $1,$2::numeric,balance,'refund','服务降级退款 订单#'||$3 FROM users WHERE id=$1`,
-			userID, refund, strconv.FormatInt(orderID, 10)); err != nil {
-			return err
-		}
-	}
+	// 降级不退款（见函数注释）：差额不入账，仅保留 orders.diff_amount 记录。
 	return nil
 }
 

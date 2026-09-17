@@ -3,6 +3,7 @@ import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { http } from '../http/index'
 import { useSession } from '../http/session'
+import { copyText } from '@/utils/clipboard'
 
 const data = ref<{ ok: number; secret: string; enabled: boolean; uri: string } | null>(null)
 const code = ref('')
@@ -67,14 +68,9 @@ async function disable() {
 }
 
 async function copySecret() {
-  if (data.value?.secret && navigator.clipboard) {
-    try {
-      await navigator.clipboard.writeText(data.value.secret)
-      ElMessage.success('密钥已复制')
-    } catch {
-      ElMessage.error('复制失败，请手动复制')
-    }
-  }
+  // 不再判断 navigator.clipboard：纯 HTTP 下它不存在，会让按钮静默失效（copyText 内部会降级）
+  if (await copyText(data.value?.secret)) ElMessage.success('密钥已复制')
+  else ElMessage.error('复制失败，请手动复制')
 }
 </script>
 

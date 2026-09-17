@@ -144,6 +144,8 @@ export interface AdminProductDetail {
   requires_identity: boolean
   profit_type: number
   profit_value: number
+  upgrade_whitelist_enabled: boolean
+  upgrade_targets: number[]
 }
 export interface AdminProductFormData {
   ok: number
@@ -155,6 +157,7 @@ export interface AdminProductFormData {
   hints: Record<string, ProductFormHints>
   upstream_bound: boolean
   product?: AdminProductDetail
+  upgrade_candidates?: { id: number; name: string }[]
 }
 export async function fetchAdminProductForm(id?: number): Promise<AdminProductFormData> {
   const res = await http.get<AdminProductFormData>(id ? `/products/${id}/edit` : '/products/new')

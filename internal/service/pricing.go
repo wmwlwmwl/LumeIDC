@@ -252,6 +252,74 @@ func MonthlySellPrice(ctx context.Context, products *repo.Products, productID in
 	return mathRound(applyProfit(mathRound(quote.Total), pt, pv)), nil
 }
 
+// cycleDays 各计费周期的折算天数，供升降级差价按剩余天数折算（proration）。
+// 与到期/续费口径保持一致：月 30、季 90、年 365。
+var cycleDays = map[string]float64{"monthly": 30, "quarterly": 90, "yearly": 365}
+
+var cycleLabels = map[string]string{"monthly": "月付", "quarterly": "季付", "yearly": "年付"}
+
+// CycleDays 周期折算天数；未知周期返回 0。
+func CycleDays(cycle string) float64 { return cycleDays[cycle] }
+
+// CycleSellPrice 某产品在给定周期与配置下的售价（基础周期价 + 配置加价，再按利润加成）。
+// 与 MonthlySellPrice 同口径，区别在于周期可变——升级差价两侧可能处于不同周期（如月付→年付）。
+// 季/年价未配置（<=0）时报错，避免把 0 元当作有效周期价算出差价为 0 的怪单。
+func CycleSellPrice(ctx context.Context, products *repo.Products, productID int64, cycle string, selection map[string]string) (float64, error) {
+	if _, ok := cycleDays[cycle]; !ok {
+		return 0, fmt.Errorf("无效的计费周期: %s", cycle)
+	}
+	psID, err := products.DefaultPricesetID(ctx)
+	if err != nil {
+		return 0, err
+	}
+	pr, err := products.Price(ctx, productID, psID)
+	if err != nil {
+		return 0, err
+	}
+	raw := pr.Monthly
+	if cycle == "quarterly" {
+		raw = pr.Quarterly
+	} else if cycle == "yearly" {
+		raw = pr.Yearly
+	}
+	base, err := strconv.ParseFloat(raw, 64)
+	if err != nil || base < 0 || (cycle != "monthly" && base <= 0) {
+		return 0, fmt.Errorf("商品%s价格无效", cycleLabels[cycle])
+	}
+	opts, err := products.GetConfigOptions(ctx, productID)
+	if err != nil {
+		return 0, err
+	}
+	quote, err := CalculateQuote(opts, base, cycle, selection)
+	if err != nil {
+		return 0, err
+	}
+	pt, pv, err := products.ProductSellProfit(ctx, productID)
+	if err != nil {
+		return 0, err
+	}
+	return mathRound(applyProfit(mathRound(quote.Total), pt, pv)), nil
+}
+
+// ProratedDiff 按剩余天数折算的升降级差价：
+//
+//	diff = 目标周期价/目标周期天数 × R − 当前周期价/当前周期天数 × R
+//
+// 两侧各按自身周期折算日价，因此换周期（月付→年付）时金额与实际周期一致，
+// 不会再出现"选年付却只收一个月差价"的错位。R 为剩余天数，向上取整（不足一天按一天算）。
+// diff > 0 为升级补款，< 0 为降级（当前策略：不退款，见 prepareUpgrade）。
+func ProratedDiff(curPrice float64, curCycle string, tgtPrice float64, tgtCycle string, remainDays float64) (float64, error) {
+	cd, ok1 := cycleDays[curCycle]
+	td, ok2 := cycleDays[tgtCycle]
+	if !ok1 || !ok2 {
+		return 0, fmt.Errorf("无效的计费周期")
+	}
+	if remainDays <= 0 {
+		return 0, fmt.Errorf("服务已到期，请先续费后再升降级")
+	}
+	return mathRound(tgtPrice/td*remainDays - curPrice/cd*remainDays), nil
+}
+
 // SellPriceFromData 内存版月售价：给定基础月价/配置选项/利润与选择，与 MonthlySellPrice 同口径。
 // 供列表页批量计价（数据已随主查询带回，避免逐行 N 次查询）。
 func SellPriceFromData(base float64, opts []repo.ConfigOption, pt int16, pv float64, selection map[string]string) float64 {

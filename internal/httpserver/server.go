@@ -348,7 +348,7 @@ func Build(cfg *config.Config, version string) (*App, error) {
 	paymentSvc.TriggerFulfillment = func() { fulfillment.TriggerDrain(context.Background(), 3) }
 	cronJobs := &cron.Jobs{DB: database, Fulfillment: fulfillment, Notifier: notifier,
 		Providers: providers, Servers: serversRepo, Products: products, Lifecycle: lifecycle,
-		Gateways: gatewaysRepo, Payment: paymentSvc,
+		Gateways: gatewaysRepo, Payment: paymentSvc, Settings: settingsRepo,
 		OrderQueriers: orderQueriers}
 	notifier.StartMail()
 	notifier.StartSMS()

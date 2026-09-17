@@ -591,7 +591,96 @@ func (p *Products) FindByUpstreamPID(ctx context.Context, serverID, upstreamPID 
 	return id, err
 }
 
-// LinkedUpstreamPIDs 该上游服务器已对接的本地产品上游 PID 集合（目录页标注“已对接”）。
+// UpgradeCandidate 后台「可升级范围」候选条目。
+type UpgradeCandidate struct {
+	ID   int64
+	Name string
+}
+
+// UpgradeWhitelistEnabled 产品是否启用了可升级白名单（false 表示沿用同服务器全量候选）。
+func (p *Products) UpgradeWhitelistEnabled(ctx context.Context, productID int64) (bool, error) {
+	var on bool
+	if err := p.db.QueryRowContext(ctx,
+		`SELECT upgrade_whitelist_enabled FROM products WHERE id=$1`, productID).Scan(&on); err != nil {
+		return false, err
+	}
+	return on, nil
+}
+
+// UpgradeTargetIDs 白名单内可升级目标集合（未配置任何目标时返回空集合，非错误）。
+func (p *Products) UpgradeTargetIDs(ctx context.Context, productID int64) (map[int64]bool, error) {
+	rows, err := p.db.QueryContext(ctx,
+		`SELECT target_product_id FROM product_upgrade_targets WHERE product_id=$1`, productID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int64]bool{}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out[id] = true
+	}
+	return out, rows.Err()
+}
+
+// SetUpgradeWhitelist 保存白名单开关与目标（事务内先删后插，避免残留已取消的目标）。
+// targets 为空且 enabled=true 意味着「不允许升级到任何产品」，入口会被隐藏。
+func (p *Products) SetUpgradeWhitelist(ctx context.Context, productID int64, enabled bool, targets []int64) error {
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE products SET upgrade_whitelist_enabled=$2 WHERE id=$1`, productID, enabled); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM product_upgrade_targets WHERE product_id=$1`, productID); err != nil {
+		return err
+	}
+	for _, t := range targets {
+		if t == productID {
+			continue // 不能把自己列为升级目标
+		}
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO product_upgrade_targets(product_id,target_product_id) VALUES($1,$2)
+			 ON CONFLICT DO NOTHING`, productID, t); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// SameServerUpgradeCandidates 可作为升级目标的同服务器候选（排除自己、隐藏、上游已下架）。
+// 供后台勾选用；与运行时过滤条件保持一致，避免出现「勾不上但能升」或反之。
+func (p *Products) SameServerUpgradeCandidates(ctx context.Context, productID int64) ([]UpgradeCandidate, error) {
+	rows, err := p.db.QueryContext(ctx,
+		`SELECT p.id, p.name FROM products p
+		 JOIN products cur ON cur.id=$1
+		 WHERE p.server_id IS NOT DISTINCT FROM cur.server_id
+		   AND p.hidden=false AND coalesce(p.upstream_offline_reason,'')=''
+		   AND p.id<>$1
+		 ORDER BY p.id`, productID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []UpgradeCandidate
+	for rows.Next() {
+		var c UpgradeCandidate
+		if err := rows.Scan(&c.ID, &c.Name); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// LinkedUpstreamPIDs 该上游服务器已对接的本地产品上游 PID 集合（目录页标注"已对接"）。
 func (p *Products) LinkedUpstreamPIDs(ctx context.Context, serverID int64) (map[int]bool, error) {
 	rows, err := p.db.QueryContext(ctx,
 		`SELECT upstream_pid FROM products WHERE server_id=$1 AND upstream_pid>0`, serverID)

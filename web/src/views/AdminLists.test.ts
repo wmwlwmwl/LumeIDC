@@ -50,6 +50,7 @@ const components = Object.fromEntries(cases.map(([name]) => {
     },
     '@element-plus/icons-vue': {}, '../admin/api': api, '../admin/useAdminTable': table,
     '../http/index': { http: { post } }, '../utils/admin-labels': labels,
+    '@/utils/clipboard': { copyText: vi.fn(async () => true) },
   }
   const component = new Function('require', 'exports', `const useRouter = () => ({ push() {} });\n${compiled}\nreturn Component`)((id: string) => {
     if (id.endsWith('.vue')) return {}

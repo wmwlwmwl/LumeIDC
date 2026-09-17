@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -135,12 +136,34 @@ func (m *AdminManage) ProductForm(w http.ResponseWriter, r *http.Request) {
 		if p.ServerID.Valid {
 			serverID = p.ServerID.Int64
 		}
-		out["product"] = map[string]any{
+		pm := map[string]any{
 			"id": p.ID, "name": p.Name, "description": p.Description,
 			"type_id": typeID, "server_id": serverID, "upstream_pid": p.UpstreamPID,
 			"stock": p.Stock, "hidden": p.Hidden, "requires_identity": p.RequiresIdentity,
 			"profit_type": p.ProfitType, "profit_value": p.ProfitValue,
 		}
+		// 可升级白名单（迁移 069）：开关 + 已选目标 + 同服务器候选（供后台勾选）。
+		// 读取失败按未启用处理，避免一次查询异常把整个编辑页打挂。
+		pm["upgrade_whitelist_enabled"] = false
+		if on, err := m.Products.UpgradeWhitelistEnabled(r.Context(), p.ID); err == nil {
+			pm["upgrade_whitelist_enabled"] = on
+		}
+		ids := []int64{}
+		if set, err := m.Products.UpgradeTargetIDs(r.Context(), p.ID); err == nil {
+			for id := range set {
+				ids = append(ids, id)
+			}
+			sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+		}
+		pm["upgrade_targets"] = ids
+		if cands, err := m.Products.SameServerUpgradeCandidates(r.Context(), p.ID); err == nil {
+			cl := make([]map[string]any, 0, len(cands))
+			for _, c := range cands {
+				cl = append(cl, map[string]any{"id": c.ID, "name": c.Name})
+			}
+			out["upgrade_candidates"] = cl
+		}
+		out["product"] = pm
 	}
 	writeJSON(w, out)
 }
@@ -343,6 +366,10 @@ func (m *AdminManage) ProductSave(w http.ResponseWriter, r *http.Request) {
 		if err == nil {
 			err = m.Products.SetRequiresIdentity(r.Context(), id, requiresIdentity)
 		}
+		if err == nil {
+			err = m.Products.SetUpgradeWhitelist(r.Context(), id,
+				parseBoolFlag(fv("upgrade_whitelist_enabled")), parseUpgradeTargets(fv("upgrade_targets")))
+		}
 		if err != nil {
 			fail(err.Error())
 			return
@@ -378,6 +405,49 @@ func (m *AdminManage) ProductDelete(w http.ResponseWriter, r *http.Request) {
 }
 
 // ---------- 用户列表 ----------
+
+// parseBoolFlag 解析开关类表单值（"1"/"true"/"on"/"yes" 视为开）。
+func parseBoolFlag(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "on", "yes":
+		return true
+	}
+	return false
+}
+
+// parseUpgradeTargets 解析可升级目标列表：支持 JSON 数组与逗号分隔两种形态
+// （前端多选控件可能提交 [1,2] 或 "1,2"）。非法片段跳过，不阻断保存。
+func parseUpgradeTargets(raw string) []int64 {
+	out := []int64{}
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return out
+	}
+	if strings.HasPrefix(raw, "[") {
+		var arr []any
+		if json.Unmarshal([]byte(raw), &arr) == nil {
+			for _, v := range arr {
+				switch n := v.(type) {
+				case float64:
+					if n > 0 {
+						out = append(out, int64(n))
+					}
+				case string:
+					if id, e := strconv.ParseInt(strings.TrimSpace(n), 10, 64); e == nil && id > 0 {
+						out = append(out, id)
+					}
+				}
+			}
+			return out
+		}
+	}
+	for _, part := range strings.Split(raw, ",") {
+		if id, e := strconv.ParseInt(strings.TrimSpace(part), 10, 64); e == nil && id > 0 {
+			out = append(out, id)
+		}
+	}
+	return out
+}
 
 func mustOpts(s string) []repo.ConfigOption {
 	var opts []repo.ConfigOption
