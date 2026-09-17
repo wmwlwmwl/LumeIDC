@@ -2,7 +2,11 @@
 <!-- 支持常用表单组件、自定义组件、插槽、校验、隐藏表单项 -->
 <!-- 写法同 ElementPlus 官方文档组件，把属性写在 props 里面就可以了 -->
 <template>
-  <section class="art-search-bar art-card-xs" :class="{ 'is-expanded': isExpanded }">
+  <section
+    class="art-search-bar art-card-xs"
+    :class="{ 'is-expanded': isExpanded }"
+    :style="{ '--art-search-gutter-half': gutterHalf }"
+  >
     <ElForm
       ref="formRef"
       :model="modelValue"
@@ -514,11 +518,31 @@
 
   // 解构 props 以便在模板中直接使用
   const { span, gutter, labelPosition, labelWidth } = toRefs(props)
+
+  /**
+   * el-row 的列间距靠 ±gutter/2 的负边距实现，而且写的是**内联样式**（样式表压不掉）。
+   * 负边距会让行盒撑出 form 的内容盒 6px，form 的 overflow-x 又是 visible，
+   * 于是被响应式检查判成「内容漏出」（全后台 21 项噪音的真正来源）。
+   * 这里把等量 padding 从 section 让给 form：行盒正好落进 form 的 padding 盒，
+   * 溢出消失，而列内容的实际位置分毫不变（section 少 g/2 + form 多 g/2）。
+   */
+  const gutterHalf = computed(() => {
+    const g = Number(gutter.value)
+    return Number.isFinite(g) && g > 0 ? `${g / 2}px` : '0px'
+  })
 </script>
 
 <style lang="scss" scoped>
   .art-search-bar {
-    padding: 15px 20px 0;
+    // 横向 padding 让出 gutter/2 交给下面的 form 承担，原因见 script 中 gutterHalf 的注释
+    padding: 15px calc(20px - var(--art-search-gutter-half, 0px)) 0;
+
+    // el-row 的 ±gutter/2 负边距是内联样式，压不掉；把等量 padding 挪到 form 上，
+    // 行盒就正好落进 form 的 padding 盒，不再被判为「内容漏出」。
+    > :deep(.el-form) {
+      padding-right: var(--art-search-gutter-half, 0px);
+      padding-left: var(--art-search-gutter-half, 0px);
+    }
 
     .action-column {
       flex: 1;
@@ -569,7 +593,7 @@
   // 响应式优化
   @media (width <= 768px) {
     .art-search-bar {
-      padding: 16px 16px 0;
+      padding: 16px calc(16px - var(--art-search-gutter-half, 0px)) 0;
 
       .action-column {
         .action-buttons-wrapper {
