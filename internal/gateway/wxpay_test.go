@@ -20,8 +20,11 @@ import (
 	"time"
 )
 
+// 测试夹具一律使用一眼可辨的假值：与真实格式相同的占位串
+// （如 AppID 的 wx + 16 位十六进制、文档里的示例证书序列号）
+// 会被 GitHub 密钥扫描误报成泄露凭据，需要人工关闭告警。
 const (
-	wxpayTestAPIv3Key = "0123456789abcdef0123456789abcdef" // 32 位
+	wxpayTestAPIv3Key = "test-only-apiv3-key-000000000000" // 32 位，仅用于测试
 	wxpayTestGCMNonce = "123456789012"                     // 12 位，与 GCM 标准 nonce 长度一致
 	wxpayAuthPrefix   = "WECHATPAY2-SHA256-RSA2048 "
 )
@@ -30,13 +33,13 @@ func wxpayTestConfig(t *testing.T, merchantKey *rsa.PrivateKey, wechatPub *rsa.P
 	t.Helper()
 	return map[string]string{
 		"api_url":       apiURL,
-		"app_id":        "wx1234567890abcdef",
-		"mch_id":        "1900000001",
+		"app_id":        "test-wx-appid",
+		"mch_id":        "test-mch-id",
 		"private_key":   privatePEM(merchantKey),
 		"api_v3_key":    wxpayTestAPIv3Key,
-		"cert_serial":   "1DDE55AD98ED71D6EDD4A4A16996DE7B47773A8C",
+		"cert_serial":   "test-cert-serial",
 		"public_key":    publicPEM(wechatPub),
-		"public_key_id": "PUB_KEY_ID_0112345678901234567890",
+		"public_key_id": "test-public-key-id",
 	}
 }
 
@@ -460,7 +463,7 @@ func TestWxpayQueryOrder(t *testing.T) {
 		if !strings.HasPrefix(r.URL.Path, wxpayQueryPath) {
 			t.Errorf("请求路径 = %q", r.URL.Path)
 		}
-		if !strings.Contains(r.URL.RawQuery, "mchid=1900000001") {
+		if !strings.Contains(r.URL.RawQuery, "mchid=test-mch-id") {
 			t.Errorf("查单缺少 mchid: %q", r.URL.RawQuery)
 		}
 		assertWxpayRequestSignature(t, r, &merchantKey.PublicKey, "")
