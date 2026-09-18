@@ -113,6 +113,11 @@ func (p *ConfiguredCaptchaProvider) PublicConfig(ctx context.Context, scene stri
 		return out
 	}
 	provider := strings.ToLower(p.get(ctx, "captcha_provider"))
+	// 优先使用新适配器注册表（开闭原则：新增供应商只新增适配器文件）。
+	if adapter, found := captchaFromRegistry(provider, p.Settings, p.client()); found {
+		return adapter.PublicConfig(ctx, scene)
+	}
+	// 旧实现回退（逐步迁移到新适配器后删除）。
 	sdkURL, _ := captchaSDK(provider)
 	if sdkURL == "" {
 		return out
@@ -140,6 +145,11 @@ func (p *ConfiguredCaptchaProvider) Verify(ctx context.Context, scene string, pa
 	if !cfg.Enabled {
 		return errors.New("外部人机验证未启用或配置不完整")
 	}
+	// 优先使用新适配器注册表（开闭原则：新增供应商只新增适配器文件）。
+	if adapter, found := captchaFromRegistry(cfg.Provider, p.Settings, p.client()); found {
+		return adapter.Verify(ctx, scene, payload, ip)
+	}
+	// 旧实现回退（逐步迁移到新适配器后删除）。
 	switch cfg.Provider {
 	case "geetest":
 		return p.verifyGeetest(ctx, payload, ip)
