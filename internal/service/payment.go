@@ -1158,7 +1158,8 @@ func (p *Payment) RefundPendingService(ctx context.Context, adminID, serviceID i
 	if _, err := tx.ExecContext(ctx, `UPDATE orders SET status=2 WHERE id=$1`, orderID); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE services SET status=3 WHERE id=$1 AND status=0`, serviceID); err != nil {
+	// provision_error 一并清空：退款终止后该服务无处展示（读取点均过滤 status<3），留着是脏数据。
+	if _, err := tx.ExecContext(ctx, `UPDATE services SET status=3, provision_error='' WHERE id=$1 AND status=0`, serviceID); err != nil {
 		return err
 	}
 	return tx.Commit()

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onBeforeUnmount, h } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox, ElTag, ElButton } from 'element-plus'
 import type { ColumnOption } from '@/types'
 import ArtButtonTable from '../components/core/forms/art-button-table/index.vue'
@@ -19,11 +19,14 @@ import { useAdminRequest } from '../admin/useAdminTable'
 
 const list = ref<AdminService[]>([])
 const router = useRouter()
+const route = useRoute()
 const products = ref<AdminProductOption[]>([])
 const loading = ref(false)
 const showSearchBar = ref(true)
 const searchForm = ref<{ q: string; status: string; product_id: number | '' }>({
-  q: '',
+  // 支持 /services?q=25 直达：后台通知铃铛按服务编号定位失败服务，
+  // 运维按钮（重试/退款/对账）都在列表行的操作列，详情页没有。
+  q: typeof route.query.q === 'string' ? route.query.q : '',
   status: '',
   product_id: '',
 })
@@ -33,7 +36,7 @@ let disposed = false
 let inFlight = 0
 
 const searchItems = computed(() => [
-  { label: '关键词', key: 'q', type: 'input', placeholder: '搜索用户 / 服务名 / 产品', clearable: true },
+  { label: '关键词', key: 'q', type: 'input', placeholder: '搜索服务编号 / 用户 / 服务名 / 产品', clearable: true },
   {
     label: '产品',
     key: 'product_id',
@@ -236,6 +239,18 @@ async function load(silent = false) {
   }
 }
 onMounted(() => load())
+// 已在本页时从通知铃铛再次跳入（只变 query、组件不重建）：同步关键词并重新查询，
+// 否则管理员点了铃铛却看不到任何变化。
+watch(
+  () => route.query.q,
+  (v) => {
+    const q = typeof v === 'string' ? v : ''
+    if (q && q !== searchForm.value.q) {
+      searchForm.value.q = q
+      void load()
+    }
+  },
+)
 onBeforeUnmount(() => {
   disposed = true
   recoverGeneration++

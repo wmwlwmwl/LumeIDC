@@ -356,17 +356,28 @@ func (lc *Lifecycle) Terminate(ctx context.Context, serviceID int64) error {
 	if s.Status == 3 {
 		return nil
 	}
-	return lc.transition(ctx, s, 3, 3, "<", "terminating", "上游删除失败",
+	err = lc.transition(ctx, s, 3, 3, "<", "terminating", "上游删除失败",
 		func(ctx context.Context, p server.Provider, cfg server.Config, host int64) error {
 			return p.Terminate(ctx, cfg, host)
 		})
+	// 删除即终局：provision_error 在所有读取点都被 status<3 过滤（列表/状态轮询/通知铃铛），
+	// 留着只是永不可见的脏数据，还会让未来按它统计的新代码误算出「幽灵条目」（铃铛曾因此
+	// 显示已删除服务、点进去却搜不到）。故删除成功后连同清空。
+	if err == nil {
+		if _, e := lc.db.ExecContext(ctx,
+			`UPDATE services SET provision_error='' WHERE id=$1 AND status=3`, serviceID); e != nil {
+			log.Printf("[lifecycle] service %d 删除后清空失败原因失败: %v", serviceID, e)
+		}
+	}
+	return err
 }
 
 // TerminateLocal 仅本地删除：置 status=3（含清除过渡状态），不调用上游。
 // 用于后台「本地删除」——保留上游实例，便于找回或避免误删。
 func (lc *Lifecycle) TerminateLocal(ctx context.Context, serviceID int64) error {
+	// provision_error 一并清空：删除后无处展示（读取点均过滤 status<3），留着是脏数据（见 Terminate 注释）。
 	if _, err := lc.db.ExecContext(ctx,
-		`UPDATE services SET status=3, desired_status=NULL, transition_state='' WHERE id=$1 AND status<3`,
+		`UPDATE services SET status=3, desired_status=NULL, transition_state='', provision_error='' WHERE id=$1 AND status<3`,
 		serviceID); err != nil {
 		return err
 	}
@@ -692,7 +703,7 @@ func (lc *Lifecycle) countUpstreamMiss(ctx context.Context, serviceID int64, thr
 			 WHERE id=$1 AND status < 3
 			 RETURNING id, upstream_miss_count
 		 )
-		 UPDATE services SET status=3
+		 UPDATE services SET status=3, provision_error=''
 		  WHERE id IN (SELECT id FROM bump WHERE upstream_miss_count >= $2)
 		 RETURNING true`, serviceID, threshold).Scan(&dropped)
 	switch {

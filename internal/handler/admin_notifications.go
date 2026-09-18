@@ -4,9 +4,22 @@ import (
 	"database/sql"
 	"log"
 	"net/http"
+	"strconv"
 
 	"lumeidc/internal/middleware"
 )
+
+// noticeFulfillmentOp 由服务的过渡态推断失败的操作类型；开通不设过渡态，故为兜底值。
+func noticeFulfillmentOp(state string) string {
+	switch state {
+	case "renew_pending":
+		return "续费"
+	case "upgrading":
+		return "升降级"
+	default:
+		return "开通"
+	}
+}
 
 // AdminNotifications GET /admin/notifications — 后台通知中心（Art 顶栏消息面板）。
 // 返回待办（停用申请/实名待审核）、消息（工单）、通知（公告）与待办总数。
@@ -88,7 +101,48 @@ func (a *Admin) adminNotifications(w http.ResponseWriter, r *http.Request) {
 			}
 			return map[string]any{
 				"type": "verification", "title": "实名待审核 · " + email,
-				"time": t, "link": "/verifications",
+				// 直接进该条申请的审核页（admin-verification-detail 支持 :id）
+				"time": t, "link": "/verifications/" + strconv.FormatInt(id, 10),
+			}, nil
+		},
+	)
+
+	// 履约失败（开通/续费/升降配）→ 待办
+	// ponytail: 判据用 services.provision_error 而不是 fulfillment_jobs.status——
+	// 管理员退款不会改任务状态（只写 checkpoint 并清服务状态），按任务状态统计会留下
+	// 永远清不掉的红点；provision_error 只在失败待处理时非空，重试成功或退款后会被清空，
+	// 条目随处置自动消失。
+	//
+	// 必须同时限定 status<3（已删除的服务不再展示）：删除服务不会清空 provision_error，
+	// 而「服务实例」列表页有 status<3 过滤——只按 provision_error 统计会出现
+	// 「待办里有、点进去却搜不到」的幽灵条目，红点也永远清不掉。
+	// 两处过滤条件保持一致，条目跳过去才一定能落到那一行。
+	// 条件直接写 provision_error<>''（该列 NOT NULL DEFAULT ''）：包一层 coalesce 会让
+	// 优化器无法与部分索引谓词匹配，071 的索引就白建了。
+	pending += count(`SELECT count(*) FROM services WHERE provision_error<>'' AND status<3`)
+	collect(&todos,
+		`SELECT s.id, coalesce(nullif(s.name,''),'服务 #'||s.id), coalesce(s.transition_state,''),
+		        left(coalesce(s.provision_error,''),80),
+		        to_char(coalesce(j.last_at, s.created_at),'YYYY-MM-DD HH24:MI')
+		 FROM services s
+		 LEFT JOIN LATERAL (SELECT max(updated_at) AS last_at FROM fulfillment_jobs WHERE service_id=s.id) j ON true
+		 WHERE s.provision_error<>'' AND s.status<3
+		 ORDER BY coalesce(j.last_at, s.created_at) DESC LIMIT 10`,
+		func(rows *sql.Rows) (map[string]any, error) {
+			var id int64
+			var svc, state, reason, t string
+			if err := rows.Scan(&id, &svc, &state, &reason, &t); err != nil {
+				return nil, err
+			}
+			title := noticeFulfillmentOp(state) + "失败 · " + svc + "（#" + strconv.FormatInt(id, 10) + "）"
+			if reason != "" {
+				title += "：" + reason
+			}
+			return map[string]any{
+				"type": "fulfillment", "title": title,
+				// 跳服务实例列表并按编号定位：重试开通/续费/升降级与退款都在列表行的操作列，
+				// 而 /services/{id} 是复用的用户端详情页，那里没有任何运维按钮。
+				"time": t, "link": "/services?q=" + strconv.FormatInt(id, 10),
 			}, nil
 		},
 	)

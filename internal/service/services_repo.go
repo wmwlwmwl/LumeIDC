@@ -391,9 +391,21 @@ func (s *ServicesRepo) AdminList(ctx context.Context, f AdminServiceFilter) ([]A
 	 LEFT JOIN product_prices pp ON pp.product_id=p.id AND pp.priceset_id=(SELECT min(id) FROM pricesets)
 	 WHERE sv.status < 3`
 	args := []any{}
+	// orderPrefix 仅在按编号精确命中时非空，让目标服务排最前（默认排序不变）。
+	orderPrefix := ""
 	if k := strings.TrimSpace(f.Keyword); k != "" {
 		args = append(args, "%"+k+"%")
-		query += fmt.Sprintf(` AND (u.email ILIKE $%d OR sv.name ILIKE $%d OR p.name ILIKE $%d)`, len(args), len(args), len(args))
+		// 纯数字关键词同时按服务编号精确匹配：后台常按 #id 定位单条服务（如从通知铃铛跳入）。
+		// 整段条件必须整体加括号——AND 优先级高于 OR，散写会把 sv.status<3 等前置条件一起绕过。
+		clause := fmt.Sprintf(` AND ((u.email ILIKE $%d OR sv.name ILIKE $%d OR p.name ILIKE $%d)`, len(args), len(args), len(args))
+		if n, perr := strconv.ParseInt(k, 10, 64); perr == nil && n > 0 {
+			args = append(args, n)
+			clause += fmt.Sprintf(` OR sv.id=$%d`, len(args))
+			// 精确命中的那条必须第一眼可见：否则「名称/邮箱里恰好含这串数字」的服务会把它
+			// 挤到 LIMIT 200 之外，管理员点了通知却找不到目标。
+			orderPrefix = fmt.Sprintf(`CASE WHEN sv.id=$%d THEN 0 ELSE 1 END, `, len(args))
+		}
+		query += clause + `)`
 	}
 	if f.ProductID > 0 {
 		args = append(args, f.ProductID)
@@ -403,7 +415,7 @@ func (s *ServicesRepo) AdminList(ctx context.Context, f AdminServiceFilter) ([]A
 		args = append(args, f.Status)
 		query += fmt.Sprintf(` AND sv.status=$%d`, len(args))
 	}
-	query += ` ORDER BY sv.id DESC LIMIT 200`
+	query += ` ORDER BY ` + orderPrefix + `sv.id DESC LIMIT 200`
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
