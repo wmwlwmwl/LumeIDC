@@ -35,6 +35,7 @@ type Pages struct {
 	Announcements *repo.Announcements
 	Settings      *repo.Settings
 	Invoices      *repo.Invoices
+	Promotion     *service.PromotionService
 	CancelReqs    *repo.CancelRequests // 用户停用申请
 	Payment       *service.Payment     // 降级 0 元单余额核销用
 	*Deps
@@ -47,11 +48,16 @@ func (h *Pages) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /{$}", h.home)
 	mux.HandleFunc("GET /products", h.products)
 	mux.HandleFunc("GET /cart", h.cart)
+	// 营销活动页
+	mux.HandleFunc("GET /promotions", h.promotionList)
+	mux.HandleFunc("GET /promotion/{id}", h.promotionDetail)
+	mux.HandleFunc("POST /promotion/{id}/claim", h.promotionClaim)
 	mux.HandleFunc("GET /services", h.myServices)
 	mux.HandleFunc("GET /buy/{productID}", h.buyForm)
 	mux.HandleFunc("GET /user", h.userHome)
 	mux.HandleFunc("GET /user/recharge", h.rechargeForm)
 	mux.HandleFunc("POST /user/recharge", h.rechargeSubmit)
+	mux.HandleFunc("GET /user/promotion-coupons", h.userPromotionCoupons)
 	mux.HandleFunc("GET /user/invoices", h.userInvoices)
 	mux.HandleFunc("GET /services/{serviceID}", h.serviceDetail)
 	mux.HandleFunc("POST /services/{serviceID}/refresh", h.serviceRefresh)
@@ -518,7 +524,51 @@ outer:
 		"catalog":       typeNavJSON(nav),
 		"products":      productListJSON(views),
 		"announcements": announcementJSON(h.listAnnouncements(r.Context())),
+		"promotions":    h.homePromotions(r.Context()),
 	})
+}
+
+// homePromotions 首页活动入口：进行中优先，其次即将开始，最多 4 个；已结束不展示。
+func (h *Pages) homePromotions(ctx context.Context) []map[string]any {
+	if h.Promotion == nil || h.Promotion.Promo == nil {
+		return []map[string]any{}
+	}
+	all, err := h.Promotion.Promo.List(ctx)
+	if err != nil || len(all) == 0 {
+		return []map[string]any{}
+	}
+	now := time.Now()
+	ongoing := make([]repo.Promotion, 0, 4)
+	upcoming := make([]repo.Promotion, 0, 4)
+	for _, p := range all {
+		if !p.Enabled || now.After(p.EndsAt) {
+			continue
+		}
+		switch p.Status() {
+		case "ongoing":
+			ongoing = append(ongoing, p)
+		case "upcoming":
+			upcoming = append(upcoming, p)
+		}
+	}
+	// List 已按 id DESC（新建在前）；进行中排在即将开始之前。
+	picked := append(ongoing, upcoming...)
+	if len(picked) > 4 {
+		picked = picked[:4]
+	}
+	out := make([]map[string]any, 0, len(picked))
+	for _, p := range picked {
+		out = append(out, map[string]any{
+			"id":          p.ID,
+			"name":        p.Name,
+			"description": p.Description,
+			"type":        p.Type,
+			"banner":      p.Banner,
+			"ends_at":     p.EndsAt.Format(time.RFC3339),
+			"status":      p.Status(),
+		})
+	}
+	return out
 }
 
 func (h *Pages) products(w http.ResponseWriter, r *http.Request) {

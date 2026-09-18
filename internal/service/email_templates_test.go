@@ -33,7 +33,7 @@ func TestEmailTemplateCatalogAndValidation(t *testing.T) {
 			}
 		}
 	}
-	if len(seen) != 14 {
+	if len(seen) != 16 {
 		t.Fatal("业务模板目录不完整")
 	}
 	base, _ := defaultEmailTemplate("payment_success")

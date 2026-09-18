@@ -1,0 +1,251 @@
+package service
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"math"
+	"strconv"
+	"time"
+
+	"lumeidc/internal/repo"
+)
+
+// PromotionService 营销活动服务（计价 + 校验）。
+type PromotionService struct {
+	db      *sql.DB
+	Promo   *repo.Promotions
+	Coupons *repo.Coupons
+}
+
+// NewPromotionService 创建活动服务。
+func NewPromotionService(db *sql.DB, promo *repo.Promotions, coupons *repo.Coupons) *PromotionService {
+	return &PromotionService{db: db, Promo: promo, Coupons: coupons}
+}
+
+// ActivePromotion 商品命中的生效活动。
+type ActivePromotion struct {
+	PromotionID        int64
+	PromotionProductID int64
+	Type               string
+	Name               string
+	LimitPerUser       int
+	QuotaTotal         int
+	QuotaSold          int
+	// 各类型规则参数
+	Price     float64 // discount / flash_sale / new_user 的活动价
+	Threshold float64 // full_reduction 满减门槛
+	Reduce    float64 // full_reduction 减免金额
+	CouponID  int64   // coupon_giveaway 关联优惠券
+	RulesRaw  json.RawMessage
+}
+
+// ActivePromotionFor 查询商品当前生效的活动。
+func (s *PromotionService) ActivePromotionFor(ctx context.Context, productID, pricesetID int64, cycle string) (*ActivePromotion, error) {
+	ap, err := s.Promo.ActivePromotionFor(ctx, productID, pricesetID, cycle)
+	if err != nil || ap == nil {
+		return nil, err
+	}
+	out := &ActivePromotion{
+		PromotionID:        ap.Promotion.ID,
+		PromotionProductID: ap.Product.ID,
+		Type:               ap.Promotion.Type,
+		Name:               ap.Promotion.Name,
+		LimitPerUser:       ap.Promotion.LimitPerUser,
+		QuotaTotal:         ap.QuotaTotal,
+		QuotaSold:          ap.QuotaSold,
+		RulesRaw:           ap.Product.Rules,
+	}
+	// 解析规则参数
+	var rules map[string]any
+	if len(ap.Product.Rules) > 0 {
+		_ = json.Unmarshal(ap.Product.Rules, &rules)
+	}
+	switch ap.Promotion.Type {
+	case "discount", "flash_sale", "new_user":
+		if v, ok := rules["price"].(float64); ok {
+			out.Price = v
+		}
+	case "full_reduction":
+		if v, ok := rules["threshold"].(float64); ok {
+			out.Threshold = v
+		}
+		if v, ok := rules["reduce"].(float64); ok {
+			out.Reduce = v
+		}
+	case "coupon_giveaway":
+		if v, ok := rules["coupon_id"].(float64); ok {
+			out.CouponID = int64(v)
+		}
+	}
+	return out, nil
+}
+
+// ApplyPromotion 对原售价应用活动规则。
+// 输入：原售价 sell（利润加成后）、活动类型、规则参数
+// 输出：最终金额 finalAmount、优惠金额 discount
+// 注意：活动价订单不叠加优惠券（full_reduction / coupon_giveaway 除外）。
+func (s *PromotionService) ApplyPromotion(sell float64, promo *ActivePromotion) (finalAmount, discount float64) {
+	if promo == nil {
+		return sell, 0
+	}
+	switch promo.Type {
+	case "discount", "flash_sale", "new_user":
+		// 直接用活动价覆盖
+		if promo.Price > 0 && promo.Price < sell {
+			return promo.Price, math.Round((sell-promo.Price)*100) / 100
+		}
+		return sell, 0
+	case "full_reduction":
+		// 满减：达到门槛则减免
+		if promo.Threshold > 0 && sell >= promo.Threshold && promo.Reduce > 0 {
+			reduced := sell - promo.Reduce
+			if reduced < 0 {
+				reduced = 0
+			}
+			return math.Round(reduced*100) / 100, math.Round(promo.Reduce*100) / 100
+		}
+		return sell, 0
+	case "coupon_giveaway":
+		// 不改价格，下单时走优惠券抵扣
+		return sell, 0
+	}
+	return sell, 0
+}
+
+// CheckNewUser 校验是否新客。
+func (s *PromotionService) CheckNewUser(ctx context.Context, userID int64) (bool, error) {
+	return s.Promo.IsNewUser(ctx, userID)
+}
+
+// CheckQuotaAndLimit 下单时校验名额 + 限购（事务内调用）。
+// promoType 为 flash_sale 时锁定名额；limit_per_user > 0 时校验下单数。
+func (s *PromotionService) CheckQuotaAndLimit(ctx context.Context, tx *sql.Tx, promo *ActivePromotion, userID int64, limitPerUser int) error {
+	// 限量抢购：锁定名额
+	if promo.Type == "flash_sale" {
+		if err := s.Promo.TryReserveQuota(ctx, tx, promo.PromotionProductID); err != nil {
+			return err
+		}
+	}
+	// 限购校验
+	if limitPerUser > 0 {
+		if err := s.Promo.CheckLimitPerUser(ctx, tx, promo.PromotionID, userID, limitPerUser); err != nil {
+			// 名额已锁定，回滚时由事务释放
+			return err
+		}
+	}
+	return nil
+}
+
+// IncrOrderStats 支付成功后累加活动统计（下单量 + 成交金额）。
+func (s *PromotionService) IncrOrderStats(ctx context.Context, promotionID int64, paidAmount string) error {
+	amt, _ := strconv.ParseFloat(paidAmount, 64)
+	return s.Promo.IncrStats(ctx, promotionID, amt)
+}
+
+// ReleaseQuota 账单过期未支付时释放限量名额。
+func (s *PromotionService) ReleaseQuota(ctx context.Context, tx *sql.Tx, promotionProductID int64) error {
+	return s.Promo.ReleaseQuota(ctx, tx, promotionProductID)
+}
+
+func (s *PromotionService) ClaimCoupon(ctx context.Context, promotionID, userID, templateCouponID int64) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var startsAt, endsAt time.Time
+	err = tx.QueryRowContext(ctx,
+		`SELECT starts_at,ends_at FROM promotions WHERE id=$1 AND type='coupon_giveaway' AND enabled=true FOR UPDATE`,
+		promotionID).Scan(&startsAt, &endsAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return errors.New("活动不存在或未启用")
+	}
+	if err != nil {
+		return err
+	}
+	if time.Now().Before(startsAt) || !time.Now().Before(endsAt) {
+		return errors.New("当前不在活动领取时间内")
+	}
+
+	var claimedCouponID int64
+	err = tx.QueryRowContext(ctx,
+		`SELECT coupon_id FROM promotion_coupon_claims WHERE promotion_id=$1 AND user_id=$2 FOR UPDATE`,
+		promotionID, userID).Scan(&claimedCouponID)
+	if err == nil {
+		return errors.New("您已领取过该活动优惠券")
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+
+	var tpl repo.Coupon
+	var expires sql.NullTime
+	err = tx.QueryRowContext(ctx,
+		`SELECT id,type,value,min_amount,expires_at,active FROM coupons WHERE id=$1 FOR UPDATE`,
+		templateCouponID).Scan(&tpl.ID, &tpl.Type, &tpl.Value, &tpl.MinAmount, &expires, &tpl.Active)
+	if errors.Is(err, sql.ErrNoRows) {
+		return errors.New("活动优惠券模板不存在")
+	}
+	if err != nil {
+		return err
+	}
+	if !tpl.Active {
+		return errors.New("活动优惠券已失效")
+	}
+	if expires.Valid && !expires.Time.After(time.Now()) {
+		return errors.New("活动优惠券已过期")
+	}
+
+	var userCouponID int64
+	userCode := fmt.Sprintf("PROMO_%d_%d", promotionID, userID)
+	if err := tx.QueryRowContext(ctx,
+		`INSERT INTO coupons(code,type,value,min_amount,usage_limit,expires_at,active,user_id) VALUES($1,$2,$3,$4,1,$5,true,$6) ON CONFLICT DO NOTHING RETURNING id`,
+		userCode, tpl.Type, tpl.Value, tpl.MinAmount, expires, userID).Scan(&userCouponID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return errors.New("您已领取过该活动优惠券")
+		}
+		return fmt.Errorf("生成专属优惠码失败: %w", err)
+	}
+	var claimID int64
+	err = tx.QueryRowContext(ctx,
+		`INSERT INTO promotion_coupon_claims(promotion_id,user_id,coupon_id) VALUES($1,$2,$3) ON CONFLICT (promotion_id,user_id) DO NOTHING RETURNING id`,
+		promotionID, userID, userCouponID).Scan(&claimID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return errors.New("您已领取过该活动优惠券")
+	}
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// formatPromoAmount 格式化金额字符串（两位小数）。
+func formatPromoAmount(v float64) string {
+	return strconv.FormatFloat(math.Round(v*100)/100, 'f', 2, 64)
+}
+
+// ListUserCoupons 查询用户领取的活动券列表。
+func (s *PromotionService) ListUserCoupons(ctx context.Context, userID int64) ([]repo.UserCouponClaim, error) {
+	return s.Promo.ListUserCoupons(ctx, userID)
+}
+
+// ErrPromotionNotApplicable 活动不适用（如新客活动对老用户）。
+var ErrPromotionNotApplicable = errors.New("该活动不适用于您的账户")
+
+// ValidatePromotionApplicable 校验活动是否适用于该用户（如新客专享）。
+func (s *PromotionService) ValidatePromotionApplicable(ctx context.Context, promo *ActivePromotion, userID int64) error {
+	if promo.Type == "new_user" {
+		isNew, err := s.CheckNewUser(ctx, userID)
+		if err != nil {
+			return fmt.Errorf("校验新客状态失败: %w", err)
+		}
+		if !isNew {
+			return ErrPromotionNotApplicable
+		}
+	}
+	return nil
+}

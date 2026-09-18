@@ -27,6 +27,9 @@ export const adminPageRoutes: RouteRecordRaw[] = [
   { path: 'servers/:id(\\d+)/edit', name: 'admin-server-edit', component: () => import('@views/AdminServerForm.vue'), meta: { title: '编辑服务器', isHide: true, activePath: '/servers' } },
   { path: 'servers/:id(\\d+)/catalog', name: 'admin-server-catalog', component: () => import('@views/AdminCatalog.vue'), meta: { title: '目录导入', isHide: true, activePath: '/servers' } },
   { path: 'coupons', name: 'admin-coupons', component: () => import('@views/AdminCoupons.vue'), meta: { title: '优惠折扣', icon: 'ri:coupon-3-line' } },
+  { path: 'promotions', name: 'admin-promotions', component: () => import('@views/AdminPromotions.vue'), meta: { title: '营销活动', icon: 'ri:flashlight-line' } },
+  { path: 'promotions/new', name: 'admin-promotion-new', component: () => import('@views/AdminPromotionForm.vue'), meta: { title: '新增活动', isHide: true, activePath: '/promotions' } },
+  { path: 'promotions/:id(\\d+)/edit', name: 'admin-promotion-edit', component: () => import('@views/AdminPromotionForm.vue'), meta: { title: '编辑活动', isHide: true, activePath: '/promotions' } },
 
   { path: 'users', name: 'admin-users', component: () => import('@views/AdminUsers.vue'), meta: { title: '用户管理', icon: 'ri:user-3-line' } },
   { path: 'users/:id(\\d+)/edit', name: 'admin-user-edit', component: () => import('@views/AdminUserEdit.vue'), meta: { title: '编辑用户', isHide: true, activePath: '/users' } },
@@ -89,6 +92,7 @@ export const adminMenu: AppRouteRecord[] = [
       leaf('/cancel-requests', 'admin-cancel-requests', '停用申请', 'ri:chat-delete-line'),
       leaf('/servers', 'admin-servers', '上游服务器', 'ri:hard-drive-3-line'),
       leaf('/coupons', 'admin-coupons', '优惠折扣', 'ri:coupon-3-line'),
+      leaf('/promotions', 'admin-promotions', '营销活动', 'ri:flashlight-line'),
     ],
   },
   {

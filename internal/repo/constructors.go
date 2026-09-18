@@ -15,6 +15,7 @@ func NewGateways(db *sql.DB) *Gateways               { return &Gateways{db: db} 
 func NewIdentityStore(db *sql.DB) *IdentityStore     { return &IdentityStore{db: db} }
 func NewLoginAttempts(db *sql.DB) *LoginAttempts     { return &LoginAttempts{db: db} }
 func NewPeriodGrants(db *sql.DB) *PeriodGrants       { return &PeriodGrants{db: db} }
+func NewPromotions(db *sql.DB) *Promotions           { return &Promotions{db: db} }
 func NewProducts(db *sql.DB) *Products               { return &Products{db: db} }
 func NewProvisionRepo(db *sql.DB) *ProvisionRepo     { return &ProvisionRepo{db: db} }
 func NewRefunds(db *sql.DB) *Refunds                 { return &Refunds{db: db} }

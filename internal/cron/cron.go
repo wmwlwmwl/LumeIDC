@@ -106,8 +106,59 @@ func (j *Jobs) Start() *cron.Cron {
 	// 定时同步上游产品价格与库存（每 6 小时）
 	c.AddFunc("@every 6h", func() { j.syncPrices(context.Background()) })
 	c.AddFunc("@every 1h", func() { j.notifyStaleTickets(context.Background()) })
+	c.AddFunc("@every 1h", func() { j.notifyEndingPromotions(context.Background()) })
 	c.Start()
 	return c
+}
+
+func (j *Jobs) notifyEndingPromotions(ctx context.Context) {
+	if j.DB == nil || j.Notifier == nil {
+		return
+	}
+	rows, err := j.DB.QueryContext(ctx, `SELECT pr.id,pr.name,pr.ends_at,participants.user_id
+		FROM promotions pr
+		JOIN (
+			SELECT promotion_id,user_id FROM promotion_coupon_claims
+			UNION
+			SELECT promotion_id,user_id FROM orders WHERE promotion_id IS NOT NULL
+		) participants ON participants.promotion_id=pr.id
+		LEFT JOIN promotion_ending_notifications n ON n.promotion_id=pr.id AND n.user_id=participants.user_id
+		WHERE pr.ends_at > now() AND pr.ends_at <= now() + interval '24 hours' AND n.promotion_id IS NULL`)
+	if err != nil {
+		log.Printf("[cron] 查询即将结束活动提醒失败: %v", err)
+		return
+	}
+	type item struct {
+		promotionID, userID int64
+		name                string
+		endsAt              time.Time
+	}
+	var items []item
+	for rows.Next() {
+		var it item
+		if err := rows.Scan(&it.promotionID, &it.name, &it.endsAt, &it.userID); err != nil {
+			rows.Close()
+			log.Printf("[cron] 读取即将结束活动提醒失败: %v", err)
+			return
+		}
+		items = append(items, it)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		log.Printf("[cron] 遍历即将结束活动提醒失败: %v", err)
+		return
+	}
+	rows.Close()
+	for _, it := range items {
+		endsAt := it.endsAt.Format("2006-01-02 15:04")
+		body := fmt.Sprintf("你参与的活动「%s」将于 %s 结束。", it.name, endsAt)
+		if err := j.Notifier.NotifyTemplate(ctx, it.userID, "promotion_ending", "活动即将结束", body, map[string]string{"promotion_name": it.name, "ends_at": endsAt}); err != nil {
+			continue
+		}
+		if _, err := j.DB.ExecContext(ctx, `INSERT INTO promotion_ending_notifications(promotion_id,user_id) VALUES($1,$2) ON CONFLICT DO NOTHING`, it.promotionID, it.userID); err != nil {
+			log.Printf("[cron] 写入活动即将结束提醒标记失败: %v", err)
+		}
+	}
 }
 
 func (j *Jobs) notifyStaleTickets(ctx context.Context) {
@@ -261,6 +312,21 @@ func (j *Jobs) expireInvoices(ctx context.Context) {
 		return
 	}
 	n, _ := res.RowsAffected()
+	// 释放限量抢购活动名额（账单过期未支付的订单）
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE promotion_quota SET sold = GREATEST(sold - sub.cnt, 0), updated_at=now()
+		 FROM (
+		    SELECT o.promo_product_id, count(*) AS cnt
+		      FROM invoices i
+		      JOIN orders o ON o.id = i.order_id
+		     WHERE i.status = 3 AND o.promo_product_id IS NOT NULL
+		       AND NOT EXISTS (SELECT 1 FROM invoices i2 WHERE i2.order_id=o.id AND i2.status=1)
+		     GROUP BY o.promo_product_id
+		 ) sub
+		 WHERE promotion_quota.promotion_product_id = sub.promo_product_id`); err != nil {
+		log.Printf("[cron] 释放活动名额失败: %v", err)
+		return
+	}
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE payment_attempts SET status=2 WHERE status=0 AND invoice_id IN (SELECT id FROM invoices WHERE status=3)`); err != nil {
 		log.Printf("[cron] 关闭过期支付尝试失败: %v", err)

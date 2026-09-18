@@ -53,10 +53,22 @@ export async function fetchNotice(id: number | string): Promise<Announcement | n
   return (res.item || null) as unknown as Announcement | null
 }
 
+export interface PromotionLite {
+  id: number
+  name: string
+  description?: string
+  type: string
+  banner?: string
+  starts_at?: string
+  ends_at?: string
+  status: 'upcoming' | 'ongoing' | 'ended'
+}
+
 export interface HomeData {
   catalog: Category[]
   products: ProductLite[]
   announcements: Announcement[]
+  promotions?: PromotionLite[]
 }
 
 export interface ConfigSub {

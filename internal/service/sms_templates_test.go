@@ -23,7 +23,7 @@ func smsTestResponse(body string) *http.Response {
 
 func TestSMSTemplateScenesAndValidation(t *testing.T) {
 	scenes := defaultSMSScenes()
-	if len(scenes) != 20 {
+	if len(scenes) != 22 {
 		t.Fatal("固定短信场景数量不正确")
 	}
 	for _, purpose := range []string{"register", "login", "reset_password", "bind", "change", "profile_phone_old", "verify_phone"} {
