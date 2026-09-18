@@ -25,6 +25,7 @@ type FulfillmentJobs struct{ db *sql.DB }
 
 var ErrFulfillmentLeaseLost = errors.New("履约任务领取权已失效，结果未写入，请核对上游结果")
 var ErrFulfillmentRecoveryRequired = errors.New("履约任务中断，上游结果未知；请核对上游账单和实例并完成对账，禁止直接重试")
+var ErrEasyPanelRenewInterrupted = errors.New("EasyPanel 续费任务中断；EasyPanel 续费无需上游账单，已自动安排重试")
 
 func (r *FulfillmentJobs) EnqueueTx(ctx context.Context, tx *sql.Tx, serviceID, orderID int64, kind, cycle string) error {
 	key := fmt.Sprintf("%s:%d", kind, orderID)
@@ -66,19 +67,38 @@ func (r *FulfillmentJobs) recoverExpired(ctx context.Context) error {
 		return err
 	}
 	for _, id := range ids {
-		var kind string
-		err := tx.QueryRowContext(ctx, `SELECT kind FROM fulfillment_jobs
-			WHERE service_id=$1 AND status='running' AND (lease_until IS NULL OR lease_until<=now())
-			ORDER BY id LIMIT 1 FOR UPDATE`, id).Scan(&kind)
+		var kind, provider string
+		err := tx.QueryRowContext(ctx, `SELECT j.kind,coalesce(s.upstream_provider,'') FROM fulfillment_jobs j
+			JOIN services s ON s.id=j.service_id
+			WHERE j.service_id=$1 AND j.status='running' AND (j.lease_until IS NULL OR j.lease_until<=now())
+			ORDER BY j.id LIMIT 1 FOR UPDATE`, id).Scan(&kind, &provider)
 		if errors.Is(err, sql.ErrNoRows) {
 			continue
 		}
 		if err != nil {
 			return err
 		}
+		// EasyPanel 续费不调用上游、没有账单或远端续费副作用；任务只要租约过期，
+		// 直接回 retry 即可。进程中断不应把它隔离成「请核对上游账单」，否则管理员
+		// 只能看到一个对 EP 不适用的人工复核状态。
+		if provider == "easypanel" && kind == "renew" {
+			if _, err := tx.ExecContext(ctx, `UPDATE fulfillment_jobs SET status='retry',recovery_required=false,
+				lease_until=NULL,last_error=$2,next_attempt_at=now(),updated_at=now()
+				WHERE service_id=$1 AND status='running' AND (lease_until IS NULL OR lease_until<=now())`,
+				id, ErrEasyPanelRenewInterrupted.Error()); err != nil {
+				return err
+			}
+			// 清掉旧的人工待处理提示；本次中断不代表远端有未知副作用。
+			if _, err := tx.ExecContext(ctx, `UPDATE services SET provision_error='',
+				transition_state=CASE WHEN transition_state='renew_pending' THEN '' ELSE transition_state END
+				WHERE id=$1`, id); err != nil {
+				return err
+			}
+			continue
+		}
 		if _, err := tx.ExecContext(ctx, `UPDATE services SET provision_error=$2,
 			transition_state=CASE WHEN coalesce(transition_state,'')='' AND $3='renew' THEN 'renew_pending'
-			 WHEN coalesce(transition_state,'')='' AND $3='upgrade' THEN 'upgrading' ELSE transition_state END
+				 WHEN coalesce(transition_state,'')='' AND $3='upgrade' THEN 'upgrading' ELSE transition_state END
 			WHERE id=$1`, id, ErrFulfillmentRecoveryRequired.Error(), kind); err != nil {
 			return err
 		}

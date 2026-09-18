@@ -93,6 +93,11 @@ func (f *Fulfillment) processOne(ctx context.Context) (bool, error) {
 	ctx, stop := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer stop()
 	if opCtx.Err() != nil || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		// EasyPanel 续费是空操作：不调用上游、不建账单，中断只需原地重试，
+		// 不应进入面向真实上游的 recovery_required 隔离。
+		if f.isEasyPanelRenew(ctx, job) {
+			return true, f.Jobs.RetryLater(ctx, job, repo.ErrEasyPanelRenewInterrupted, time.Minute)
+		}
 		ferr := f.Jobs.MarkManualReview(ctx, job, repo.ErrFulfillmentRecoveryRequired, true)
 		if ferr == nil {
 			f.notifyFailure(ctx, job, repo.ErrFulfillmentRecoveryRequired, "结果未知，需人工对账")
@@ -124,6 +129,17 @@ func (f *Fulfillment) processOne(ctx context.Context) (bool, error) {
 		return true, err
 	}
 	return true, f.Jobs.Complete(ctx, job)
+}
+
+func (f *Fulfillment) isEasyPanelRenew(ctx context.Context, job *repo.FulfillmentJob) bool {
+	if f == nil || f.Payment == nil || f.Payment.db == nil || job == nil || job.Kind != "renew" {
+		return false
+	}
+	var provider string
+	if err := f.Payment.db.QueryRowContext(ctx, `SELECT coalesce(upstream_provider,'') FROM services WHERE id=$1`, job.ServiceID).Scan(&provider); err != nil {
+		return false
+	}
+	return provider == "easypanel"
 }
 
 // notifyFailure 就一次履约失败向管理员发一封告警邮件，同一任务只发一次。
