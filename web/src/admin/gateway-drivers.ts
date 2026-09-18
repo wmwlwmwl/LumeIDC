@@ -37,6 +37,24 @@ export const GATEWAY_DRIVERS: Record<string, GatewayDriverMeta> = {
     fields: [],
     style: 'color:var(--art-gray-600);background:var(--art-gray-100)',
   },
+  wxpay: {
+    label: '微信支付',
+    // 无支付模式开关：微信没有"电脑端网页跳转收银台"形态，
+    // 电脑走 Native 扫码、手机走 H5，由后端按设备自动选择。
+    fields: [
+      'api_url',
+      'app_id',
+      'mch_id',
+      'private_key',
+      'api_v3_key',
+      'cert_serial',
+      'public_key',
+      'public_key_id',
+      'h5_app_name',
+      'h5_app_url',
+    ],
+    style: 'color:#07c160;background:rgba(7,193,96,0.12)',
+  },
 }
 
 export function gatewayDriverList() {

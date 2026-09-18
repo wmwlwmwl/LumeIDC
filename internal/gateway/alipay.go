@@ -254,7 +254,8 @@ func alipayCheckoutURL(req PayRequest) (PayResult, error) {
 	return PayResult{URL: endpoint + "?" + params.Encode()}, nil
 }
 
-func (Alipay) VerifyNotify(params map[string]string, cfg map[string]string) (NotifyResult, error) {
+func (Alipay) VerifyNotify(req NotifyRequest, cfg map[string]string) (NotifyResult, error) {
+	params := req.Params
 	signature := strings.TrimSpace(params["sign"])
 	if signature == "" || params["out_trade_no"] == "" || params["trade_no"] == "" {
 		return NotifyResult{}, fmt.Errorf("支付宝回调缺少必要字段")

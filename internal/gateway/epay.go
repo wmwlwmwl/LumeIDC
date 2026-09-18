@@ -226,7 +226,8 @@ func resolveEpayRelativeRef(apiBase, ref string) string {
 	return base.ResolveReference(parsed).String()
 }
 
-func (e Epay) VerifyNotify(params map[string]string, cfg map[string]string) (NotifyResult, error) {
+func (e Epay) VerifyNotify(req NotifyRequest, cfg map[string]string) (NotifyResult, error) {
+	params := req.Params
 	invoiceNo, tradeNo, ok := verifyEpaySign(params, cfg["key"])
 	if !ok {
 		return NotifyResult{}, fmt.Errorf("易支付回调签名校验失败")

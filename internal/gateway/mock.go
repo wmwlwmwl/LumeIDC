@@ -16,6 +16,6 @@ func (Mock) PayURL(ctx context.Context, req PayRequest) (PayResult, error) {
 	return PayResult{URL: "/mock/pay/" + req.InvoiceNo}, nil
 }
 
-func (Mock) VerifyNotify(params map[string]string, cfg map[string]string) (NotifyResult, error) {
+func (Mock) VerifyNotify(_ NotifyRequest, _ map[string]string) (NotifyResult, error) {
 	return NotifyResult{}, fmt.Errorf("模拟网关不使用异步回调")
 }

@@ -231,6 +231,7 @@ func Build(cfg *config.Config, version string) (*App, error) {
 	gateways := map[string]gateway.Gateway{
 		"epay":   gateway.Epay{},
 		"alipay": gateway.Alipay{},
+		"wxpay":  gateway.Wxpay{},
 		"mock":   gateway.Mock{},
 	}
 	// 自动发现支持订单查询的网关（易支付等），用于异步通知丢失时补单。

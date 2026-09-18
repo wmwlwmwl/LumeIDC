@@ -23,11 +23,8 @@ const searchItems = [
     props: {
       placeholder: '全部类型',
       clearable: true,
-      options: [
-        { label: '易支付', value: 'epay' },
-        { label: '支付宝', value: 'alipay' },
-        { label: '模拟支付', value: 'mock' },
-      ],
+      // 直接取自驱动注册表，避免与表单下拉各维护一份而失同步
+      options: gatewayDriverList(),
     },
   },
   {
@@ -83,6 +80,12 @@ const form = reactive<Record<string, any>>({
   payment_mode: 'redirect',
   mobile_qrcode: '0',
   app_id: '',
+  mch_id: '',
+  api_v3_key: '',
+  cert_serial: '',
+  public_key_id: '',
+  h5_app_name: '',
+  h5_app_url: '',
   private_key: '',
   public_key: '',
 })
@@ -184,7 +187,12 @@ const columns = ref<ColumnOption[]>([
 const secretConfigured = computed(() => {
   const g = list.value.find((x) => x.code === form.code)
   if (!g) return {} as Record<string, boolean>
-  return { key: !!g.has_key, private_key: !!g.has_private_key, public_key: !!g.has_public_key }
+  return {
+    key: !!g.has_key,
+    private_key: !!g.has_private_key,
+    public_key: !!g.has_public_key,
+    api_v3_key: !!g.has_api_v3_key,
+  }
 })
 
 const startRequest = useAdminRequest()
@@ -219,6 +227,12 @@ function resetForm() {
     payment_mode: 'redirect',
     mobile_qrcode: '0',
     app_id: '',
+    mch_id: '',
+    api_v3_key: '',
+    cert_serial: '',
+    public_key_id: '',
+    h5_app_name: '',
+    h5_app_url: '',
     private_key: '',
     public_key: '',
   })
@@ -255,6 +269,13 @@ function openEdit(row: AdminGateway) {
     payment_mode: row.payment_mode || GATEWAY_DRIVERS[row.driver]?.paymentModeDefault || 'redirect',
     mobile_qrcode: row.mobile_qrcode || '0',
     app_id: row.app_id || '',
+    mch_id: row.mch_id || '',
+    // APIv3 密钥属密钥类字段，后台不回传，编辑时始终留空（留空即沿用旧值）
+    api_v3_key: '',
+    cert_serial: row.cert_serial || '',
+    public_key_id: row.public_key_id || '',
+    h5_app_name: row.h5_app_name || '',
+    h5_app_url: row.h5_app_url || '',
   })
   editing.value = true
   dialog.value = true
@@ -344,7 +365,7 @@ async function copyCallback() {
     </ElCard>
 
     <el-dialog v-model="dialog" :title="editing ? '编辑网关' : '新增网关'" width="600px">
-      <el-form label-position="top">
+      <el-form label-position="top" autocomplete="off">
         <div class="admin-form-grid">
           <el-form-item label="实例编码" required><el-input v-model="form.code" :disabled="editing" placeholder="如 epay_main" /></el-form-item>
           <el-form-item label="显示名称" required><el-input v-model="form.name" placeholder="如 易支付主通道" /></el-form-item>
@@ -364,7 +385,9 @@ async function copyCallback() {
               </el-select>
               <el-input v-if="isCustomChannel" v-model="form.channel" placeholder="请输入渠道代码，如 bank、jdpay" />
             </el-form-item>
-            <el-form-item v-if="visibleFields.includes('app_id')" label="支付宝应用 ID"><el-input v-model="form.app_id" placeholder="支付宝应用 ID" /></el-form-item>
+            <el-form-item v-if="visibleFields.includes('app_id')" label="应用 ID（AppID）"><el-input v-model="form.app_id" placeholder="支付宝应用 ID / 微信 AppID" /></el-form-item>
+            <el-form-item v-if="visibleFields.includes('mch_id')" label="商户号"><el-input v-model="form.mch_id" placeholder="微信支付商户号" /></el-form-item>
+            <el-form-item v-if="visibleFields.includes('cert_serial')" label="商户证书序列号"><el-input v-model="form.cert_serial" placeholder="商户 API 证书序列号" /></el-form-item>
           </div>
           <el-form-item v-if="visibleFields.includes('payment_mode')" label="支付模式">
             <el-select v-model="form.payment_mode" class="w-full">
@@ -379,9 +402,17 @@ async function copyCallback() {
             <el-switch v-model="form.mobile_qrcode" active-value="1" inactive-value="0" active-text="启用" />
             <p class="form-tip">手机端不跳转，直接显示二维码。仅当未签约「手机网站支付」时开启，否则手机用户无法付款。</p>
           </el-form-item>
-          <el-form-item v-if="visibleFields.includes('key')" label="商户密钥"><el-input v-model="form.key" type="password" show-password :placeholder="secretConfigured.key ? '已配置，留空保持不变' : '商户密钥'" /></el-form-item>
-          <el-form-item v-if="visibleFields.includes('private_key')" label="应用私钥"><el-input v-model="form.private_key" type="textarea" :rows="3" :placeholder="secretConfigured.private_key ? '已配置，留空保持不变' : '-----BEGIN PRIVATE KEY-----'" /></el-form-item>
-          <el-form-item v-if="visibleFields.includes('public_key')" label="支付宝公钥（用于回调验签）"><el-input v-model="form.public_key" type="textarea" :rows="3" :placeholder="secretConfigured.public_key ? '已配置，留空保持不变' : '-----BEGIN PUBLIC KEY-----'" /></el-form-item>
+          <!-- 密钥类输入统一用 new-password：否则浏览器会把相邻文本框当成"用户名"、把这里
+               当成"登录密码"配对保存并自动填充，把支付密钥写进浏览器的密码库。 -->
+          <el-form-item v-if="visibleFields.includes('key')" label="商户密钥"><el-input v-model="form.key" type="password" show-password autocomplete="new-password" :placeholder="secretConfigured.key ? '已配置，留空保持不变' : '商户密钥'" /></el-form-item>
+          <el-form-item v-if="visibleFields.includes('private_key')" label="私钥（应用 / 商户 API）"><el-input v-model="form.private_key" type="textarea" :rows="3" :placeholder="secretConfigured.private_key ? '已配置，留空保持不变' : '-----BEGIN PRIVATE KEY-----'" /></el-form-item>
+          <el-form-item v-if="visibleFields.includes('public_key')" label="平台公钥（用于回调验签）"><el-input v-model="form.public_key" type="textarea" :rows="3" :placeholder="secretConfigured.public_key ? '已配置，留空保持不变' : '-----BEGIN PUBLIC KEY-----'" /></el-form-item>
+          <el-form-item v-if="visibleFields.includes('api_v3_key')" label="APIv3 密钥"><el-input v-model="form.api_v3_key" type="password" show-password autocomplete="new-password" :placeholder="secretConfigured.api_v3_key ? '已配置，留空保持不变' : '32 位 APIv3 密钥，用于回调解密'" /></el-form-item>
+          <el-form-item v-if="visibleFields.includes('public_key_id')" label="微信支付公钥 ID"><el-input v-model="form.public_key_id" placeholder="如 PUB_KEY_ID_xxxxxxxxxx" /></el-form-item>
+          <div v-if="visibleFields.includes('h5_app_name') || visibleFields.includes('h5_app_url')" class="admin-form-grid">
+            <el-form-item v-if="visibleFields.includes('h5_app_name')" label="H5 应用名称（选填）"><el-input v-model="form.h5_app_name" placeholder="支付页展示的应用名" /></el-form-item>
+            <el-form-item v-if="visibleFields.includes('h5_app_url')" label="H5 应用域名（选填）"><el-input v-model="form.h5_app_url" placeholder="如 https://example.com" /></el-form-item>
+          </div>
         </template>
 
         <div class="admin-form-grid">
