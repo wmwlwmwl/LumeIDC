@@ -667,10 +667,25 @@ func (p *Payment) RefundUpgrade(ctx context.Context, adminID, serviceID int64, r
 // 同步每 30s 一轮，20 次 ≈ 10 分钟：足以排除单次抖动，又不至于让服务挂上一整天。
 const defaultUpstreamMissThreshold = 20
 
-// 批量误删护栏：同一台上游服务器本轮缺失数 ≥ missBatchMin 且占比 ≥ missBatchRatio 时，
-// 判定为「上游整体异常」（接口挂了、鉴权失效、上游维护），本轮只告警不删除。
+// 批量误删护栏参数：同一台上游服务器本轮缺失条数与占比同时达线，判定为「上游整体异常」
+// （接口挂了、鉴权失效、上游维护），本轮只告警不删除。
 // ponytail: 本地标记删除不可逆，宁可漏删一轮，也不能因上游一次抖动整站误删。
 const missBatchMin, missBatchRatio = 5, 0.5
+
+// serverWideOutage 判定该服务器本轮缺失是否已构成「上游整体异常」。
+// 服务数达标的机器看绝对条数与占比；条数不足 missBatchMin 的小机器改看是否整台同时缺失——
+// 只认绝对条数会让这些机器完全失去护栏（3 台服务的服务器上游整体异常时会被一次性全删）。
+// 单条服务的机器除外：那与「上游真的删了这一个服务」无法区分，交给逐条缺失计数在阈值后删除，
+// 否则任何单服务机器都永远删不掉。多服务时整台同时缺失已足以区别于单条正常删除。
+func serverWideOutage(missing, total int) bool {
+	if missing <= 0 || total <= 0 {
+		return false
+	}
+	if missing >= missBatchMin {
+		return float64(missing)/float64(total) >= missBatchRatio
+	}
+	return total >= 2 && missing == total
+}
 
 // syncProbe 单条服务的上游探测结果（探测与写库分离，便于按服务器聚合判定整体异常）。
 type syncProbe struct {
@@ -711,7 +726,7 @@ func (lc *Lifecycle) applySyncProbes(ctx context.Context, probes []syncProbe) {
 	}
 	broken := make(map[int64]bool, len(byServer))
 	for sid, a := range byServer {
-		if a.missing >= missBatchMin && float64(a.missing)/float64(a.total) >= missBatchRatio {
+		if serverWideOutage(a.missing, a.total) {
 			broken[sid] = true
 			log.Printf("[sync] 服务器 %d 本轮 %d/%d 条服务上游不可见，判定为上游整体异常，本轮不做删除",
 				sid, a.missing, a.total)
@@ -735,8 +750,16 @@ func (lc *Lifecycle) applySyncProbes(ctx context.Context, probes []syncProbe) {
 				log.Printf("[sync] service %d 未知上游状态: %s", p.serviceID, p.status)
 				continue
 			}
-			if st == 3 && broken[p.serverID] {
-				log.Printf("[sync] service %d 上游报已删除，但所属服务器本轮整体异常，暂不处理", p.serviceID)
+			if st == 3 {
+				if broken[p.serverID] {
+					log.Printf("[sync] service %d 上游报已删除，但所属服务器本轮整体异常，暂不处理", p.serviceID)
+					continue
+				}
+				// 明确终态也走缺失计数，不在单次响应上直接置删除：上游把一次抖动或接口异常
+				// 读成 terminated 就会即时抹掉服务（EasyPanel 的 500 曾正是如此），
+				// 与"措辞未识别的业务错误"路径统一成"连续确认到阈值才删"。
+				// 期间任一轮探到在售状态即由 applyUpstreamStatus 清零计数，误判不会累积。
+				lc.countUpstreamMiss(ctx, p.serviceID, threshold)
 				continue
 			}
 			lc.applyUpstreamStatus(ctx, p.serviceID, st, p.hostname)
@@ -756,35 +779,40 @@ func (lc *Lifecycle) applyUpstreamStatus(ctx context.Context, serviceID int64, s
 
 // countUpstreamMiss 累计一次「上游不可见」，达到阈值即标记本地已删除。
 // 计数与判定放在同一条语句里，避免读回再写产生竞态。
+// 累加、判阈值、置删除必须对同一行一次完成：旧实现用 CTE 先加计数、外层再按新计数置删除，
+// 实测外层匹配 0 行（两个子语句共用同一快照，看不到彼此对同一表的改动），
+// 导致计数涨到阈值也从不删除——上游已释放的服务会永远挂着，这个计数本身成了摆设。
 func (lc *Lifecycle) countUpstreamMiss(ctx context.Context, serviceID int64, threshold int) {
 	var dropped bool
 	err := lc.db.QueryRowContext(ctx,
-		`WITH bump AS (
-			UPDATE services SET upstream_miss_count = upstream_miss_count + 1,
-			       upstream_miss_since = coalesce(upstream_miss_since, now())
-			 WHERE id=$1 AND status < 3
-			 RETURNING id, upstream_miss_count
-		 )
-		 UPDATE services SET status=3, provision_error=''
-		  WHERE id IN (SELECT id FROM bump WHERE upstream_miss_count >= $2)
-		 RETURNING true`, serviceID, threshold).Scan(&dropped)
+		`UPDATE services
+		    SET upstream_miss_count = upstream_miss_count + 1,
+		        upstream_miss_since = coalesce(upstream_miss_since, now()),
+		        status = CASE WHEN upstream_miss_count + 1 >= $2 THEN 3 ELSE status END,
+		        provision_error = CASE WHEN upstream_miss_count + 1 >= $2 THEN '' ELSE provision_error END
+		  WHERE id=$1 AND status < 3
+		 RETURNING status = 3`, serviceID, threshold).Scan(&dropped)
 	switch {
 	case err == sql.ErrNoRows:
-		// 未达阈值（或服务已终止）：静默等待下一轮
+		// 服务已是终止态（status=3）：无需再计数
 	case err != nil:
 		log.Printf("[sync] service %d 累计上游缺失失败: %v", serviceID, err)
-	default:
+	case dropped:
 		log.Printf("[sync] service %d 上游持续不可见已达 %d 次，已标记删除（请核对上游是否真的释放）",
 			serviceID, threshold)
 	}
 }
+
+// maxUpstreamMissThreshold 阈值上限：services.upstream_miss_count 是 SMALLINT，
+// 配得比它大则计数器先溢出（每轮报错）而永远到不了阈值，等于把该机器设成"永不删除"。
+const maxUpstreamMissThreshold = 32767
 
 // upstreamMissThreshold 读取后台缺失阈值（隐藏键 upstream_miss_threshold），缺省 20。
 func (lc *Lifecycle) upstreamMissThreshold(ctx context.Context) int {
 	var v string
 	if err := lc.db.QueryRowContext(ctx,
 		`SELECT value FROM settings WHERE key='upstream_miss_threshold'`).Scan(&v); err == nil {
-		if n, e := strconv.Atoi(strings.TrimSpace(v)); e == nil && n >= 1 && n <= 100000 {
+		if n, e := strconv.Atoi(strings.TrimSpace(v)); e == nil && n >= 1 && n <= maxUpstreamMissThreshold {
 			return n
 		}
 	}
