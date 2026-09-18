@@ -900,6 +900,10 @@ func (p *Payment) fulfillOrderTx(ctx context.Context, tx *sql.Tx, a markPaidTx) 
 
 const opRenewTimeout = 90 * time.Second
 
+// provisionAsync / renewAsync / upgradeAsync 只在 p.Jobs == nil（履约队列未启用）时被调用，
+// 生产环境恒走 Fulfillment 的持久任务。这三个 goroutine 失败仅记日志：不发管理员告警邮件、
+// 也不进后台通知铃铛的待办，所以新增失败告警逻辑时不必在这里重复接入（告警挂在 Fulfillment.processOne）。
+//
 // provisionAsync 上游自动开通。ponytail: 一期同步 goroutine + 日志；
 // 二期换持久化队列。
 func (p *Payment) provisionAsync(serviceID, productID int64, cycle string) {

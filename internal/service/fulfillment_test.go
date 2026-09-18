@@ -264,7 +264,9 @@ func (c *fulfillmentMemoryConn) QueryContext(ctx context.Context, query string, 
 		c.selected = c.db.claimed
 		return fulfillmentRow(c.selected), nil
 	case strings.Contains(query, "SELECT id,service_id,order_id,kind,cycle,attempts"):
-		return fulfillmentRow(c.selected, c.selected, c.selected, "provision", "monthly", int64(0)), nil
+		// 末位是 dedupe_key：管理员告警按任务去重，领取时必须一并取出。
+		return fulfillmentRow(c.selected, c.selected, c.selected, "provision", "monthly", int64(0),
+			fmt.Sprintf("provision:%d", c.selected)), nil
 	case strings.Contains(query, "RETURNING claim_version"):
 		return fulfillmentRow(int64(1)), nil
 	case strings.Contains(query, "SELECT server_id,coalesce(upstream_provider"):

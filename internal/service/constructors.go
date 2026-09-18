@@ -33,6 +33,7 @@ func NewPayment(db *sql.DB, lifecycle *Lifecycle, servers *repo.Servers, product
 	return &Payment{db: db, Lifecycle: lifecycle, Servers: servers, Products: products, Provisions: provisions, Jobs: jobs, Balance: balance, Providers: providers, PeriodGrants: periodGrants, Notifier: notifier, Crypt: crypt}
 }
 
-func NewFulfillment(jobs *repo.FulfillmentJobs, payment *Payment, lifecycle *Lifecycle) *Fulfillment {
-	return &Fulfillment{Jobs: jobs, Payment: payment, Lifecycle: lifecycle}
+// NewFulfillment 的 notifier 可为 nil（测试或未启用告警时），此时失败只记录日志。
+func NewFulfillment(jobs *repo.FulfillmentJobs, payment *Payment, lifecycle *Lifecycle, notifier *Notifier) *Fulfillment {
+	return &Fulfillment{Jobs: jobs, Payment: payment, Lifecycle: lifecycle, Notifier: notifier}
 }

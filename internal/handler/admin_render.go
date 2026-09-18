@@ -9,6 +9,8 @@ import (
 const (
 	mailAccountsKey = "smtp_accounts"
 	mailCooldownKey = "smtp_cooldown_seconds"
+	// mailAdminNotifyKey 管理员告警收件邮箱；与 service 层的收件人解析键保持一致。
+	mailAdminNotifyKey = "admin_notify_email"
 )
 
 // AdminData 后台表单/页面的内部数据载体（不再用于模板渲染，仅组装 JSON 响应）。

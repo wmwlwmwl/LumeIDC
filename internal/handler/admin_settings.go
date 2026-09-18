@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/mail"
 	"net/url"
 	"strconv"
 	"strings"
@@ -13,6 +14,9 @@ import (
 	"lumeidc/internal/middleware"
 	"lumeidc/internal/service"
 )
+
+// maxAdminNotifyEmails 管理员告警邮箱上限：告警是运维通知，收件人过多说明填错了。
+const maxAdminNotifyEmails = service.MaxAdminAlertRecipients
 
 func (a *Admin) adminSettings(w http.ResponseWriter, r *http.Request) {
 	if !a.require(w, r) {
@@ -52,6 +56,8 @@ func (a *Admin) adminSettings(w http.ResponseWriter, r *http.Request) {
 		// 服务生命周期天数：到期停机 / 删除 / 到期提醒
 		"service_suspend_after_days", "service_terminate_after_days", "service_expire_warn_days",
 		mailAccountsKey, mailCooldownKey,
+		// 管理员告警收件邮箱（实名提交 / 开通续费升降配失败）
+		mailAdminNotifyKey,
 	)
 	if err != nil {
 		log.Printf("[settings] 读取设置失败: %v", err)
@@ -168,6 +174,7 @@ func (a *Admin) adminSettings(w http.ResponseWriter, r *http.Request) {
 	if cfg[mailCooldownKey] == "" {
 		cfg[mailCooldownKey] = "60"
 	}
+	cfg[mailAdminNotifyKey] = get(mailAdminNotifyKey)
 	// 结构为字符串键值；布尔类开关以 "1"/"0" 表示，由前端按已知键解释。
 	writeJSON(w, map[string]any{"ok": 1, "cfg": cfg})
 }
@@ -528,6 +535,36 @@ func (c *settingsSaveCtx) saveMailAccounts() bool {
 	return true
 }
 
+// saveAdminNotify 保存管理员告警收件邮箱。多个地址用逗号、分号或换行分隔；
+// 逐个校验格式，任何一个非法都整批拒绝——填错地址等于告警收不到，不能静默丢掉。
+func (c *settingsSaveCtx) saveAdminNotify() bool {
+	raw := strings.TrimSpace(c.fv(mailAdminNotifyKey))
+	if raw == "" {
+		c.set(mailAdminNotifyKey, "")
+		return true
+	}
+	split := func(ch rune) bool {
+		return ch == ',' || ch == ';' || ch == '\n' || ch == '\r' || ch == ' ' || ch == '\t'
+	}
+	addrs := strings.FieldsFunc(raw, split)
+	if len(addrs) > maxAdminNotifyEmails {
+		c.fail(fmt.Sprintf("管理员告警邮箱最多 %d 个", maxAdminNotifyEmails))
+		return false
+	}
+	clean := make([]string, 0, len(addrs))
+	for _, item := range addrs {
+		addr := strings.TrimSpace(item)
+		parsed, err := mail.ParseAddress(addr)
+		if err != nil || parsed.Address != addr || len(addr) > 254 {
+			c.fail("管理员告警邮箱格式无效：" + addr)
+			return false
+		}
+		clean = append(clean, addr)
+	}
+	c.set(mailAdminNotifyKey, strings.Join(clean, ","))
+	return true
+}
+
 func (a *Admin) adminSettingsSave(w http.ResponseWriter, r *http.Request) {
 	if !a.require(w, r) {
 		return
@@ -569,6 +606,10 @@ func (a *Admin) adminSettingsSave(w http.ResponseWriter, r *http.Request) {
 		}
 	case "automatic_identity":
 		if c.saveAutomaticIdentity() {
+			c.success()
+		}
+	case "admin_notify":
+		if c.saveAdminNotify() {
 			c.success()
 		}
 	default:

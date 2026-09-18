@@ -343,7 +343,7 @@ func Build(cfg *config.Config, version string) (*App, error) {
 	if a := os.Getenv("LISTEN"); a != "" {
 		addr = a // 环境变量覆盖配置，便于本地多实例测试
 	}
-	fulfillment := service.NewFulfillment(jobs, paymentSvc, lifecycle)
+	fulfillment := service.NewFulfillment(jobs, paymentSvc, lifecycle, notifier)
 	// 支付成功立即异步执行履约队列（cron 每 15s 轮询仍兜底），开通不再等轮询周期
 	paymentSvc.TriggerFulfillment = func() { fulfillment.TriggerDrain(context.Background(), 3) }
 	cronJobs := &cron.Jobs{DB: database, Fulfillment: fulfillment, Notifier: notifier,

@@ -80,6 +80,18 @@ watch(
   { immediate: true },
 )
 
+// ---- 管理员告警收件邮箱 ----
+const adminNotify = ref('')
+watch(() => cfg['admin_notify_email'], (v) => { adminNotify.value = v || '' }, { immediate: true })
+const adminBaseline = ref('')
+const adminSnapshot = () => adminNotify.value.trim()
+async function saveAdminNotify() {
+  if (!ready.value || saving.value) return
+  if (await save('admin_notify', { admin_notify_email: adminSnapshot() })) {
+    adminBaseline.value = adminSnapshot()
+  }
+}
+
 // ---- 测试邮件 ----
 const testTo = ref('')
 const testAccount = ref(-1)
@@ -119,7 +131,7 @@ const mailBaseline = ref('')
 const mailSnapshot = () => JSON.stringify({ accounts: accounts.value, cooldown: cooldownSeconds.value })
 const routesBody = () => Object.fromEntries(smsRanges.filter(({ key }) => smsRoutes.value[key].provider).map(({ key }) => [key, { ...smsRoutes.value[key] }]))
 const smsBody = () => ({ sms_routes: JSON.stringify(routesBody()) })
-const dirty = computed(() => ready.value && (JSON.stringify(smsBody()) !== smsBaseline.value || mailSnapshot() !== mailBaseline.value))
+const dirty = computed(() => ready.value && (JSON.stringify(smsBody()) !== smsBaseline.value || mailSnapshot() !== mailBaseline.value || adminSnapshot() !== adminBaseline.value))
 const fieldLabels: Record<string, string> = {
   sms_access_key: '应用标识 / 访问密钥标识', sms_secret_key: '密钥或密码（留空保持不变）',
   sms_username: '账号 / 腾讯云短信应用编号', sms_sign_name: '签名', sms_endpoint: '供应商固定接口地址（选填）',
@@ -158,6 +170,7 @@ async function initialize() {
     await nextTick()
     smsBaseline.value = JSON.stringify(smsBody())
     mailBaseline.value = mailSnapshot()
+    adminBaseline.value = adminSnapshot()
     ready.value = true
   } catch { loadError.value = '读取通知设置或短信供应商失败，请重新加载页面；保存已禁用，避免覆盖旧配置' }
 }
@@ -222,6 +235,18 @@ void initialize()
         <router-link :to="{ name: 'admin-email-templates' }">邮件模板</router-link>
         页维护；此处仅配置发送通道。
       </p>
+
+      <el-divider content-position="left">管理员告警收件邮箱</el-divider>
+      <p class="mb-3 text-xs text-g-500">
+        用于接收系统运维告警：用户提交实名认证，以及开通 / 续费 / 升配 / 降配失败（含上游账户余额不足）时各发一封。
+        多个邮箱用逗号、分号或换行分隔，最多 10 个；留空则不发送告警。
+      </p>
+      <el-form-item label="收件邮箱">
+        <el-input v-model="adminNotify" type="textarea" :rows="2" placeholder="ops@example.com, admin@example.com" aria-label="管理员告警收件邮箱" />
+      </el-form-item>
+      <div class="notify-save-row">
+        <el-button type="primary" :loading="saving === 'admin_notify'" @click="saveAdminNotify">保存告警收件邮箱</el-button>
+      </div>
 
       <div class="notify-save-row">
         <el-button type="primary" :loading="saving === 'mail'" @click="saveMail">保存邮件设置</el-button>

@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"math/big"
 	"mime/multipart"
 	"net/url"
@@ -263,7 +264,8 @@ func (s *Identity) SubmitForm(ctx context.Context, userID int64, form RealNameFo
 		_ = s.Files.Delete(frontRef)
 		return err
 	}
-	if err := s.Store.CreateSubmission(ctx, userID, nameCipher, idCipher, identityHMAC, frontRef, backRef, time.Now(), s.manualRequiresPhone(ctx)); err != nil {
+	submissionID, err := s.Store.CreateSubmission(ctx, userID, nameCipher, idCipher, identityHMAC, frontRef, backRef, time.Now(), s.manualRequiresPhone(ctx))
+	if err != nil {
 		_ = s.Files.Delete(frontRef)
 		_ = s.Files.Delete(backRef)
 		return err
@@ -271,7 +273,31 @@ func (s *Identity) SubmitForm(ctx context.Context, userID int64, form RealNameFo
 	if s.Notifier != nil {
 		s.Notifier.NotifyTemplate(ctx, userID, "identity_submitted", "实名申请已提交", "你的实名资料已提交，等待管理员人工审核。")
 	}
+	s.notifyAdminManualSubmitted(ctx, userID, submissionID)
 	return nil
+}
+
+// notifyAdminManualSubmitted 用户提交人工实名后邮件通知管理员。
+// 只有人工实名需要管理员动作（核对证件照片后通过或驳回）；自动实名插件由第三方
+// 自行判定，管理员无事可做，提交与核验结果都不发告警，避免噪音淹没真正待审的申请。
+//
+// 去重键包含申请记录 ID：被驳回后重新提交是新的事件，会重新通知；
+// 同一条记录重复触发（重试、并发）只发一次。
+func (s *Identity) notifyAdminManualSubmitted(ctx context.Context, userID, submissionID int64) {
+	if s == nil || s.Notifier == nil || submissionID <= 0 {
+		return
+	}
+	body := adminAlertFields(
+		"有用户提交了人工实名认证申请，等待审核。",
+		[2]string{"提交用户", userLabel(ctx, s.Users, userID)},
+		[2]string{"申请记录", fmt.Sprintf("#%d", submissionID)},
+		[2]string{"提交时间", time.Now().Format("2006-01-02 15:04:05")},
+		[2]string{"处理建议", "登录后台「实名审核」页核对证件照片后通过或驳回"},
+	)
+	key := fmt.Sprintf("identity_submit:manual:%d", submissionID)
+	if err := s.Notifier.NotifyAdminOnce(ctx, key, "identity", "新的实名认证申请", body); err != nil {
+		log.Printf("[identity] 管理员实名告警发送失败（user %d, key=%s）: %v", userID, key, err)
+	}
 }
 
 func (s *Identity) Current(ctx context.Context, userID int64) (*repo.RealNameSubmission, error) {
@@ -361,6 +387,8 @@ func (s *Identity) StartProvider(ctx context.Context, userID int64, providerKey 
 	if err != nil {
 		return 0, "", err
 	}
+	// 不通知管理员：自动实名由第三方插件自行判定，核验成功与否管理员都无事可做，
+	// 提交阶段发信只会产生噪音（见 notifyAdminManualSubmitted 注释）。
 	return createdID, started.URL, nil
 }
 

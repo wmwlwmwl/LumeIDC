@@ -310,42 +310,47 @@ func (s *IdentityStore) CurrentVerification(ctx context.Context, userID int64) (
 	return &v, nil
 }
 
-func (s *IdentityStore) CreateSubmission(ctx context.Context, userID int64, legalName, identityCipher, identityHMAC, frontRef, backRef string, now time.Time, requirePhone bool) error {
+// CreateSubmission 写入一条人工实名申请并返回记录 ID（供通知去重使用）。
+func (s *IdentityStore) CreateSubmission(ctx context.Context, userID int64, legalName, identityCipher, identityHMAC, frontRef, backRef string, now time.Time, requirePhone bool) (int64, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer tx.Rollback()
 	var phoneVerified bool
 	if err := tx.QueryRowContext(ctx, `SELECT status=1 AND phone_verified_at IS NOT NULL FROM users WHERE id=$1 FOR UPDATE`, userID).Scan(&phoneVerified); err != nil {
-		return err
+		return 0, err
 	}
 	if requirePhone && !phoneVerified {
-		return errors.New("请先完成手机号验证")
+		return 0, errors.New("请先完成手机号验证")
 	}
 	var status string
 	err = tx.QueryRowContext(ctx, `SELECT status FROM manual_identity_submissions WHERE user_id=$1 ORDER BY CASE status WHEN 'pending' THEN 0 WHEN 'approved' THEN 1 ELSE 2 END,id DESC LIMIT 1 FOR UPDATE`, userID).Scan(&status)
 	if err == nil {
 		if status == "pending" {
-			return ErrVerificationBusy
+			return 0, ErrVerificationBusy
 		}
 		if status == "approved" {
-			return ErrVerificationDone
+			return 0, ErrVerificationDone
 		}
 	} else if !errors.Is(err, sql.ErrNoRows) {
-		return err
+		return 0, err
 	}
 	var duplicate bool
 	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM manual_identity_submissions WHERE identity_number_hmac=$1 AND status IN ('pending','approved'))`, identityHMAC).Scan(&duplicate); err != nil {
-		return err
+		return 0, err
 	}
 	if duplicate {
-		return errors.New("该证件已被其他账号使用")
+		return 0, errors.New("该证件已被其他账号使用")
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO manual_identity_submissions(user_id,legal_name_ciphertext,identity_number_ciphertext,identity_number_hmac,front_photo_ref,back_photo_ref,submitted_at,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$7,$7)`, userID, legalName, identityCipher, identityHMAC, frontRef, backRef, now); err != nil {
-		return err
+	var id int64
+	if err := tx.QueryRowContext(ctx, `INSERT INTO manual_identity_submissions(user_id,legal_name_ciphertext,identity_number_ciphertext,identity_number_hmac,front_photo_ref,back_photo_ref,submitted_at,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$7,$7) RETURNING id`, userID, legalName, identityCipher, identityHMAC, frontRef, backRef, now).Scan(&id); err != nil {
+		return 0, err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return id, nil
 }
 
 func (s *IdentityStore) CreatePluginSubmission(ctx context.Context, userID int64, source, providerRef, providerURL, legalName, identityCipher, identityHMAC string, now time.Time) (int64, error) {

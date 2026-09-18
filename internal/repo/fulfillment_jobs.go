@@ -16,6 +16,9 @@ type FulfillmentJob struct {
 	Cycle        string
 	Attempts     int
 	ClaimVersion int64
+	// DedupeKey 任务业务标识（自动任务为 kind:订单号，人工重试带时间戳）。
+	// 全局唯一，管理员告警用它做去重键：同一任务只告警一次，人工重试生成的新任务会重新告警。
+	DedupeKey string
 }
 
 type FulfillmentJobs struct{ db *sql.DB }
@@ -118,12 +121,12 @@ func (r *FulfillmentJobs) Claim(ctx context.Context, lease time.Duration) (*Fulf
 	}
 	// 锁定服务后用新快照再次判断，避免等待锁期间旧任务刚被领取或隔离。
 	var j FulfillmentJob
-	err = tx.QueryRowContext(ctx, `SELECT id,service_id,order_id,kind,cycle,attempts
+	err = tx.QueryRowContext(ctx, `SELECT id,service_id,order_id,kind,cycle,attempts,dedupe_key
 		FROM fulfillment_jobs WHERE service_id=$1 AND status IN ('queued','retry') AND next_attempt_at<=now()
 		AND (lease_until IS NULL OR lease_until<=now())
 		AND NOT EXISTS (SELECT 1 FROM fulfillment_jobs x WHERE x.service_id=$1 AND (x.status='running' OR x.recovery_required))
 		ORDER BY id FOR UPDATE SKIP LOCKED LIMIT 1`, serviceID).
-		Scan(&j.ID, &j.ServiceID, &j.OrderID, &j.Kind, &j.Cycle, &j.Attempts)
+		Scan(&j.ID, &j.ServiceID, &j.OrderID, &j.Kind, &j.Cycle, &j.Attempts, &j.DedupeKey)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
