@@ -225,7 +225,7 @@ func Build(cfg *config.Config, version string) (*App, error) {
 	promotionSvc := service.NewPromotionService(database, promotionsRepo, coupons)
 	orders.Promotion = promotionSvc
 	console := service.NewConsole(database, serversRepo, products, providers, cryptor)
-	lifecycle := service.NewLifecycle(database, serversRepo, products, providers, provisions)
+	lifecycle := service.NewLifecycle(database, serversRepo, products, providers, provisions, jobs)
 	paymentSvc := service.NewPayment(database, lifecycle, serversRepo, products, provisions, jobs, balanceRepo, providers, periodGrants, notifier, cryptor)
 	paymentSvc.Promotion = promotionSvc
 	gateways := map[string]gateway.Gateway{

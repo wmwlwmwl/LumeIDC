@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"math"
@@ -23,6 +24,10 @@ type Lifecycle struct {
 	Providers *server.Registry
 	// Provisions 续费账单检查点存取（复用已建的上游续费单，避免重试重复建单）。
 	Provisions *repo.ProvisionRepo
+	// Jobs 用于 Suspend/Terminate 等操作和 fulfillment 执行互斥。nil 时跳过锁（测试兼容）。
+	Jobs *repo.FulfillmentJobs
+	// execUnlock 临时持有当前操作的执行锁释放函数；由 acquireExecutionLock 设置，defer releaseExecutionLock 释放。
+	execUnlock func()
 }
 
 type serviceRef struct {
@@ -282,20 +287,38 @@ func (lc *Lifecycle) setCheckpoint(ctx context.Context, serviceID int64, key, va
 // from/to 为状态迁移边界，cmp 为本地状态条件比较符（"=" 或 "<"，Terminate 用 status<3 表达"未终止皆可删"）；
 // state 为过渡状态名；errMsg 为上游失败时的日志与包装文案；op 为对上游的实际操作。
 func (lc *Lifecycle) transition(ctx context.Context, s *serviceRef, from, to int16, cmp, state, errMsg string, op func(context.Context, server.Provider, server.Config, int64) error) error {
+	// 与 fulfillment 执行/恢复互斥：续费或升级在 running 时不能暂停/删除服务，
+	// 否则上游还在操作而本地先变了状态，两边会打架。
+	if err := lc.acquireExecutionLock(ctx, s.ID); err != nil {
+		return err
+	}
+	defer lc.releaseExecutionLock()
+
 	prov, cfg, err := lc.providerFor(ctx, s)
 	if err == errNoUpstream {
-		_, err = lc.db.ExecContext(ctx,
+		res, err := lc.db.ExecContext(ctx,
 			`UPDATE services SET status=$1 WHERE id=$2 AND status`+cmp+`$3`, to, s.ID, from)
-		return err
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return fmt.Errorf("服务状态已变化，请刷新后重试")
+		}
+		return nil
 	}
 	if err != nil {
 		return err
 	}
-	// 设置过渡状态
-	if _, err := lc.db.ExecContext(ctx,
+	// 设置过渡状态。检查 RowsAffected：在 loadService 和这里之间状态可能被并发改过，
+	// UPDATE 影响 0 行时不能继续调上游（否则会把已删除的服务再停一遍）。
+	res, err := lc.db.ExecContext(ctx,
 		`UPDATE services SET desired_status=$1, transition_state=$4 WHERE id=$2 AND status`+cmp+`$3`,
-		to, s.ID, from, state); err != nil {
+		to, s.ID, from, state)
+	if err != nil {
 		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("服务状态已变化，请刷新后重试")
 	}
 	cctx, cancel := context.WithTimeout(ctx, opTimeout)
 	defer cancel()
@@ -305,16 +328,47 @@ func (lc *Lifecycle) transition(ctx context.Context, s *serviceRef, from, to int
 		lc.db.ExecContext(ctx, `UPDATE services SET desired_status=NULL, transition_state='' WHERE id=$1`, s.ID)
 		return fmt.Errorf("%s: %w", errMsg, err)
 	}
-	// 成功：更新状态
-	_, err = lc.db.ExecContext(ctx,
+	// 成功：更新状态。同样检查 RowsAffected。
+	res, err = lc.db.ExecContext(ctx,
 		`UPDATE services SET status=$1 WHERE id=$2 AND status`+cmp+`$3`, to, s.ID, from)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		log.Printf("[lifecycle] service %d 状态迁移成功后，本地状态已被并发改写，跳过状态更新", s.ID)
+	}
 	// 无条件清除过渡状态：即便并发的 SyncUpstreamStatus 改了 status，
 	// 也不让其卡在 transition_state（否则会被同步长期跳过）。
 	if _, e := lc.db.ExecContext(ctx,
 		`UPDATE services SET desired_status=NULL, transition_state='' WHERE id=$1`, s.ID); e != nil {
 		log.Printf("[lifecycle] service %d 清除过渡状态失败: %v", s.ID, e)
 	}
-	return err
+	return nil
+}
+
+// acquireExecutionLock 尝试获取服务级执行锁，与 fulfillment 执行/恢复/退款互斥。
+// Jobs 为 nil 时跳过（测试或未启用履约队列的场景）。
+func (lc *Lifecycle) acquireExecutionLock(ctx context.Context, serviceID int64) error {
+	if lc.Jobs == nil {
+		return nil
+	}
+	_, unlock, err := lc.Jobs.TryExecutionLock(ctx, serviceID)
+	if err != nil {
+		if errors.Is(err, repo.ErrFulfillmentBusy) {
+			return fmt.Errorf("服务正在执行操作，请稍后再试")
+		}
+		return fmt.Errorf("获取服务执行锁失败: %w", err)
+	}
+	lc.execUnlock = unlock
+	return nil
+}
+
+// releaseExecutionLock 释放上一次 acquireExecutionLock 持有的锁。
+func (lc *Lifecycle) releaseExecutionLock() {
+	if lc.execUnlock != nil {
+		lc.execUnlock()
+		lc.execUnlock = nil
+	}
 }
 
 // Suspend 停机：本地状态 + 上游同步。
@@ -375,11 +429,19 @@ func (lc *Lifecycle) Terminate(ctx context.Context, serviceID int64) error {
 // TerminateLocal 仅本地删除：置 status=3（含清除过渡状态），不调用上游。
 // 用于后台「本地删除」——保留上游实例，便于找回或避免误删。
 func (lc *Lifecycle) TerminateLocal(ctx context.Context, serviceID int64) error {
-	// provision_error 一并清空：删除后无处展示（读取点均过滤 status<3），留着是脏数据（见 Terminate 注释）。
-	if _, err := lc.db.ExecContext(ctx,
-		`UPDATE services SET status=3, desired_status=NULL, transition_state='', provision_error='' WHERE id=$1 AND status<3`,
-		serviceID); err != nil {
+	if err := lc.acquireExecutionLock(ctx, serviceID); err != nil {
 		return err
+	}
+	defer lc.releaseExecutionLock()
+	// provision_error 一并清空：删除后无处展示（读取点均过滤 status<3），留着是脏数据（见 Terminate 注释）。
+	res, err := lc.db.ExecContext(ctx,
+		`UPDATE services SET status=3, desired_status=NULL, transition_state='', provision_error='' WHERE id=$1 AND status<3`,
+		serviceID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("服务状态已变化，请刷新后重试")
 	}
 	return nil
 }
