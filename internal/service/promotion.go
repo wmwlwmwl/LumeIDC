@@ -139,12 +139,6 @@ func (s *PromotionService) CheckQuotaAndLimit(ctx context.Context, tx *sql.Tx, p
 	return nil
 }
 
-// IncrOrderStats 支付成功后累加活动统计（下单量 + 成交金额）。
-func (s *PromotionService) IncrOrderStats(ctx context.Context, promotionID int64, paidAmount string) error {
-	amt, _ := strconv.ParseFloat(paidAmount, 64)
-	return s.Promo.IncrStats(ctx, promotionID, amt)
-}
-
 // ReleaseQuota 账单过期未支付时释放限量名额。
 func (s *PromotionService) ReleaseQuota(ctx context.Context, tx *sql.Tx, promotionProductID int64) error {
 	return s.Promo.ReleaseQuota(ctx, tx, promotionProductID)

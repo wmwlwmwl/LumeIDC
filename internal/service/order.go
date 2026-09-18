@@ -57,6 +57,12 @@ func (o *Orders) CreateOrder(ctx context.Context, userID, productID, pricesetID 
 		return 0, 0, "", err
 	}
 	defer tx.Rollback()
+	// 同一用户的所有订单事务串行化，防止 new_user/limit_per_user 等活动校验并发绕过。
+	// pg_advisory_xact_lock 事务结束自动释放，不持久化不持有连接。
+	if _, err := tx.ExecContext(ctx,
+		`SELECT pg_advisory_xact_lock(hashtext('user_order_lock:' || $1::text))`, userID); err != nil {
+		return 0, 0, "", fmt.Errorf("获取订单锁失败: %w", err)
+	}
 
 	var stock int
 	var productName string
@@ -361,6 +367,11 @@ func (o *Orders) CreateRenewOrder(ctx context.Context, userID, serviceID int64, 
 		return 0, 0, "", err
 	}
 	defer tx.Rollback()
+	// 同一用户的所有订单事务串行化（与 CreateOrder 共用同一 key），避免活动校验并发绕过。
+	if _, err := tx.ExecContext(ctx,
+		`SELECT pg_advisory_xact_lock(hashtext('user_order_lock:' || $1::text))`, userID); err != nil {
+		return 0, 0, "", fmt.Errorf("获取订单锁失败: %w", err)
+	}
 
 	// 锁定服务，串行化同一服务的续费建单，避免并发产生多张未支付账单。
 	var serviceStatus int16
@@ -573,6 +584,11 @@ func (o *Orders) CreateUpgradeOrder(ctx context.Context, userID, serviceID, targ
 		return 0, 0, "", 0, err
 	}
 	defer tx.Rollback()
+	// 同一用户的所有订单事务串行化（与 CreateOrder 共用同一 key），避免活动校验并发绕过。
+	if _, err := tx.ExecContext(ctx,
+		`SELECT pg_advisory_xact_lock(hashtext('user_order_lock:' || $1::text))`, userID); err != nil {
+		return 0, 0, "", 0, err
+	}
 
 	// 锁定服务，串行化同一服务的升降级建单
 	var svcStatus int16

@@ -258,16 +258,6 @@ func (p *Promotions) ReleaseQuota(ctx context.Context, tx *sql.Tx, promotionProd
 	return err
 }
 
-// IncrStats 支付成功后累加统计。
-func (p *Promotions) IncrStats(ctx context.Context, promotionID int64, paidAmount float64) error {
-	_, err := p.db.ExecContext(ctx,
-		`INSERT INTO promotion_stats(promotion_id,views,claimed,orders,paid_amount)
-		 VALUES($1,0,0,1,$2)
-		 ON CONFLICT(promotion_id) DO UPDATE SET orders=promotion_stats.orders+1, paid_amount=promotion_stats.paid_amount+EXCLUDED.paid_amount`,
-		promotionID, paidAmount)
-	return err
-}
-
 // IncrViews 活动页访问量 +1。
 func (p *Promotions) IncrViews(ctx context.Context, promotionID int64) error {
 	_, err := p.db.ExecContext(ctx,

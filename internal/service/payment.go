@@ -650,15 +650,25 @@ func (p *Payment) MarkPaid(ctx context.Context, invoiceNo, tradeNo, gatewayCode 
 	}
 	// 活动订单：查询 promotion_id 用于支付后统计
 	var promoID sql.NullInt64
+	var paidAmountFloat float64
 	if orderID > 0 {
-		tx.QueryRowContext(ctx, `SELECT promotion_id FROM orders WHERE id=$1`, orderID).Scan(&promoID)
+		if err := tx.QueryRowContext(ctx, `SELECT promotion_id FROM orders WHERE id=$1`, orderID).Scan(&promoID); err != nil {
+			return err
+		}
+		paidAmountFloat, _ = strconv.ParseFloat(paidAmount, 64)
+	}
+	// 累加活动统计入 tx：commit 成功才记统计，避免已开通但统计少记一笔
+	if promoID.Valid && p.Promotion != nil {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO promotion_stats(promotion_id,views,claimed,orders,paid_amount)
+			 VALUES($1,0,0,1,$2)
+			 ON CONFLICT(promotion_id) DO UPDATE SET orders=promotion_stats.orders+1, paid_amount=promotion_stats.paid_amount+EXCLUDED.paid_amount`,
+			promoID.Int64, paidAmountFloat); err != nil {
+			return err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return err
-	}
-	// 累加活动统计（支付成功后）
-	if promoID.Valid && p.Promotion != nil {
-		_ = p.Promotion.IncrOrderStats(ctx, promoID.Int64, paidAmount)
 	}
 	if p.TriggerFulfillment != nil {
 		p.TriggerFulfillment()
@@ -792,6 +802,13 @@ func frozenRenewValue(amount, quoteTotal, quoteSetup float64, profitType int16, 
 // fulfillOrderTx 订单账单核销：结账单/结束支付尝试/结束订单后，按订单种类完成
 // 升级（退差+标记升级中）/续费（延期）/新购（建服务）三分支并入队履约。
 func (p *Payment) fulfillOrderTx(ctx context.Context, tx *sql.Tx, a markPaidTx) (markPaidResult, error) {
+	// 同一用户的所有订单事务串行化（与 CreateOrder/CreateRenewOrder/CreateUpgradeOrder 共用同一 key）。
+	// 防止"订单创建"和"支付后开通"之间同一用户的活动订单交叉校验。
+	if _, err := tx.ExecContext(ctx,
+		`SELECT pg_advisory_xact_lock(hashtext('user_order_lock:' || $1::text))`, a.userID); err != nil {
+		return markPaidResult{}, fmt.Errorf("获取订单锁失败: %w", err)
+	}
+
 	var productID int64
 	var cycle string
 	var amountStr string
