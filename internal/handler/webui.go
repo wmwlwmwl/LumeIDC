@@ -94,8 +94,9 @@ func InstallPage(w http.ResponseWriter, r *http.Request) {
 // /user/verification（含自动实名插件流程）恒由 SPA 承载。
 func spaOwned(p string) bool {
 	switch p {
-	case "/", "/cart", "/services", "/notifications", "/tickets",
+	case "/", "/cart", "/services", "/notifications", "/tickets", "/promotions",
 		"/user", "/user/recharge", "/user/invoices", "/user/password", "/user/profile",
+		"/user/promotion-coupons",
 		"/login", "/register", "/forgot", "/user/verification":
 		return true
 	}
@@ -120,6 +121,9 @@ func spaOwned(p string) bool {
 			return true
 		}
 		return false
+	}
+	if rest, ok := strings.CutPrefix(p, "/promotion/"); ok {
+		return isAllDigits(rest)
 	}
 	if rest, ok := strings.CutPrefix(p, "/pay/"); ok {
 		// 仅收银台 /pay/{id}（纯数字）由 SPA 接管；状态轮询 /pay/{id}/status、

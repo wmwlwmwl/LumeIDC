@@ -17,8 +17,8 @@ func NewServicesRepo(db *sql.DB) *ServicesRepo { return &ServicesRepo{db: db} }
 
 func NewOrders(db *sql.DB, products *repo.Products, coupons *repo.Coupons, identity interface {
 	IsApproved(context.Context, int64) (bool, error)
-}, upstream *UpstreamGuard) *Orders {
-	return &Orders{db: db, Products: products, Coupons: coupons, Identity: identity, Upstream: upstream}
+}, upstream *UpstreamGuard, notifier *Notifier) *Orders {
+	return &Orders{db: db, Products: products, Coupons: coupons, Identity: identity, Upstream: upstream, Notifier: notifier}
 }
 
 func NewConsole(db *sql.DB, servers *repo.Servers, products *repo.Products, providers *server.Registry, crypt *crypto.Cryptor) *Console {

@@ -30,6 +30,7 @@ type Admin struct {
 	Refunds       *repo.Refunds
 	AdminLog      *repo.AdminLog
 	Stats         *repo.Stats
+	Promotions    *repo.Promotions
 	Notifier      *service.Notifier
 	emailTestMu   sync.Mutex
 	Updater       *update.Client // 系统在线更新（nil 时页面提示未启用）
@@ -66,6 +67,14 @@ func (a *Admin) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /admin/announcements/{id}/delete", a.adminAnnouncementDelete)
 	mux.HandleFunc("GET /admin/coupons", a.adminCoupons)
 	mux.HandleFunc("POST /admin/coupons/save", a.adminCouponCreate)
+	// 营销活动
+	mux.HandleFunc("GET /admin/promotions", a.adminPromotions)
+	mux.HandleFunc("GET /admin/promotions/{id}", a.adminPromotionDetail)
+	mux.HandleFunc("POST /admin/promotions/save", a.adminPromotionSave)
+	mux.HandleFunc("POST /admin/promotions/{id}/save", a.adminPromotionSave)
+	mux.HandleFunc("POST /admin/promotions/{id}/delete", a.adminPromotionDelete)
+	mux.HandleFunc("POST /admin/promotions/{id}/toggle", a.adminPromotionToggle)
+	mux.HandleFunc("GET /admin/promotions/{id}/stats", a.adminPromotionStats)
 	mux.HandleFunc("GET /admin/settings", a.adminSettings)
 	mux.HandleFunc("POST /admin/settings", a.adminSettingsSave)
 	mux.HandleFunc("POST /admin/settings/test-email", a.adminTestEmail)

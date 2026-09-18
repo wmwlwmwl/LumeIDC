@@ -3,13 +3,14 @@ import { ref, reactive, onMounted } from 'vue'
 import { fetchHome, type HomeData } from '../api/store'
 import { useSession } from '../http/session'
 import HomeHero from './Home/HomeHero.vue'
+import HomePromotions from './Home/HomePromotions.vue'
 import HomeProductTabs from './Home/HomeProductTabs.vue'
 import HomeSolutions from './Home/HomeSolutions.vue'
 import HomeNews from './Home/HomeNews.vue'
 import HomeRegisterBar from './Home/HomeRegisterBar.vue'
 
 const session = useSession()
-const home = reactive<HomeData>({ catalog: [], products: [], announcements: [] })
+const home = reactive<HomeData>({ catalog: [], products: [], announcements: [], promotions: [] })
 const loading = ref(false)
 const loadError = ref(false)
 
@@ -21,6 +22,7 @@ async function load() {
     home.catalog = data.catalog
     home.products = data.products
     home.announcements = data.announcements
+    home.promotions = data.promotions || []
   } catch {
     loadError.value = true
   } finally {
@@ -40,6 +42,7 @@ onMounted(load)
         <button type="button" class="home-error__retry" @click="load">重新加载</button>
       </div>
       <HomeHero :catalog="home.catalog" :description="session.site.description" />
+      <HomePromotions :promotions="home.promotions || []" />
       <HomeProductTabs :products="home.products" />
       <HomeSolutions />
       <HomeNews :notices="home.announcements" />

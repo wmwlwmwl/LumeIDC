@@ -166,6 +166,7 @@ func Build(cfg *config.Config, version string) (*App, error) {
 	gatewaysRepo := repo.NewGateways(database)
 	loginAttempts := repo.NewLoginAttempts(database)
 	invoices := repo.NewInvoices(database)
+	promotionsRepo := repo.NewPromotions(database)
 	provisions := repo.NewProvisionRepo(database)
 	jobs := repo.NewFulfillmentJobs(database)
 	periodGrants := repo.NewPeriodGrants(database)
@@ -220,10 +221,13 @@ func Build(cfg *config.Config, version string) (*App, error) {
 	// ---- 服务层（单例，组合根统一注入） ----
 	servicesRepo := service.NewServicesRepo(database)
 	upstreamGuard := &service.UpstreamGuard{Servers: serversRepo, Products: products, Providers: providers}
-	orders := service.NewOrders(database, products, coupons, identity, upstreamGuard)
+	orders := service.NewOrders(database, products, coupons, identity, upstreamGuard, notifier)
+	promotionSvc := service.NewPromotionService(database, promotionsRepo, coupons)
+	orders.Promotion = promotionSvc
 	console := service.NewConsole(database, serversRepo, products, providers, cryptor)
 	lifecycle := service.NewLifecycle(database, serversRepo, products, providers, provisions)
 	paymentSvc := service.NewPayment(database, lifecycle, serversRepo, products, provisions, jobs, balanceRepo, providers, periodGrants, notifier, cryptor)
+	paymentSvc.Promotion = promotionSvc
 	gateways := map[string]gateway.Gateway{
 		"epay":       gateway.Epay{},
 		"alipay_f2f": gateway.AlipayF2F{},
@@ -270,6 +274,7 @@ func Build(cfg *config.Config, version string) (*App, error) {
 		Refunds:       refunds,
 		AdminLog:      adminLog,
 		Stats:         statsRepo,
+		Promotions:    promotionsRepo,
 		Notifier:      notifier,
 		Updater:       &update.Client{Repo: "wmwlwmwl/LumeIDC", Version: version},
 		DefaultListen: defaultListen,
@@ -289,6 +294,7 @@ func Build(cfg *config.Config, version string) (*App, error) {
 		Announcements: announcements,
 		Settings:      settingsRepo,
 		Invoices:      invoices,
+		Promotion:     promotionSvc,
 		Payment:       paymentSvc,
 		CancelReqs:    cancelReqs,
 		Deps:          deps,

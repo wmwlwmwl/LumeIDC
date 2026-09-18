@@ -23,6 +23,7 @@ type Coupon struct {
 	UsageLimit int
 	UsedCount  int
 	Active     bool
+	UserID     *int64
 }
 
 var (
@@ -40,7 +41,7 @@ func (c *Coupons) Validate(ctx context.Context, tx *sql.Tx, code string, userID 
 	var expires sql.NullTime
 	err = tx.QueryRowContext(ctx,
 		`SELECT id,type,value,min_amount,starts_at,expires_at,usage_limit,used_count,active
-		 FROM coupons WHERE code=$1 AND starts_at<=now() FOR UPDATE`, code).
+		 FROM coupons WHERE code=$1 AND starts_at<=now() AND (user_id IS NULL OR user_id=$2) FOR UPDATE`, code, userID).
 		Scan(&cp.ID, &cp.Type, &cp.Value, &cp.MinAmount, &starts, &expires, &cp.UsageLimit, &cp.UsedCount, &cp.Active)
 	if errors.Is(err, sql.ErrNoRows) || !cp.Active {
 		return 0, "", ErrCouponInvalid
@@ -112,26 +113,44 @@ func (c *Coupons) List(ctx context.Context) ([]Coupon, error) {
 	return out, rows.Err()
 }
 
+// Get 按 ID 获取优惠码。
+func (c *Coupons) Get(ctx context.Context, id int64) (*Coupon, error) {
+	var cp Coupon
+	var expires sql.NullTime
+	err := c.db.QueryRowContext(ctx,
+		`SELECT id,code,type,value,min_amount,expires_at,usage_limit,used_count,active FROM coupons WHERE id=$1`, id).
+		Scan(&cp.ID, &cp.Code, &cp.Type, &cp.Value, &cp.MinAmount, &expires, &cp.UsageLimit, &cp.UsedCount, &cp.Active)
+	if err != nil {
+		return nil, err
+	}
+	if expires.Valid {
+		cp.ExpiresAt = &expires.Time
+	}
+	return &cp, nil
+}
+
 // Create 新增优惠码。expires 为空表示永不过期。
 func (c *Coupons) Create(ctx context.Context, code, typ string, value, minAmount float64, usageLimit int, expires *time.Time) error {
+	_, err := c.create(ctx, code, typ, value, minAmount, usageLimit, expires, nil)
+	return err
+}
+
+func (c *Coupons) CreateForUser(ctx context.Context, code, typ string, value, minAmount float64, usageLimit int, expires *time.Time, userID int64) (int64, error) {
+	return c.create(ctx, code, typ, value, minAmount, usageLimit, expires, &userID)
+}
+
+func (c *Coupons) create(ctx context.Context, code, typ string, value, minAmount float64, usageLimit int, expires *time.Time, userID *int64) (int64, error) {
 	if code == "" {
-		return errors.New("优惠码不能为空")
+		return 0, errors.New("优惠码不能为空")
 	}
-	if !math.IsNaN(value) && !math.IsInf(value, 0) && value >= 0 && !math.IsNaN(minAmount) && !math.IsInf(minAmount, 0) && minAmount >= 0 && usageLimit >= 0 {
-		if typ == "percent" && value <= 100 {
-			_, err := c.db.ExecContext(ctx,
-				`INSERT INTO coupons(code,type,value,min_amount,usage_limit,expires_at,active) VALUES($1,$2,$3,$4,$5,$6,true)`,
-				code, typ, value, minAmount, usageLimit, expires)
-			return err
-		}
-		if typ == "fixed" {
-			_, err := c.db.ExecContext(ctx,
-				`INSERT INTO coupons(code,type,value,min_amount,usage_limit,expires_at,active) VALUES($1,$2,$3,$4,$5,$6,true)`,
-				code, typ, value, minAmount, usageLimit, expires)
-			return err
-		}
+	if !math.IsNaN(value) && !math.IsInf(value, 0) && value >= 0 && !math.IsNaN(minAmount) && !math.IsInf(minAmount, 0) && minAmount >= 0 && usageLimit >= 0 && (typ == "fixed" || (typ == "percent" && value <= 100)) {
+		var id int64
+		err := c.db.QueryRowContext(ctx,
+			`INSERT INTO coupons(code,type,value,min_amount,usage_limit,expires_at,active,user_id) VALUES($1,$2,$3,$4,$5,$6,true,$7) RETURNING id`,
+			code, typ, value, minAmount, usageLimit, expires, userID).Scan(&id)
+		return id, err
 	}
-	return errors.New("优惠码参数无效")
+	return 0, errors.New("优惠码参数无效")
 }
 
 func strconvParse(s string) (float64, bool) {

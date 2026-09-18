@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, type Component } from 'vue'
 import { useRoute } from 'vue-router'
-import { Grid, Monitor, Document, Wallet, Bell, User, Lock, ArrowRight, ChatDotRound } from '@element-plus/icons-vue'
+import { Grid, Monitor, Document, Wallet, Bell, User, Lock, ArrowRight, ChatDotRound, Ticket } from '@element-plus/icons-vue'
 import { useSession } from '../http/session'
 import { formatMoney } from '@/utils/format'
 import PublicContainer from '@/components/public/PublicContainer.vue'
@@ -31,6 +31,7 @@ const accountLinks: MenuLink[] = [
   { to: '/services', label: '我的服务', paths: ['/services'], icon: Monitor },
   { to: '/user/invoices', label: '财务记录', paths: ['/user/invoices'], icon: Document },
   { to: '/user/recharge', label: '账户充值', paths: ['/user/recharge'], icon: Wallet },
+  { to: '/user/promotion-coupons', label: '活动优惠券', paths: ['/user/promotion-coupons'], icon: Ticket },
   { to: '/notifications', label: '消息中心', paths: ['/notifications'], icon: Bell },
   { to: '/tickets', label: '工单支持', paths: ['/tickets'], icon: ChatDotRound },
 ]

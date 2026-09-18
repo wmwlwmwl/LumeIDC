@@ -36,6 +36,8 @@ type Payment struct {
 	// TriggerFulfillment 支付成功后立即触发队列执行（httpserver 注入，异步 Drain）。
 	// 为 nil 时仅靠 cron 每 15s 轮询，支付后开通最多延迟一个轮询周期。
 	TriggerFulfillment func()
+	// Promotion 营销活动统计（可为 nil）。
+	Promotion *PromotionService
 }
 
 // triggerFulfillment 手动催一次履约队列。管理员点「重试」后立刻开跑，
@@ -646,8 +648,17 @@ func (p *Payment) MarkPaid(ctx context.Context, invoiceNo, tradeNo, gatewayCode 
 	if err != nil {
 		return err
 	}
+	// 活动订单：查询 promotion_id 用于支付后统计
+	var promoID sql.NullInt64
+	if orderID > 0 {
+		tx.QueryRowContext(ctx, `SELECT promotion_id FROM orders WHERE id=$1`, orderID).Scan(&promoID)
+	}
 	if err := tx.Commit(); err != nil {
 		return err
+	}
+	// 累加活动统计（支付成功后）
+	if promoID.Valid && p.Promotion != nil {
+		_ = p.Promotion.IncrOrderStats(ctx, promoID.Int64, paidAmount)
 	}
 	if p.TriggerFulfillment != nil {
 		p.TriggerFulfillment()

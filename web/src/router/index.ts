@@ -13,6 +13,8 @@ const router = createRouter({
     { path: '/install', name: 'install', component: () => import('../views/Install.vue'), meta: { bare: true, title: '安装向导' } },
     { path: '/', name: 'home', component: () => import('../views/Home.vue'), meta: { title: '首页' } },
     { path: '/cart', name: 'cart', component: () => import('../views/Catalog.vue'), meta: { title: '产品中心' } },
+    { path: '/promotions', name: 'promotions', component: () => import('../views/Promotions.vue'), meta: { title: '营销活动' } },
+    { path: '/promotion/:id(\\d+)', name: 'promotion', component: () => import('../views/Promotion.vue'), meta: { title: '活动' } },
     { path: '/buy/:id(\\d+)', name: 'buy', component: () => import('../views/Buy.vue'), meta: { title: '购买' } },
     { path: '/pay/:id(\\d+)', name: 'pay', component: () => import('../views/Pay.vue'), meta: { title: '支付' } },
     { path: '/notices', name: 'notices', component: () => import('../views/Notices.vue'), meta: { title: '公告' } },
@@ -57,6 +59,12 @@ const router = createRouter({
       component: () => import('../views/UserShell.vue'),
       meta: { auth: true },
       children: [{ path: '', name: 'invoices', component: () => import('../views/Invoices.vue'), meta: { title: '财务记录' } }],
+    },
+    {
+      path: '/user/promotion-coupons',
+      component: () => import('../views/UserShell.vue'),
+      meta: { auth: true },
+      children: [{ path: '', name: 'promotion-coupons', component: () => import('../views/UserPromotionCoupons.vue'), meta: { title: '活动优惠券' } }],
     },
     {
       path: '/notifications',

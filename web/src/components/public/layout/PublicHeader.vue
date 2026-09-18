@@ -125,6 +125,14 @@ watch(() => session.user?.id, () => void refreshUnreadNotifications())
           <span class="main-nav__text">产品</span>
           <el-icon class="main-nav__arrow"><ArrowDown /></el-icon>
         </button>
+        <RouterLink
+          to="/promotions"
+          class="main-nav__link"
+          :class="{ 'is-active': route.path.startsWith('/promotion') }"
+        >
+          <span class="main-nav__text">活动</span>
+          <el-icon class="main-nav__arrow is-ghost"><ArrowDown /></el-icon>
+        </RouterLink>
         <button
           type="button"
           class="main-nav__link"
@@ -194,6 +202,7 @@ watch(() => session.user?.id, () => void refreshUnreadNotifications())
       <div v-if="mobileOpen" class="mobile-drawer">
         <RouterLink to="/" @click="mobileOpen = false">首页</RouterLink>
         <RouterLink to="/cart" @click="mobileOpen = false">产品与服务</RouterLink>
+        <RouterLink to="/promotions" @click="mobileOpen = false">营销活动</RouterLink>
         <RouterLink to="/notices" @click="mobileOpen = false">公告</RouterLink>
         <RouterLink v-if="session.user" to="/user" @click="mobileOpen = false">账户中心</RouterLink>
         <RouterLink v-if="session.user" to="/services" @click="mobileOpen = false">我的服务</RouterLink>

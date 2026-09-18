@@ -1,0 +1,2 @@
+ALTER TABLE coupons ADD COLUMN IF NOT EXISTS user_id BIGINT REFERENCES users(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS idx_coupons_user ON coupons(user_id);

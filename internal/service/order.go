@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"math"
 	"strconv"
 	"strings"
@@ -27,6 +28,9 @@ type Orders struct {
 	}
 	// Upstream 下单前的上游实时价格校验（可为 nil：未装配时跳过校验）。
 	Upstream *UpstreamGuard
+	// Promotion 营销活动计价（可为 nil：未装配时跳过活动价）。
+	Promotion *PromotionService
+	Notifier  *Notifier
 }
 
 var cycleCol = map[string]string{
@@ -55,9 +59,10 @@ func (o *Orders) CreateOrder(ctx context.Context, userID, productID, pricesetID 
 	defer tx.Rollback()
 
 	var stock int
+	var productName string
 	var requiresIdentity bool
-	err = tx.QueryRowContext(ctx, `SELECT p.stock,p.requires_identity FROM products p JOIN product_types t ON t.id=p.type_id
-		WHERE p.id=$1 AND p.hidden=false AND p.upstream_offline_reason='' AND t.hidden=false AND (t.parent_id=0 OR EXISTS (SELECT 1 FROM product_types parent WHERE parent.id=t.parent_id AND parent.hidden=false)) FOR UPDATE`, productID).Scan(&stock, &requiresIdentity)
+	err = tx.QueryRowContext(ctx, `SELECT p.stock,p.name,p.requires_identity FROM products p JOIN product_types t ON t.id=p.type_id
+		WHERE p.id=$1 AND p.hidden=false AND p.upstream_offline_reason='' AND t.hidden=false AND (t.parent_id=0 OR EXISTS (SELECT 1 FROM product_types parent WHERE parent.id=t.parent_id AND parent.hidden=false)) FOR UPDATE`, productID).Scan(&stock, &productName, &requiresIdentity)
 	if err != nil {
 		return 0, 0, "", fmt.Errorf("商品已下架")
 	}
@@ -143,6 +148,37 @@ func (o *Orders) CreateOrder(ctx context.Context, userID, productID, pricesetID 
 	}
 	cost := mathRound(quote.PayableOnce())
 	sell := mathRound(applyProfit(cost, profitType, profitValue))
+
+	var promoID, promoProductID sql.NullInt64
+	var promoType string
+	var promoDiscount float64
+	if o.Promotion != nil {
+		ap, apErr := o.Promotion.ActivePromotionFor(ctx, productID, pricesetID, cycle)
+		if apErr != nil {
+			return 0, 0, "", fmt.Errorf("查询活动失败: %w", apErr)
+		}
+		if ap != nil {
+			if apErr := o.Promotion.ValidatePromotionApplicable(ctx, ap, userID); apErr != nil {
+				return 0, 0, "", apErr
+			}
+			if apErr := o.Promotion.CheckQuotaAndLimit(ctx, tx, ap, userID, ap.LimitPerUser); apErr != nil {
+				return 0, 0, "", apErr
+			}
+			promoFinal, promoDisc := o.Promotion.ApplyPromotion(sell, ap)
+			sell = promoFinal
+			promoDiscount = promoDisc
+			promoType = ap.Type
+			promoID.Int64 = ap.PromotionID
+			promoID.Valid = true
+			promoProductID.Int64 = ap.PromotionProductID
+			promoProductID.Valid = true
+			if ap.Type == "coupon_giveaway" {
+				couponCode = fmt.Sprintf("PROMO_%d_%d", ap.PromotionID, userID)
+			} else if ap.Type != "full_reduction" {
+				couponCode = ""
+			}
+		}
+	}
 	finalAmount := strconv.FormatFloat(sell, 'f', 2, 64)
 
 	// 优惠码抵扣：在订单事务内锁定并校验，避免并发超发；提前到建单前，失败不留孤儿订单。
@@ -168,8 +204,11 @@ func (o *Orders) CreateOrder(ctx context.Context, userID, productID, pricesetID 
 	profit := strconv.FormatFloat(sell-cost, 'f', 2, 64)
 
 	err = tx.QueryRowContext(ctx,
-		`INSERT INTO orders(user_id,product_id,priceset_id,cycle,amount,profit,identity_required) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
-		userID, productID, pricesetID, cycle, finalAmount, profit, requiresIdentity).Scan(&orderID)
+		`INSERT INTO orders(user_id,product_id,priceset_id,cycle,amount,profit,identity_required,
+		        promotion_id,promo_product_id,promo_type,promo_discount)
+		 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
+		userID, productID, pricesetID, cycle, finalAmount, profit, requiresIdentity,
+		promoID, promoProductID, promoType, promoDiscount).Scan(&orderID)
 	if err != nil {
 		return 0, 0, "", err
 	}
@@ -207,6 +246,12 @@ func (o *Orders) CreateOrder(ctx context.Context, userID, productID, pricesetID 
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, 0, "", err
+	}
+	if o.Notifier != nil {
+		body := fmt.Sprintf("订单 %d 已提交，商品：%s，应付金额：%s 元，请在 24 小时内完成支付。", orderID, productName, finalAmount)
+		if err := o.Notifier.NotifyTemplate(ctx, userID, "order_submitted", "订单已提交", body, map[string]string{"order_id": strconv.FormatInt(orderID, 10), "product_name": productName, "amount": finalAmount, "invoice_no": no}); err != nil {
+			log.Printf("订单提交通知入队失败，订单编号=%d: %v", orderID, err)
+		}
 	}
 	return orderID, invoiceID, finalAmount, nil
 }
