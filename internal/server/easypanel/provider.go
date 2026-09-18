@@ -92,11 +92,6 @@ func (p Provider) TestConnection(ctx context.Context, cfg server.Config) error {
 	return nil // kangle 也放行（部分老版仅 kangle 信息）
 }
 
-// Catalog EP 无商品目录 API：返回空（管理员在产品表单手填 EP 产品 ID 或走弹性模式）。
-func (p Provider) Catalog(ctx context.Context, cfg server.Config) ([]server.UpstreamProduct, error) {
-	return nil, nil
-}
-
 // Provision a=add_vh 创建站点。双模式：
 //   - req.UpstreamPID>0：EP 产品 ID 模式（配额由 EP 面板产品定义）
 //   - =0：弹性模式（白名单配置项直传配额参数）

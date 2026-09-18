@@ -29,6 +29,23 @@ func (p *catalogTestProvider) Catalog(ctx context.Context, _ server.Config) ([]s
 	}
 }
 
+func TestCatalogTypeOptionsEasyPanelUsesExistingChildren(t *testing.T) {
+	types := []repo.ProductType{
+		{ID: 1, Name: "云主机", ParentID: 0},
+		{ID: 2, Name: "国内线路", ParentID: 1},
+		{ID: 3, Name: "隐藏二级", ParentID: 1, Hidden: true},
+		{ID: 4, Name: "其他", ParentID: 0},
+	}
+	got := catalogTypeOptions(types, "easypanel")
+	if len(got) != 1 || got[0].ID != 2 || got[0].ParentID != 1 || got[0].Name != "云主机 / 国内线路" {
+		t.Fatalf("EasyPanel 分类选项=%+v，期望只返回已有二级分类", got)
+	}
+	other := catalogTypeOptions(types, "zjmf")
+	if len(other) != 2 || other[0].ParentID != 0 || other[1].ParentID != 0 {
+		t.Fatalf("其他供应商分类选项=%+v，期望返回一级分类", other)
+	}
+}
+
 func TestProviderCatalogSharesInFlightRequest(t *testing.T) {
 	oldCache := catalogCache
 	catalogCache = &providerCatalogCache{

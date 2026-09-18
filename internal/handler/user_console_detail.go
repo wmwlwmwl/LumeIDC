@@ -10,6 +10,7 @@ import (
 
 	"lumeidc/internal/middleware"
 	"lumeidc/internal/repo"
+	"lumeidc/internal/server"
 	"lumeidc/internal/service"
 )
 
@@ -74,6 +75,12 @@ func (h *Pages) serviceDetail(w http.ResponseWriter, r *http.Request) {
 		configs = append(configs, map[string]any{"name": c.Name, "value": c.Value, "price": c.Price})
 	}
 	// 上游登录信息/面板直登地址使用最近一次本地快照，避免打开详情时自动请求上游。
+	configDesc := d.ConfigNote
+	if d.Provider == "easypanel" {
+		if summary := easyPanelConfigSummary(d.HostSnapshot); summary != "" {
+			configDesc = summary
+		}
+	}
 	var host map[string]any
 	if d.HostSnapshot != nil {
 		ov := d.HostSnapshot
@@ -84,7 +91,7 @@ func (h *Pages) serviceDetail(w http.ResponseWriter, r *http.Request) {
 			// （旧快照的 panel_url 本身就是 a=login 提交入口，语义刚好对得上）。
 			"panel_login_url": panelLoginURL(ov.Detail.PanelLoginURL, ov.Detail.PanelURL),
 			"status":          ov.Detail.Status,
-			"os": ov.Detail.OSName, "ip": ov.Detail.IP,
+			"os":              ov.Detail.OSName, "ip": ov.Detail.IP,
 			"additional_ips": ov.Detail.AdditionalIPs, "bw_limit": ov.Detail.BWLimit,
 			"bw_usage": ov.Detail.BWUsage, "datacenter": ov.Detail.Datacenter,
 			"os_version": ov.Detail.OSVersion, "port": ov.Detail.Port,
@@ -103,7 +110,7 @@ func (h *Pages) serviceDetail(w http.ResponseWriter, r *http.Request) {
 			"hostname": d.Hostname, "product_id": d.ProductID, "remark": d.Remark,
 			"expires_at": d.ExpiresAt.Format("2006-01-02 15:04"), "created_at": d.CreatedAt.Format("2006-01-02"),
 			"cycle": d.Cycle, "amount": d.Amount, "configs": configs,
-			"config_desc": d.ConfigNote,
+			"config_desc": configDesc,
 			"provider":    d.Provider,
 			"transition":  d.Transition,
 		},
@@ -111,6 +118,26 @@ func (h *Pages) serviceDetail(w http.ResponseWriter, r *http.Request) {
 		"show_monthly": showMonthly, "show_q": showQ, "show_y": showY, "default_cycle": defaultCycle,
 		"renew_prices": renewPrices, "can_upgrade": canUpgrade, "modules": modules,
 	})
+}
+
+func easyPanelConfigSummary(overview *server.HostOverview) string {
+	if overview == nil {
+		return ""
+	}
+	d := overview.Detail
+	web := strings.TrimSpace(d.WebQuota)
+	if web == "" {
+		web = "-"
+	}
+	db := strings.TrimSpace(d.DBQuota)
+	if db == "" {
+		db = "-"
+	}
+	domain := strings.TrimSpace(d.Domain)
+	if domain == "" {
+		domain = "-"
+	}
+	return fmt.Sprintf("你现在是：网页空间 %s，数据库 %s，域名%s", web, db, domain)
 }
 
 func (h *Pages) serviceRefresh(w http.ResponseWriter, r *http.Request) {

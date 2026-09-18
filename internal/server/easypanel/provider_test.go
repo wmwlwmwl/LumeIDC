@@ -1,8 +1,69 @@
 package easypanel
 
 import (
+	"context"
+	"encoding/base64"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
+
+	"lumeidc/internal/server"
 )
+
+func TestCatalogParsesMigrationProductList(t *testing.T) {
+	payload := `[{
+		"id": 7,
+		"product_name": "PHP 共享主机",
+		"web_quota": 2048,
+		"db_quota": 512,
+		"domain": -1,
+		"module": "php",
+		"templete": "easypanel",
+		"ftp": 1
+	}]`
+	encoded := base64.StdEncoding.EncodeToString([]byte(payload))
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/index.php" {
+			http.NotFound(w, r)
+			return
+		}
+		if r.URL.Query().Get("a") != "migrate_list_product" {
+			t.Fatalf("action=%q, want migrate_list_product", r.URL.Query().Get("a"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"result":200,"products":"` + encoded + `"}`))
+	}))
+	defer srv.Close()
+
+	list, err := (Provider{}).Catalog(context.Background(), server.Config{APIURL: srv.URL, APIKey: "skey"})
+	if err != nil {
+		t.Fatalf("Catalog() error: %v", err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("Catalog() len=%d, want 1", len(list))
+	}
+	if list[0].PID != 7 || list[0].Name != "PHP 共享主机" {
+		t.Fatalf("product=%+v, want pid=7/name=PHP 共享主机", list[0])
+	}
+	for _, want := range []string{"网页空间 2048M", "数据库 512M", "域名不限"} {
+		if !strings.Contains(list[0].Description, want) {
+			t.Fatalf("description=%q missing %q", list[0].Description, want)
+		}
+	}
+	for _, unwanted := range []string{"模块", "模板", "FTP"} {
+		if strings.Contains(list[0].Description, unwanted) {
+			t.Fatalf("description=%q should not contain %q", list[0].Description, unwanted)
+		}
+	}
+	if got, want := list[0].Description, "网页空间 2048M<br>数据库 512M<br>域名不限"; got != want {
+		t.Fatalf("description=%q want %q", got, want)
+	}
+	if list[0].Stock != -1 {
+		t.Fatalf("stock=%d, want -1", list[0].Stock)
+	}
+}
 
 func TestSiteName(t *testing.T) {
 	if got := SiteName(25); got != "u25" {

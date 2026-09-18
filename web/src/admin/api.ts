@@ -674,16 +674,16 @@ export interface CatalogRow {
 export async function fetchServerCatalog(
   serverId: number,
   fresh = false,
-): Promise<{ server: { id: number; name: string }; rows: CatalogRow[]; types: { id: number; name: string }[]; error?: string }> {
+ ): Promise<{ server: { id: number; name: string; provider?: string }; rows: CatalogRow[]; types: { id: number; name: string; parent_id?: number }[]; error?: string }> {
   const res = await http.get<{
     ok: number
-    server?: { id: number; name: string }
+    server?: { id: number; name: string; provider?: string }
     rows?: CatalogRow[]
     types?: { id: number; name: string }[]
     error?: string
   }>(`/servers/${serverId}/catalog`, fresh ? { fresh: '1' } : undefined)
   return {
-    server: (res.server || { id: serverId, name: '' }) as { id: number; name: string },
+    server: (res.server || { id: serverId, name: '' }) as { id: number; name: string; provider?: string },
     rows: (res.rows || []) as CatalogRow[],
     types: (res.types || []) as { id: number; name: string }[],
     error: res.error,
