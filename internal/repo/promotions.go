@@ -373,8 +373,9 @@ func (p *Promotions) CheckLimitPerUser(ctx context.Context, tx *sql.Tx, promotio
 		return nil
 	}
 	var n int
+	// FOR UPDATE：在事务内锁住该用户在该活动的所有历史订单行，防止并发下单绕过限购。
 	if err := tx.QueryRowContext(ctx,
-		`SELECT count(*) FROM orders WHERE promotion_id=$1 AND user_id=$2`, promotionID, userID).Scan(&n); err != nil {
+		`SELECT count(*) FROM orders WHERE promotion_id=$1 AND user_id=$2 FOR UPDATE`, promotionID, userID).Scan(&n); err != nil {
 		return err
 	}
 	if n >= limit {
