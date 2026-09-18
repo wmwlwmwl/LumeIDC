@@ -160,6 +160,30 @@ func (n *Notifier) PublicSMSRoutes(ctx context.Context) (string, error) {
 	return string(raw), nil
 }
 
+// smsLegacyRouteInput 把旧扁平配置收敛成单个路由可用的输入：只保留该服务商声明的字段。
+// 旧配置里会同名存着历史别名（如 stay33 除 sms_secret_key 外另写一份 sms_api_key/sms_token，
+// 见 SaveSMSSettings），这些字段对当前服务商未知，直接喂给 smsRouteConfig 会被判成
+// 「包含未知或不适用字段」而整段迁移失败——迁移静默失败后此处留空的密钥再也补不回来。
+func smsLegacyRouteInput(legacy map[string]string) map[string]string {
+	provider := strings.ToLower(strings.TrimSpace(legacy["provider"]))
+	if provider == "" {
+		provider = strings.ToLower(strings.TrimSpace(legacy["sms_provider"]))
+	}
+	keep := map[string]bool{"provider": true, "sms_provider": true}
+	if d, ok := SMSProviderDescriptorFor(provider); ok {
+		for _, key := range d.ConfigFields {
+			keep[key] = true
+		}
+	}
+	out := map[string]string{}
+	for key, value := range legacy {
+		if keep[key] {
+			out[key] = value
+		}
+	}
+	return out
+}
+
 func (n *Notifier) saveSMSRoutes(ctx context.Context, tx *sql.Tx, routes smsRoutesInput) error {
 	var oldRaw string
 	if err := tx.QueryRowContext(ctx, `SELECT coalesce((SELECT value FROM settings WHERE key='sms_routes'),'')`).Scan(&oldRaw); err != nil {
@@ -179,7 +203,7 @@ func (n *Notifier) saveSMSRoutes(ctx context.Context, tx *sql.Tx, routes smsRout
 			}
 			legacy[key] = strings.TrimSpace(value)
 		}
-		if provider, config, routeErr := smsRouteConfig(legacy, SMSRangeCN); routeErr == nil && provider != "" {
+		if provider, config, routeErr := smsRouteConfig(smsLegacyRouteInput(legacy), SMSRangeCN); routeErr == nil && provider != "" {
 			oldRoutes[SMSRangeCN] = map[string]string{"provider": provider}
 			for key, value := range config {
 				if key != "sms_provider" {
@@ -205,9 +229,15 @@ func (n *Notifier) saveSMSRoutes(ctx context.Context, tx *sql.Tx, routes smsRout
 			oldProvider, oldConfig, err = smsRouteConfig(oldInput, r)
 			oldOK = err == nil
 		}
-		for _, key := range []string{"sms_secret_key", "sms_global_secret_key"} {
-			if config[key] == "" && oldOK && oldProvider == provider {
-				config[key] = oldConfig[key]
+		// 同一服务商下留空表示「保持不变」：前端保存后即清空密钥输入框，服务端必须据此沿用旧值。
+		// 沿用范围不能只限密钥——stay33/短信宝 等要账号与密钥配套，只补密钥会把账号一起清掉，认证必失败。
+		// ponytail: 代价是同服务商下无法靠清空字段重置某项配置（与前端「留空保持不变」一致）；
+		// 若日后需要"显式清空"，改用请求里区分「未提交」与「提交为空」的显式标记。
+		if oldOK && oldProvider == provider {
+			for key, value := range oldConfig {
+				if config[key] == "" {
+					config[key] = value
+				}
 			}
 		}
 		if config["sms_secret_key"] == "" && config["sms_global_secret_key"] == "" {

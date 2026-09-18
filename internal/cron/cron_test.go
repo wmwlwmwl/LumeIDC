@@ -53,7 +53,10 @@ func TestReminderMarksOnlyAfterEnqueue(t *testing.T) {
 	INSERT INTO settings VALUES('notify_email_forward_enabled','1');
 	INSERT INTO tickets VALUES(1,1,'工单','open',now()-interval '2 days',NULL);
 	INSERT INTO services VALUES(1,1,1,now()+interval '1 day',false)`)
-	for _, name := range []string{"020_notifications.sql", "045_notifications_enhance.sql", "060_mail_outbox.sql", "064_email_templates.sql"} {
+	// 必须含短信相关迁移：notify 在同一事务里还要按场景绑定写 sms_outbox，
+	// 缺表会让入队整体失败，测出的"标记与入队不一致"是夹具缺表而非业务缺陷。
+	for _, name := range []string{"020_notifications.sql", "045_notifications_enhance.sql", "060_mail_outbox.sql", "064_email_templates.sql",
+		"065_sms_templates.sql", "066_sms_provider_capabilities.sql", "067_sms_routes.sql"} {
 		b, err := fs.ReadFile(db.Migrations(), "migrations/"+name)
 		if err != nil {
 			t.Fatal(err)
