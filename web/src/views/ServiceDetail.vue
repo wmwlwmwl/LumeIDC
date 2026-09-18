@@ -22,6 +22,13 @@ import ZjmfServicePanel from '../components/providers/ZjmfServicePanel.vue'
 import EasyPanelServicePanel from '../components/providers/EasyPanelServicePanel.vue'
 import ServiceInvoices from '../components/ServiceInvoices.vue'
 
+// Provider → 面板组件注册表（新增 provider 只需在此添加）
+const SERVICE_PANELS: Record<string, unknown> = {
+  zjmf: ZjmfServicePanel,
+  easypanel: EasyPanelServicePanel,
+}
+const panelComponent = computed(() => data.value?.svc.provider ? SERVICE_PANELS[data.value.svc.provider] : null)
+
 const route = useRoute()
 const router = useRouter()
 const data = ref<DetailData | null>(null)
@@ -320,12 +327,9 @@ function openUpgrade() {
         </div>
       </section>
 
-      <ZjmfServicePanel v-if="data.svc.provider === 'zjmf'" :data="data" @refresh="load">
+      <component :is="panelComponent" v-if="panelComponent" :data="data" @refresh="load">
         <template #invoices><ServiceInvoices class="art-card" :loading="invoicesLoading" :invoices="serviceInvoices" @pay="onPayInvoice" /></template>
-      </ZjmfServicePanel>
-      <EasyPanelServicePanel v-else-if="data.svc.provider === 'easypanel'" :data="data" @refresh="load">
-        <template #invoices><ServiceInvoices class="art-card" :loading="invoicesLoading" :invoices="serviceInvoices" @pay="onPayInvoice" /></template>
-      </EasyPanelServicePanel>
+      </component>
 
       <div class="sd-grid sd-grid--footer">
         <section class="art-card sd-panel sd-panel--pay">

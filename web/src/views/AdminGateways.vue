@@ -86,20 +86,9 @@ const form = reactive<Record<string, any>>({
 })
 
 // 各驱动实际需要的字段（与 SSR 表单的 fields 映射一致）
-const DRIVER_FIELDS: Record<string, string[]> = {
-  epay: ['api_url', 'pid', 'key', 'channel'],
-  alipay_f2f: ['api_url', 'app_id', 'private_key', 'public_key'],
-  mock: [],
-}
-const DRIVER_LABELS: Record<string, string> = { epay: '易支付', alipay_f2f: '支付宝当面付', mock: '模拟支付' }
-const visibleFields = computed(() => DRIVER_FIELDS[form.driver] || [])
+import { GATEWAY_DRIVERS, gatewayDriverList } from '../admin/gateway-drivers'
+const visibleFields = computed(() => GATEWAY_DRIVERS[form.driver]?.fields || [])
 const isCustomChannel = computed(() => form.channel_choice === EPAY_CUSTOM_CHANNEL)
-
-const DRIVER_STYLES: Record<string, string> = {
-  epay: 'color:var(--el-color-success);background:var(--el-color-success-light-9)',
-  alipay_f2f: 'color:var(--el-color-primary);background:var(--el-color-primary-light-9)',
-  mock: 'color:var(--art-gray-600);background:var(--art-gray-100)',
-}
 
 // 手续费率为字符串，字典序会 9>10，需按数值比较
 const byNumber =
@@ -141,10 +130,10 @@ const columns = ref<ColumnOption[]>([
         'span',
         {
           style: `padding:2px 7px;font-size:11px;border-radius:5px;${
-            DRIVER_STYLES[row.driver] || DRIVER_STYLES.mock
+            GATEWAY_DRIVERS[row.driver]?.style || GATEWAY_DRIVERS.mock.style
           }`,
         },
-        DRIVER_LABELS[row.driver] || row.driver,
+        GATEWAY_DRIVERS[row.driver]?.label || row.driver,
       ),
   },
   { prop: 'fee_percent', label: '手续费率', width: 100, sortable: true, sortMethod: byNumber('fee_percent'), formatter: (row) => `${row.fee_percent}%` },
@@ -346,12 +335,12 @@ async function copyCallback() {
         <div class="admin-form-grid">
           <el-form-item label="实例编码" required><el-input v-model="form.code" :disabled="editing" placeholder="如 epay_main" /></el-form-item>
           <el-form-item label="显示名称" required><el-input v-model="form.name" placeholder="如 易支付主通道" /></el-form-item>
-          <el-form-item label="插件类型"><el-select v-model="form.driver" class="w-full"><el-option label="易支付" value="epay" /><el-option label="支付宝当面付" value="alipay_f2f" /><el-option label="模拟支付（测试）" value="mock" /></el-select></el-form-item>
+          <el-form-item label="插件类型"><el-select v-model="form.driver" class="w-full"><el-option v-for="d in gatewayDriverList()" :key="d.value" :label="d.label" :value="d.value" /></el-select></el-form-item>
           <el-form-item label="在线支付手续费率（%）"><el-input-number v-model="form.fee_percent" :min="0" :max="100" :precision="2" class="w-full" /></el-form-item>
         </div>
 
         <template v-if="visibleFields.length">
-          <el-divider content-position="left">{{ DRIVER_LABELS[form.driver] }} 配置</el-divider>
+          <el-divider content-position="left">{{ GATEWAY_DRIVERS[form.driver]?.label }} 配置</el-divider>
           <el-form-item v-if="visibleFields.includes('api_url')" label="API 地址"><el-input v-model="form.api_url" placeholder="上游网关接口地址" /></el-form-item>
           <div class="admin-form-grid">
             <el-form-item v-if="visibleFields.includes('pid')" label="商户 PID"><el-input v-model="form.pid" placeholder="商户 PID" /></el-form-item>
