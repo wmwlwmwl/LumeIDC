@@ -205,7 +205,7 @@ func setupPayFixture(t *testing.T, d *sql.DB, amount string, snapshot sql.NullSt
 		f.userID, f.productID, psID, amount, snapshot).Scan(&f.orderID); err != nil {
 		t.Fatal(err)
 	}
-	// 已支付账单（gateway=balance 才会退回余额）。
+	// 已支付账单。默认 gateway=balance（余额支付）；需要覆盖线上支付场景的用例自行改写该列。
 	if _, err := d.ExecContext(ctx,
 		`INSERT INTO invoices(no,user_id,order_id,amount,status,gateway,paid_at)
 		 VALUES($1,$2,$3,$4,1,'balance',now())`,
@@ -451,6 +451,30 @@ func TestRefundPendingService(t *testing.T) {
 		}
 		if s := f.serviceStatus(t); s != 3 {
 			t.Fatalf("服务应终止(3)，实得 %d", s)
+		}
+	})
+
+	t.Run("线上支付账单同样退回余额", func(t *testing.T) {
+		f := setupPayFixture(t, d, "11.00", sql.NullString{}, 0)
+		// 夹具默认 gateway=balance；改成线上渠道，覆盖「退款不再按网关强制改写」。
+		if _, err := d.ExecContext(ctx,
+			`UPDATE invoices SET gateway='alipay' WHERE order_id=$1`, f.orderID); err != nil {
+			t.Fatal(err)
+		}
+		before := f.balance(t)
+		if err := p.RefundPendingService(ctx, 1, f.serviceID, "上游涨价"); err != nil {
+			t.Fatalf("退款失败: %v", err)
+		}
+		if got := f.balance(t); got != before+11 {
+			t.Fatalf("线上支付账单也应退回余额：%v → %v，实得 %v", before, before+11, got)
+		}
+		var method string
+		if err := d.QueryRowContext(ctx,
+			`SELECT method FROM refunds WHERE order_id=$1`, f.orderID).Scan(&method); err != nil {
+			t.Fatal(err)
+		}
+		if method != "balance" {
+			t.Fatalf("退款方式应为 balance，实得 %s", method)
 		}
 	})
 

@@ -1008,6 +1008,8 @@ func localUpgradeApply(ctx context.Context, q interface {
 // rollbackUpgrade 升级失败回滚资金：使用户保持"未升级且无资金损失"。
 // diff>0 升级场景：支付时已收差价 → 退回余额；diff<0 降级场景：不退款也不扣款（见 prepareUpgrade）。
 // 注意：这里写的是用户可见的余额流水，只写中性原因；技术细节（上游报错原文）由调用方记服务端日志。
+// 退款必须同时落 refunds 记录：它是"这一单已退了多少"的唯一凭据，既约束后台二次退款的上限，
+// 也让 RefundUpgrade / 履约对账能识别"钱已经退过了"。
 func (lc *Lifecycle) rollbackUpgrade(ctx context.Context, userID int64, diffAmount float64, orderID int64) {
 	tx, err := lc.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1018,6 +1020,17 @@ func (lc *Lifecycle) rollbackUpgrade(ctx context.Context, userID int64, diffAmou
 	amountStr := strconv.FormatFloat(math.Abs(diffAmount), 'f', 2, 64)
 	var signed, typ, note string
 	if diffAmount > 0 {
+		// 幂等：已有本单的 done 退款记录说明这笔差价退过了。调用方是在"退款完成"之后才写终局检查点，
+		// 若中途崩溃，任务重跑会再次执行到本函数，没有这道判断用户会白拿第二笔差价。
+		var already bool
+		if err := tx.QueryRowContext(ctx,
+			`SELECT EXISTS(SELECT 1 FROM refunds WHERE order_id=$1 AND status='done')`, orderID).Scan(&already); err != nil {
+			log.Printf("[lifecycle] 升级回滚幂等检查失败（订单 %d）: %v", orderID, err)
+			return
+		}
+		if already {
+			return
+		}
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE users SET balance=balance+$2::numeric WHERE id=$1`, userID, amountStr); err != nil {
 			log.Printf("[lifecycle] 升级回滚退款失败（订单 %d）: %v", orderID, err)
@@ -1037,6 +1050,14 @@ func (lc *Lifecycle) rollbackUpgrade(ctx context.Context, userID int64, diffAmou
 		 SELECT $1,$2::numeric,balance,$3,$4 FROM users WHERE id=$1`,
 		userID, signed, typ, note); err != nil {
 		log.Printf("[lifecycle] 升级回滚余额流水写入失败（订单 %d）: %v", orderID, err)
+		return
+	}
+	// admin_id=0 表示系统自动回滚。注意 note 文案被履约对账当作回滚标记用，不能改。
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO refunds(user_id,order_id,invoice_id,amount,method,reason,admin_id,status)
+		 SELECT $1,$2,(SELECT id FROM invoices WHERE order_id=$2 LIMIT 1),$3,'balance',$4,0,'done'`,
+		userID, orderID, amountStr, note); err != nil {
+		log.Printf("[lifecycle] 升级回滚退款记录写入失败（订单 %d）: %v", orderID, err)
 		return
 	}
 	if err := tx.Commit(); err != nil {

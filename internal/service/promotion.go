@@ -139,11 +139,6 @@ func (s *PromotionService) CheckQuotaAndLimit(ctx context.Context, tx *sql.Tx, p
 	return nil
 }
 
-// ReleaseQuota 账单过期未支付时释放限量名额。
-func (s *PromotionService) ReleaseQuota(ctx context.Context, tx *sql.Tx, promotionProductID int64) error {
-	return s.Promo.ReleaseQuota(ctx, tx, promotionProductID)
-}
-
 func (s *PromotionService) ClaimCoupon(ctx context.Context, promotionID, userID, templateCouponID int64) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

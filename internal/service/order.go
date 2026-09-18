@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"math"
@@ -37,6 +38,14 @@ var cycleCol = map[string]string{
 	"monthly": "monthly", "quarterly": "quarterly", "yearly": "yearly",
 }
 
+// userOrderLockKey 用户级「订单事务串行化」advisory lock 的 key。
+// 必须以字符串传入：该参数在 SQL 里是 text，而 pgx 没有 int64 → text 的编码方案，
+// 传数字会让语句直接报 "cannot find encode plan"，把下单、续费、升级、支付核销全部打死。
+// 拼接后的字符串与旧写法的 hashtext 输入完全一致，锁 key 不变。
+func userOrderLockKey(userID int64) string {
+	return "user_order_lock:" + strconv.FormatInt(userID, 10)
+}
+
 // CreateOrder validates product/priceset/cycle and creates order + unpaid invoice atomically.
 // selection 用户提交的配置选择，键为 field（cfg_ 前缀已由 handler 剥离）。
 // couponCode 可选优惠码；有效时按规则抵扣并写入使用记录。
@@ -60,7 +69,7 @@ func (o *Orders) CreateOrder(ctx context.Context, userID, productID, pricesetID 
 	// 同一用户的所有订单事务串行化，防止 new_user/limit_per_user 等活动校验并发绕过。
 	// pg_advisory_xact_lock 事务结束自动释放，不持久化不持有连接。
 	if _, err := tx.ExecContext(ctx,
-		`SELECT pg_advisory_xact_lock(hashtext('user_order_lock:' || $1::text))`, userID); err != nil {
+		`SELECT pg_advisory_xact_lock(hashtext($1))`, userOrderLockKey(userID)); err != nil {
 		return 0, 0, "", fmt.Errorf("获取订单锁失败: %w", err)
 	}
 
@@ -106,7 +115,9 @@ func (o *Orders) CreateOrder(ctx context.Context, userID, productID, pricesetID 
 	if err != nil || base < 0 {
 		return 0, 0, "", fmt.Errorf("商品价格无效")
 	}
-	// 周期可售性：有基础价的产品只能购买已配置的周期；纯配置计价/免费产品保留月付入口。
+	// 周期可售性：产品存在正价周期时，只能购买已配置（正价）的周期。
+	// 三个周期价全为 0 时不做限制：product_prices 三列是 NOT NULL DEFAULT 0，
+	// 「未配置该周期」和「该周期 0 元」无法区分，一刀切会误伤靠配置项计价的纯配置计价产品。
 	var monthly, quarterly, yearly float64
 	for name, value := range map[string]string{"monthly": "monthly", "quarterly": "quarterly", "yearly": "yearly"} {
 		var raw string
@@ -163,10 +174,17 @@ func (o *Orders) CreateOrder(ctx context.Context, userID, productID, pricesetID 
 		if apErr != nil {
 			return 0, 0, "", fmt.Errorf("查询活动失败: %w", apErr)
 		}
+		// 活动不适用于该用户（如新客专享遇到老用户）时按原价继续下单，而不是拒绝下单：
+		// 否则挂了活动的商品对该用户彻底不可购买。其余校验错误仍然中断下单。
 		if ap != nil {
 			if apErr := o.Promotion.ValidatePromotionApplicable(ctx, ap, userID); apErr != nil {
-				return 0, 0, "", apErr
+				if !errors.Is(apErr, ErrPromotionNotApplicable) {
+					return 0, 0, "", apErr
+				}
+				ap = nil
 			}
+		}
+		if ap != nil {
 			if apErr := o.Promotion.CheckQuotaAndLimit(ctx, tx, ap, userID, ap.LimitPerUser); apErr != nil {
 				return 0, 0, "", apErr
 			}
@@ -369,7 +387,7 @@ func (o *Orders) CreateRenewOrder(ctx context.Context, userID, serviceID int64, 
 	defer tx.Rollback()
 	// 同一用户的所有订单事务串行化（与 CreateOrder 共用同一 key），避免活动校验并发绕过。
 	if _, err := tx.ExecContext(ctx,
-		`SELECT pg_advisory_xact_lock(hashtext('user_order_lock:' || $1::text))`, userID); err != nil {
+		`SELECT pg_advisory_xact_lock(hashtext($1))`, userOrderLockKey(userID)); err != nil {
 		return 0, 0, "", fmt.Errorf("获取订单锁失败: %w", err)
 	}
 
@@ -449,7 +467,7 @@ func (o *Orders) CreateRenewOrder(ctx context.Context, userID, serviceID int64, 
 	if err != nil || !money.FiniteNonNegative(base) {
 		return 0, 0, "", fmt.Errorf("商品价格无效")
 	}
-	// 周期可售性：与新购同口径；纯配置计价/免费产品保留月付入口。
+	// 周期可售性：与新购同口径（见 CreateOrder 处的说明，全 0 价产品不做周期限制）。
 	var monthly, quarterly, yearly float64
 	for name, value := range map[string]string{"monthly": "monthly", "quarterly": "quarterly", "yearly": "yearly"} {
 		var raw string
@@ -586,7 +604,7 @@ func (o *Orders) CreateUpgradeOrder(ctx context.Context, userID, serviceID, targ
 	defer tx.Rollback()
 	// 同一用户的所有订单事务串行化（与 CreateOrder 共用同一 key），避免活动校验并发绕过。
 	if _, err := tx.ExecContext(ctx,
-		`SELECT pg_advisory_xact_lock(hashtext('user_order_lock:' || $1::text))`, userID); err != nil {
+		`SELECT pg_advisory_xact_lock(hashtext($1))`, userOrderLockKey(userID)); err != nil {
 		return 0, 0, "", 0, err
 	}
 

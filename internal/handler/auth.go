@@ -594,7 +594,14 @@ func (h *Auth) loginSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	identifier := strings.TrimSpace(fv("email"))
+	// 锁定键必须与「失败计数」「成功清理」用的是同一个值。手机号会被归一化成 +86… 形式，
+	// 旧写法用原始输入检查锁定、却用归一化结果计数，写入 login_attempts 的键永远查不到，
+	// 锁定完全失效（可无限撞库）。这里复用账号归一化（与找回密码同一套规则）；
+	// 归一化失败时回退到小写原文，保证仍有一个稳定键可计数。
 	lock := strings.ToLower(identifier)
+	if _, dest, _, cErr := h.forgotChannel(identifier); cErr == nil {
+		lock = dest
+	}
 	if h.Lockout != nil {
 		if locked, e := h.Lockout.Locked(r.Context(), lock); e == nil && locked {
 			h.loginError(w, r, 429, "尝试次数过多，请稍后再试")
@@ -609,19 +616,20 @@ func (h *Auth) loginSubmit(w http.ResponseWriter, r *http.Request) {
 		email, e = repo.NormalizeEmail(identifier)
 		if e == nil {
 			u, hash, e = h.Users.ByEmail(r.Context(), email)
-			lock = email
 		}
 	} else {
 		var phone string
 		phone, e = service.NormalizePhone(identifier)
 		if e == nil {
 			u, hash, e = h.Users.ByPhone(r.Context(), phone)
-			lock = phone
 		}
 	}
 	if e != nil || u == nil || !h.Users.VerifyPassword(hash, fv("password")) {
 		if h.Lockout != nil {
-			_ = h.Lockout.Fail(r.Context(), lock)
+			if lerr := h.Lockout.Fail(r.Context(), lock); lerr != nil {
+				// 必须留痕：锁定是安全控制，静默失败会让暴力破解防护悄悄失效（曾因此长期不可用）。
+				log.Printf("[auth] 记录登录失败次数出错（账号锁定可能未生效）: %v", lerr)
+			}
 		}
 		time.Sleep(300 * time.Millisecond)
 		h.loginError(w, r, 401, "邮箱、手机号或密码错误")

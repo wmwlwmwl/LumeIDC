@@ -6,6 +6,7 @@ import { User, Lock, Message, ArrowRight, Refresh } from '@element-plus/icons-vu
 import { register, fetchCaptcha, sendRegisterCode, type CaptchaData } from '../api/store'
 import { useSession } from '../http/session'
 import ExternalCaptcha from '../components/ExternalCaptcha.vue'
+import { hasCaptchaResult } from '../components/captcha-registry'
 import PublicAuthCard from '@/components/public/PublicAuthCard.vue'
 import PhoneInput from '@/components/phone/PhoneInput.vue'
 
@@ -256,7 +257,7 @@ function codeExtra(): Record<string, string> {
 // 注册发码选择「外部验证码」时，发送前须已完成该外部验证
 function externalCodeReady(): boolean {
   if (!session.auth.register_code_external) return true
-  if (codeExtRequired.value && !codeExtFields.value.captcha_token) {
+  if (codeExtRequired.value && !hasCaptchaResult(codeExtFields.value)) {
     ElMessage.warning('请先完成人机验证')
     return false
   }
@@ -362,7 +363,7 @@ async function submit() {
       return
     }
   }
-  if (extRequired.value && !extFields.value.captcha_token) {
+  if (extRequired.value && !hasCaptchaResult(extFields.value)) {
     ElMessage.warning('请先完成人机验证')
     return
   }

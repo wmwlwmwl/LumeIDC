@@ -2,8 +2,8 @@ package service
 
 import (
 	"context"
+	"errors"
 	"strconv"
-	"strings"
 	"testing"
 	"time"
 
@@ -117,8 +117,10 @@ func TestCreateOrderChargesSetupFeeOnce(t *testing.T) {
 	}
 }
 
-// 免费商品（月付价 0）也必须能续费：此前无条件拒绝 0 元金额，用户点续费只看到"续费金额无效"。
-// 但季/年付价为 0 属于"未配置该周期"，仍要拦下（防止改 POST 用未配置周期 0 元续一年）。
+// 免费商品（三周期价均为 0）必须能续费：此前无条件拒绝 0 元金额，用户点续费只看到"续费金额无效"。
+// 注意：三个周期价全 0 时季付/年付同样放行，各周期都以 0 元续期（本用例固定该行为）。
+// 原因：product_prices 三列都是 NOT NULL DEFAULT 0，「未配置该周期」与「该周期 0 元」在数据模型上
+// 无法区分；若收紧成「非月付且无正价即拒绝」，靠配置项计价的纯配置计价产品会连带失去季付/年付入口。
 func TestCreateRenewOrderFreeProduct(t *testing.T) {
 	d := testDB(t)
 	ctx := context.Background()
@@ -179,10 +181,13 @@ func TestCreateRenewOrderFreeProduct(t *testing.T) {
 		}
 	})
 
-	t.Run("未配置季付价的周期仍拒绝", func(t *testing.T) {
-		_, _, _, err := orders.CreateRenewOrder(ctx, uid, svcID, "quarterly")
-		if err == nil || !strings.Contains(err.Error(), "未提供所选计费周期") {
-			t.Fatalf("未配置周期应拦下并给出可读原因，实得: %v", err)
+	t.Run("三周期价全 0 的免费商品季付也可续费", func(t *testing.T) {
+		_, invID, amount, err := orders.CreateRenewOrder(ctx, uid, svcID, "quarterly")
+		if err != nil {
+			t.Fatalf("免费商品应能季付续费，实得: %v", err)
+		}
+		if amount != "0.00" || invID <= 0 {
+			t.Fatalf("应生成 0 元账单，实得 amount=%q invoice=%d", amount, invID)
 		}
 	})
 }
@@ -255,5 +260,96 @@ func TestUserStatsSpendingScope(t *testing.T) {
 	}
 	if got := spent(); got != 20 {
 		t.Fatalf("已退款 10 应从累计消费扣减，期望 20，实得 %v", got)
+	}
+}
+
+// 新客活动命中老用户时必须「跳过活动按原价下单」，不能拒绝下单：
+// 旧实现在这里直接返回 ErrPromotionNotApplicable，导致挂了新客活动的商品对老用户完全不可购买。
+func TestCreateOrderSkipsNewUserPromotionForExistingUser(t *testing.T) {
+	d := testDB(t)
+	ctx := context.Background()
+	products := repo.NewProducts(d)
+	psID, err := products.DefaultPricesetID(ctx)
+	if err != nil {
+		t.Skip("库中暂无价格组，跳过")
+	}
+	var uid, typeID, pid, promoID int64
+	if err := d.QueryRowContext(ctx,
+		`INSERT INTO users(email,password_hash) VALUES($1,'x') RETURNING id`,
+		"promoolduser-"+time.Now().Format("150405.000000000")+"@example.invalid").Scan(&uid); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.QueryRowContext(ctx,
+		`INSERT INTO product_types(name) VALUES('单元测试-新客活动') RETURNING id`).Scan(&typeID); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.QueryRowContext(ctx,
+		`INSERT INTO products(type_id,name,stock,requires_identity) VALUES($1,'单元测试-新客活动商品',-1,false) RETURNING id`,
+		typeID).Scan(&pid); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.ExecContext(ctx,
+		`INSERT INTO product_prices(product_id,priceset_id,monthly,quarterly,yearly) VALUES($1,$2,100,0,0)`,
+		pid, psID); err != nil {
+		t.Fatal(err)
+	}
+	// 老用户：先有一笔历史订单，IsNewUser 即为 false
+	if _, err := d.ExecContext(ctx,
+		`INSERT INTO orders(user_id,product_id,priceset_id,cycle,amount,status) VALUES($1,$2,$3,'monthly',100,1)`,
+		uid, pid, psID); err != nil {
+		t.Fatal(err)
+	}
+	// 新客专享活动价 1 元（远低于原价 100）
+	if err := d.QueryRowContext(ctx,
+		`INSERT INTO promotions(name,type,starts_at,ends_at,enabled,limit_per_user)
+		 VALUES('单元测试-新客专享','new_user',now()-interval '1 day',now()+interval '1 day',true,0) RETURNING id`).
+		Scan(&promoID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.ExecContext(ctx,
+		`INSERT INTO promotion_products(promotion_id,product_id,priceset_id,cycle,rules)
+		 VALUES($1,$2,$3,'monthly','{"price":1}'::jsonb)`, promoID, pid, psID); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx := context.Background()
+		// 顺序照顾外键：活动（级联 promotion_products）→ 账单/订单 → 价格 → 商品 → 类型 → 用户
+		for _, q := range []struct {
+			query string
+			arg   int64
+		}{
+			{`DELETE FROM invoices WHERE user_id=$1`, uid},
+			{`DELETE FROM orders WHERE user_id=$1`, uid},
+			{`DELETE FROM promotions WHERE id=$1`, promoID},
+			{`DELETE FROM product_prices WHERE product_id=$1`, pid},
+			{`DELETE FROM products WHERE id=$1`, pid},
+			{`DELETE FROM product_types WHERE id=$1`, typeID},
+			{`DELETE FROM users WHERE id=$1`, uid},
+		} {
+			if _, err := d.ExecContext(ctx, q.query, q.arg); err != nil {
+				t.Errorf("清理测试数据失败(%s): %v", q.query, err)
+			}
+		}
+	})
+
+	orders := &Orders{db: d, Products: products,
+		Promotion: NewPromotionService(d, repo.NewPromotions(d), repo.NewCoupons(d))}
+
+	// 夹具前提自检：活动必须真的命中，且必须真的被判为「不适用于该用户」。
+	// 少了这两条断言，活动若没命中（ap=nil）用例也会通过，等于没覆盖本次修复的分支。
+	ap, apErr := orders.Promotion.ActivePromotionFor(ctx, pid, psID, "monthly")
+	if apErr != nil || ap == nil {
+		t.Fatalf("夹具前提不成立：活动应命中该商品，实得 ap=%+v err=%v", ap, apErr)
+	}
+	if applicableErr := orders.Promotion.ValidatePromotionApplicable(ctx, ap, uid); !errors.Is(applicableErr, ErrPromotionNotApplicable) {
+		t.Fatalf("夹具前提不成立：老用户应被判为不适用，实得 %v", applicableErr)
+	}
+
+	_, _, amount, err := orders.CreateOrder(ctx, uid, pid, psID, "monthly", map[string]string{}, "")
+	if err != nil {
+		t.Fatalf("新客活动对老用户应跳过活动、按原价下单，实得错误: %v", err)
+	}
+	if amount != "100.00" {
+		t.Fatalf("应按原价 100.00 下单（而非活动价 1.00），实得 %s", amount)
 	}
 }

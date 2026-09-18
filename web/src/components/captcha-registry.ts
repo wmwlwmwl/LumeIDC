@@ -38,6 +38,16 @@ export function getCaptchaInit(provider: string): CaptchaInitFn | null {
   return f ? f() : null
 }
 
+/**
+ * 外部验证是否已产出有效结果（即用户已完成验证）。
+ * 各 provider 回填的字段并不相同：geetest 是 lot_number/captcha_output/pass_token/gen_time，
+ * 只有 vaptcha / corptcha 才用 captcha_token，因此不能用某一个固定字段名来判断，
+ * 否则换 provider 后前端会把已完成的验证一律判成「未完成」而卡死提交。
+ */
+export function hasCaptchaResult(fields: Record<string, string>): boolean {
+  return Object.values(fields).some((v) => !!v)
+}
+
 // ===== Geetest =====
 
 interface GtInstance {

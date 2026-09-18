@@ -217,7 +217,7 @@ func setupUpgradeFixture(t *testing.T, d *sql.DB) upgradeFixture {
 		fx.userID, fx.targetPid, psID, fx.svcID).Scan(&fx.orderID); err != nil {
 		t.Fatal(err)
 	}
-	// 已支付账单（Refund 据此校验"订单已付"，gateway=balance 才退回余额）。
+	// 已支付账单（Refund 据此校验"订单已付"；gateway=balance 表示余额支付）。
 	if _, err := d.ExecContext(ctx,
 		`INSERT INTO invoices(no,user_id,order_id,amount,status,gateway,paid_at)
 		 VALUES($1,$2,$3,'50.00',1,'balance',now())`,
@@ -437,6 +437,62 @@ func TestAdminUpgradeActions(t *testing.T) {
 			t.Fatalf("重复退款不应再动余额，%v → %v", before2, got)
 		}
 	})
+}
+
+// 升级失败自动回滚必须落 refunds 记录：它是"这一单已退了多少"的唯一凭据。
+// 缺了它，后台还能再对同一订单全额退一次（用户拿两份差价），RefundUpgrade 的可重入判断也一并失效。
+func TestRollbackUpgradeRecordsRefund(t *testing.T) {
+	d := testDB(t)
+	ctx := context.Background()
+	fx := setupUpgradeFixture(t, d)
+	lc := &Lifecycle{db: d}
+
+	balance := func() float64 {
+		t.Helper()
+		var b float64
+		if err := d.QueryRowContext(ctx, `SELECT balance::float8 FROM users WHERE id=$1`, fx.userID).Scan(&b); err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	refunded := func() float64 {
+		t.Helper()
+		var v float64
+		if err := d.QueryRowContext(ctx,
+			`SELECT coalesce(sum(amount::numeric),0)::float8 FROM refunds WHERE order_id=$1 AND status='done'`,
+			fx.orderID).Scan(&v); err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+
+	before := balance()
+	lc.rollbackUpgrade(ctx, fx.userID, 50, fx.orderID)
+	if got := balance(); got != before+50 {
+		t.Fatalf("应退回差价 50，余额 %v → %v", before, got)
+	}
+	if got := refunded(); got != 50 {
+		t.Fatalf("回滚必须写入 refunds 记录（否则后台可重复退款），实得 %v", got)
+	}
+
+	// 幂等：同一订单重跑回滚（"已退款但终局检查点未落库"后任务重试）不得再退一次。
+	before2 := balance()
+	lc.rollbackUpgrade(ctx, fx.userID, 50, fx.orderID)
+	if got := balance(); got != before2 {
+		t.Fatalf("重复回滚不得再动余额，%v → %v", before2, got)
+	}
+	if got := refunded(); got != 50 {
+		t.Fatalf("重复回滚不得新增退款记录，实得 %v", got)
+	}
+
+	// 后台再对同一订单退款必须被上限拦下——这是「同一订单可二次退款」的资损出口。
+	pay := &Payment{db: d}
+	if err := pay.Refund(ctx, fx.userID, fx.orderID, "50.00", "重复退款", "balance"); err == nil {
+		t.Fatal("已回滚的订单不应再允许全额退款")
+	}
+	if got := balance(); got != before2 {
+		t.Fatalf("被拦下的退款不得动余额，%v → %v", before2, got)
+	}
 }
 
 // renewFixture 续费场景夹具：服务已激活且续费待处理，队列里有一条人工复核的续费任务。

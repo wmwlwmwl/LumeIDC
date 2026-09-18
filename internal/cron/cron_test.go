@@ -91,6 +91,102 @@ func TestReminderMarksOnlyAfterEnqueue(t *testing.T) {
 	}
 }
 
+// 账单过期的释放动作必须幂等：抢购名额与优惠码占用只能在本轮真正过期的那一次被回退，
+// 否则历史过期账单会被每轮 cron 反复释放，名额与券用量被无限放大。
+// 同时覆盖「订单存在已支付账单时不得释放」。
+func TestExpireInvoicesReleasesOnce(t *testing.T) {
+	dsn := os.Getenv("TEST_DATABASE_DSN")
+	if dsn == "" {
+		t.Skip("未设置隔离测试数据库")
+	}
+	cfg, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		t.Fatal("测试数据库配置无效")
+	}
+	if !strings.Contains(strings.ToLower(cfg.Database), "test") || (cfg.Host != "localhost" && !net.ParseIP(cfg.Host).IsLoopback()) {
+		t.Fatal("仅允许本机测试数据库")
+	}
+	admin := stdlib.OpenDB(*cfg)
+	schema := fmt.Sprintf("expire_cron_test_%d", time.Now().UnixNano())
+	if _, err := admin.Exec(`CREATE SCHEMA ` + schema); err != nil {
+		t.Fatal(err)
+	}
+	cfg.RuntimeParams["search_path"] = schema
+	d := stdlib.OpenDB(*cfg)
+	d.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = d.Close(); _, _ = admin.Exec(`DROP SCHEMA ` + schema + ` CASCADE`); _ = admin.Close() })
+	exec := func(q string) {
+		t.Helper()
+		if _, err := d.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// 只建 expireInvoices 真正读写的表，避免引入迁移文件之间的依赖。
+	exec(`CREATE TABLE users(id bigint PRIMARY KEY, balance numeric(12,2) NOT NULL DEFAULT 0);
+	CREATE TABLE balance_logs(id bigint GENERATED ALWAYS AS IDENTITY, user_id bigint, amount numeric(12,2), balance_after numeric(12,2), type text, note text);
+	CREATE TABLE orders(id bigint PRIMARY KEY, user_id bigint, promo_product_id bigint);
+	CREATE TABLE promotion_quota(promotion_product_id bigint PRIMARY KEY, total int, sold int NOT NULL DEFAULT 0, updated_at timestamptz DEFAULT now());
+	CREATE TABLE coupons(id bigint PRIMARY KEY, used_count int NOT NULL DEFAULT 0);
+	CREATE TABLE coupon_usages(id bigint GENERATED ALWAYS AS IDENTITY, coupon_id bigint, user_id bigint, order_id bigint, discount numeric(10,2) DEFAULT 0);
+	CREATE TABLE invoices(id bigint PRIMARY KEY, no text, user_id bigint, order_id bigint, amount numeric(12,2), status smallint, gateway text DEFAULT '', trade_no text DEFAULT '', credit numeric(12,2) DEFAULT 0, due_at timestamptz);
+	CREATE TABLE payment_attempts(id bigint GENERATED ALWAYS AS IDENTITY, invoice_id bigint, status smallint);
+	INSERT INTO users VALUES(1, 0);
+	-- 名额：真实占用 1 个订单，sold 故意留成 3，用来暴露「每轮重复回退」。
+	INSERT INTO promotion_quota VALUES(10, 5, 3, now());
+	-- 订单 1：账单过期未支付 → 本轮应释放。
+	INSERT INTO orders VALUES(1, 1, 10);
+	INSERT INTO invoices VALUES(1, 'INV-1', 1, 1, '10.00', 0, '', '', 0, now() - interval '1 hour');
+	-- 订单 2：过期账单之外还有已支付账单 → 不得释放。
+	INSERT INTO orders VALUES(2, 1, 10);
+	INSERT INTO invoices VALUES(2, 'INV-2', 1, 2, '10.00', 0, '', '', 0, now() - interval '1 hour');
+	INSERT INTO invoices VALUES(3, 'INV-3', 1, 2, '10.00', 1, 'balance', '', 0, now() - interval '2 hours');
+	INSERT INTO coupons VALUES(20, 3);
+	INSERT INTO coupon_usages(coupon_id, user_id, order_id) VALUES(20, 1, 1), (20, 1, 2);`)
+
+	j := Jobs{DB: d, Coupons: repo.NewCoupons(d)}
+	ctx := context.Background()
+	sold := func() int {
+		t.Helper()
+		var n int
+		if err := d.QueryRow(`SELECT sold FROM promotion_quota WHERE promotion_product_id=10`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	usedCount := func() int {
+		t.Helper()
+		var n int
+		if err := d.QueryRow(`SELECT used_count FROM coupons WHERE id=20`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+
+	j.expireInvoices(ctx)
+	if got := sold(); got != 2 {
+		t.Fatalf("第一轮只应释放订单 1：sold 3 → 2，实得 %d", got)
+	}
+	if got := usedCount(); got != 2 {
+		t.Fatalf("第一轮只应释放订单 1 的券：used_count 3 → 2，实得 %d", got)
+	}
+	var usages int
+	if err := d.QueryRow(`SELECT count(*) FROM coupon_usages`).Scan(&usages); err != nil {
+		t.Fatal(err)
+	}
+	if usages != 1 {
+		t.Fatalf("应保留订单 2 的用券记录，实得 %d 条", usages)
+	}
+
+	// 第二轮：没有新的账单过期，任何释放都不应再发生。
+	j.expireInvoices(ctx)
+	if got := sold(); got != 2 {
+		t.Fatalf("重复执行不得再次回退名额，实得 %d", got)
+	}
+	if got := usedCount(); got != 2 {
+		t.Fatalf("重复执行不得再次回退用券次数，实得 %d", got)
+	}
+}
+
 func TestSplitByPresence(t *testing.T) {
 	sorted := func(v []int64) []int64 {
 		out := append([]int64(nil), v...)

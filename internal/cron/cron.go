@@ -26,6 +26,7 @@ type Jobs struct {
 	Providers     *server.Registry
 	Servers       *repo.Servers
 	Products      *repo.Products
+	Coupons       *repo.Coupons // 账单过期时释放优惠码占用；为 nil 时跳过
 	Gateways      *repo.Gateways
 	Payment       *service.Payment
 	Settings      *repo.Settings // 后台配置读取（生命周期天数等）；为 nil 时全部走默认值
@@ -250,6 +251,8 @@ func sameAmount(a, b string) bool {
 
 // expireInvoices 关闭超过支付窗口的未支付账单，并同时关闭旧支付尝试。
 // 组合支付已抵扣的余额在过期时归还用户余额，避免占用。
+// 释放动作（抢购名额、优惠码占用）只针对「本轮真正由未支付变为过期」的账单，
+// 因此本函数可安全重复执行；不能按 status=3 全量扫描，否则历史账单会被反复释放。
 func (j *Jobs) expireInvoices(ctx context.Context) {
 	if j.DB == nil {
 		return
@@ -287,6 +290,8 @@ func (j *Jobs) expireInvoices(ctx context.Context) {
 		log.Printf("[cron] 遍历待过期账单抵扣失败: %v", err)
 		return
 	}
+	// 归还失败的行本轮不置过期，留待下一轮重试：单条坏数据不能卡死整批账单。
+	var pending []int64
 	for _, r := range refunds {
 		_, cents, perr := money.ParseNonNegative(r.credit, 999999999999)
 		if perr != nil || cents <= 0 {
@@ -295,37 +300,62 @@ func (j *Jobs) expireInvoices(ctx context.Context) {
 		amount := money.FormatCents(cents)
 		if _, err := tx.ExecContext(ctx, `UPDATE users SET balance=balance+$2::numeric WHERE id=$1`, r.userID, amount); err != nil {
 			log.Printf("[cron] 退回账单 %s 抵扣余额失败: %v", r.no, err)
-			return
+			pending = append(pending, r.id)
+			continue
 		}
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO balance_logs(user_id,amount,balance_after,type,note)
 			 SELECT $1,$2::numeric,balance,'refund',$3 FROM users WHERE id=$1`,
 			r.userID, amount, "账单过期退回抵扣 "+r.no); err != nil {
 			log.Printf("[cron] 记录账单 %s 抵扣退回流水失败: %v", r.no, err)
-			return
+			pending = append(pending, r.id)
+			continue
 		}
 	}
-	res, err := tx.ExecContext(ctx,
-		`UPDATE invoices SET status=3,credit=0 WHERE status=0 AND due_at IS NOT NULL AND due_at <= now()`)
+	// 关闭过期账单并取回订单号：只有本轮真正 0→3 的账单进入后续释放动作。
+	// COALESCE 保证 pending 为空（Go 侧为 nil 切片）时也不会退化成 NULL 比较而漏掉全部账单。
+	expired, err := tx.QueryContext(ctx,
+		`UPDATE invoices SET status=3,credit=0
+		  WHERE status=0 AND due_at IS NOT NULL AND due_at <= now()
+		    AND NOT (id = ANY(COALESCE($1::bigint[], '{}'::bigint[])))
+		 RETURNING id,order_id`, pending)
 	if err != nil {
 		log.Printf("[cron] 处理过期账单失败: %v", err)
 		return
 	}
-	n, _ := res.RowsAffected()
-	// 释放限量抢购活动名额（账单过期未支付的订单）
-	if _, err := tx.ExecContext(ctx,
-		`UPDATE promotion_quota SET sold = GREATEST(sold - sub.cnt, 0), updated_at=now()
-		 FROM (
-		    SELECT o.promo_product_id, count(*) AS cnt
-		      FROM invoices i
-		      JOIN orders o ON o.id = i.order_id
-		     WHERE i.status = 3 AND o.promo_product_id IS NOT NULL
-		       AND NOT EXISTS (SELECT 1 FROM invoices i2 WHERE i2.order_id=o.id AND i2.status=1)
-		     GROUP BY o.promo_product_id
-		 ) sub
-		 WHERE promotion_quota.promotion_product_id = sub.promo_product_id`); err != nil {
-		log.Printf("[cron] 释放活动名额失败: %v", err)
+	var orderIDs []int64
+	var n int
+	for expired.Next() {
+		var id int64
+		var orderID sql.NullInt64
+		if err := expired.Scan(&id, &orderID); err != nil {
+			expired.Close()
+			log.Printf("[cron] 读取过期账单失败: %v", err)
+			return
+		}
+		n++
+		if orderID.Valid {
+			orderIDs = append(orderIDs, orderID.Int64)
+		}
+	}
+	expired.Close()
+	if err := expired.Err(); err != nil {
+		log.Printf("[cron] 遍历过期账单失败: %v", err)
 		return
+	}
+	if len(orderIDs) > 0 {
+		// 释放限量抢购活动名额（账单过期未支付的订单）
+		if err := repo.NewPromotions(j.DB).ReleaseQuotaByOrders(ctx, tx, orderIDs); err != nil {
+			log.Printf("[cron] 释放活动名额失败: %v", err)
+			return
+		}
+		// 释放优惠码占用：下单即核销的券在这里退还，用户可再次使用
+		if j.Coupons != nil {
+			if err := j.Coupons.ReleaseByOrders(ctx, tx, orderIDs); err != nil {
+				log.Printf("[cron] 释放优惠码占用失败: %v", err)
+				return
+			}
+		}
 	}
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE payment_attempts SET status=2 WHERE status=0 AND invoice_id IN (SELECT id FROM invoices WHERE status=3)`); err != nil {
