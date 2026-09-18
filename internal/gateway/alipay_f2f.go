@@ -19,6 +19,16 @@ import (
 	"time"
 )
 
+// alipayHTTPClient 包级单例，复用连接池。
+var alipayHTTPClient = &http.Client{
+	Timeout: 20 * time.Second,
+	Transport: &http.Transport{
+		MaxIdleConns:        20,
+		MaxIdleConnsPerHost: 10,
+		IdleConnTimeout:     30 * time.Second,
+	},
+}
+
 // AlipayF2F implements Alipay face-to-face precreate payment (RSA2).
 type AlipayF2F struct{}
 
@@ -80,8 +90,7 @@ func alipayPost(ctx context.Context, cfg map[string]string, method string, biz [
 		return nil, err
 	}
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
-	client := &http.Client{Timeout: 20 * time.Second}
-	resp, err := client.Do(request)
+	resp, err := alipayHTTPClient.Do(request)
 	if err != nil {
 		return nil, fmt.Errorf("请求支付宝%s失败: %w", op, err)
 	}

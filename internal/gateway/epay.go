@@ -13,6 +13,17 @@ import (
 	"time"
 )
 
+// epayHTTPClient 包级单例，复用连接池。外层 QueryOrder 已有 context.WithTimeout(15s)，
+// 这里 20s 作为兜底上限（ctx 先到期就先取消）。
+var epayHTTPClient = &http.Client{
+	Timeout: 20 * time.Second,
+	Transport: &http.Transport{
+		MaxIdleConns:        20,
+		MaxIdleConnsPerHost: 10,
+		IdleConnTimeout:     30 * time.Second,
+	},
+}
+
 // Epay 实现易支付（彩虹易支付）标准提交协议：md5 签名、GET 跳转。
 type Epay struct{}
 
@@ -55,7 +66,7 @@ func (Epay) QueryOrder(ctx context.Context, req QueryOrderRequest) (QueryOrderRe
 	if err != nil {
 		return QueryOrderResult{}, err
 	}
-	resp, err := http.DefaultClient.Do(httpReq)
+	resp, err := epayHTTPClient.Do(httpReq)
 	if err != nil {
 		return QueryOrderResult{}, fmt.Errorf("请求易支付订单查询失败: %w", err)
 	}
