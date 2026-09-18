@@ -727,6 +727,7 @@ export interface AdminGateway {
   api_url: string
   pid?: string
   channel?: string
+  payment_mode?: string
   app_id?: string
   fee_percent: string
   enabled: boolean

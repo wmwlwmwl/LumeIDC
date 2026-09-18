@@ -157,11 +157,11 @@ func (AlipayF2F) QueryOrder(ctx context.Context, req QueryOrderRequest) (QueryOr
 	return QueryOrderResult{TradeNo: result.TradeNo, OutTradeNo: result.OutTradeNo, Amount: result.TotalAmount, Paid: paid}, nil
 }
 
-func (AlipayF2F) PayURL(ctx context.Context, req PayRequest) (string, error) {
+func (AlipayF2F) PayURL(ctx context.Context, req PayRequest) (PayResult, error) {
 	biz, _ := json.Marshal(map[string]string{"out_trade_no": req.InvoiceNo, "total_amount": req.Amount, "subject": req.Title})
 	body, err := alipayPost(ctx, req.Config, "alipay.trade.precreate", biz, url.Values{"notify_url": {req.NotifyURL}}, "创建二维码")
 	if err != nil {
-		return "", err
+		return PayResult{}, err
 	}
 	var result struct {
 		Response struct {
@@ -172,12 +172,12 @@ func (AlipayF2F) PayURL(ctx context.Context, req PayRequest) (string, error) {
 		} `json:"alipay_trade_precreate_response"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
-		return "", fmt.Errorf("支付宝响应格式无效")
+		return PayResult{}, fmt.Errorf("支付宝响应格式无效")
 	}
 	if result.Response.Code != "10000" || result.Response.QRCode == "" {
-		return "", fmt.Errorf("支付宝创建二维码失败: %s %s", result.Response.Msg, result.Response.SubMsg)
+		return PayResult{}, fmt.Errorf("支付宝创建二维码失败: %s %s", result.Response.Msg, result.Response.SubMsg)
 	}
-	return LocalCheckoutPath + "?invoice=" + url.QueryEscape(req.InvoiceNo) + "&data=" + url.QueryEscape(result.Response.QRCode), nil
+	return PayResult{URL: LocalCheckoutPath + "?invoice=" + url.QueryEscape(req.InvoiceNo) + "&data=" + url.QueryEscape(result.Response.QRCode)}, nil
 }
 
 func (AlipayF2F) VerifyNotify(params map[string]string, cfg map[string]string) (NotifyResult, error) {

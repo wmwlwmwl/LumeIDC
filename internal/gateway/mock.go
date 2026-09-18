@@ -12,8 +12,8 @@ type Mock struct{}
 func (Mock) Driver() string { return "mock" }
 func (Mock) Name() string   { return "模拟支付（测试）" }
 
-func (Mock) PayURL(ctx context.Context, req PayRequest) (string, error) {
-	return "/mock/pay/" + req.InvoiceNo, nil
+func (Mock) PayURL(ctx context.Context, req PayRequest) (PayResult, error) {
+	return PayResult{URL: "/mock/pay/" + req.InvoiceNo}, nil
 }
 
 func (Mock) VerifyNotify(params map[string]string, cfg map[string]string) (NotifyResult, error) {

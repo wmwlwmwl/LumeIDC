@@ -71,7 +71,11 @@ func (h *Pay) localCheckoutPage(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	// 优先使用后台配置的网关实例显示名称，fallback 到驱动硬编码名
 	brand := impl.Name()
+	if inst, gerr := h.GwRepo.Get(r.Context(), gatewayCode); gerr == nil && inst.Name != "" {
+		brand = inst.Name
+	}
 	attempt, err := h.GwRepo.LatestAttempt(r.Context(), no, gatewayCode, true)
 	if err != nil {
 		http.NotFound(w, r)
@@ -95,7 +99,7 @@ func (h *Pay) localCheckoutPage(w http.ResponseWriter, r *http.Request) {
 // 5 账单金额 6 二维码 dataURI 7 账单 ID（结算页链接与轮询）。
 const qrPageHTML = `<!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>%[2]s扫码支付</title>%[1]s</head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>%[2]s - 扫码支付</title>%[1]s</head>
 <body>
 <main class="art-card">
   <div class="art-card__body">
@@ -514,7 +518,7 @@ func (h *Pay) start(w http.ResponseWriter, r *http.Request) {
 	}
 	base := siteBaseURL(r.Context(), h.Settings, r) // 站点地址：后台 site_url 优先，否则按请求推断
 	notifyURL := base + "/pay/notify?" + url.Values{"code": {code}}.Encode()
-	u, err := impl.PayURL(r.Context(), gateway.PayRequest{InvoiceNo: no, Amount: prep.Payable, Title: h.currentSiteInfo().Name + " 账单 " + no,
+	payResult, err := impl.PayURL(r.Context(), gateway.PayRequest{InvoiceNo: no, Amount: prep.Payable, Title: h.currentSiteInfo().Name + " 账单 " + no,
 		NotifyURL: notifyURL, ReturnURL: base + "/pay/" + strconv.FormatInt(id, 10), Config: inst.Config})
 	if err != nil {
 		_ = h.Payment.ReleaseInvoiceCredit(r.Context(), id, prep.AttemptID)
@@ -522,11 +526,41 @@ func (h *Pay) start(w http.ResponseWriter, r *http.Request) {
 		jsonStatus(w, r, http.StatusBadGateway, "生成支付链接失败")
 		return
 	}
+	// 上游返回了实际金额（如易支付 mapi.php 风控浮动）时：
+	//   - 容差 ±0.50 元：正常浮动范围，同步 payment_attempts.amount
+	//   - 超容差：可能是恶意篡改，拒绝并释放已抵扣余额
+	if payResult.Amount != "" && !equalAmount(payResult.Amount, prep.Payable) {
+		_, newCents, nerr := moneyutil.ParsePositive(payResult.Amount, 999999999999)
+		_, oldCents, oerr := moneyutil.ParsePositive(prep.Payable, 999999999999)
+		if nerr != nil || oerr != nil {
+			_ = h.Payment.ReleaseInvoiceCredit(r.Context(), id, prep.AttemptID)
+			jsonStatus(w, r, http.StatusBadGateway, "网关返回金额无效")
+			return
+		}
+		diff := newCents - oldCents
+		if diff < 0 {
+			diff = -diff
+		}
+		// 容差 50 分（0.50 元）：覆盖正常风控浮动，拦截恶意改价
+		if diff > 50 {
+			_ = h.Payment.ReleaseInvoiceCredit(r.Context(), id, prep.AttemptID)
+			log.Printf("[payment] 网关 %s 账单 %s 上游金额浮动超容差: 请求=%s 上游=%s", code, no, prep.Payable, payResult.Amount)
+			jsonStatus(w, r, http.StatusBadGateway, "上游返回金额超出正常范围，请稍后重试")
+			return
+		}
+		if uerr := h.GwRepo.UpdateAttemptAmount(r.Context(), prep.AttemptID, payResult.Amount); uerr != nil {
+			_ = h.Payment.ReleaseInvoiceCredit(r.Context(), id, prep.AttemptID)
+			log.Printf("[payment] 网关 %s 账单 %s 更新支付尝试金额失败: %v", code, no, uerr)
+			jsonStatus(w, r, http.StatusInternalServerError, "支付状态更新失败")
+			return
+		}
+		log.Printf("[payment] 网关 %s 账单 %s 支付尝试金额同步: %s → %s (差 %d 分)", code, no, prep.Payable, payResult.Amount, diff)
+	}
 	if wantsJSON(r) {
-		writeJSON(w, map[string]any{"ok": 1, "url": u})
+		writeJSON(w, map[string]any{"ok": 1, "url": payResult.URL})
 		return
 	}
-	http.Redirect(w, r, u, http.StatusSeeOther)
+	http.Redirect(w, r, payResult.URL, http.StatusSeeOther)
 }
 
 func (h *Pay) ownsInvoice(r *http.Request, userID int64, no string) bool {

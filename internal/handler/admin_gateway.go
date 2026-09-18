@@ -20,12 +20,12 @@ type AdminGateway struct {
 }
 
 type adminGatewayRow struct {
-	ID                                                                     int64
-	Code, Driver, Name, APIURL, PID, Channel, AppID, PrivateKey, PublicKey string
-	Key                                                                    string // 易支付商户密钥（仅用于“是否已配置”判断，不回传）
-	FeePercent                                                             string
-	Enabled                                                                bool
-	Sort                                                                   int
+	ID                                                                                                           int64
+	Code, Driver, Name, APIURL, PID, Channel, PaymentMode, AppID, PrivateKey, PublicKey                          string
+	Key                                                                                                          string // 易支付商户密钥（仅用于"是否已配置"判断，不回传）
+	FeePercent                                                                                                   string
+	Enabled                                                                                                      bool
+	Sort                                                                                                         int
 }
 
 func (g *AdminGateway) Register(mux *http.ServeMux) {
@@ -54,7 +54,7 @@ func (g *AdminGateway) form(w http.ResponseWriter, r *http.Request) {
 			feePercent = v.Config["fee_percent"]
 		}
 		rows = append(rows, adminGatewayRow{ID: v.ID, Code: v.Code, Driver: v.Driver, Name: v.Name,
-			APIURL: v.Config["api_url"], PID: v.Config["pid"], Channel: v.Config["channel"], AppID: v.Config["app_id"], PrivateKey: v.Config["private_key"], PublicKey: v.Config["public_key"], Key: v.Config["key"], FeePercent: feePercent, Enabled: v.Enabled, Sort: v.Sort})
+			APIURL: v.Config["api_url"], PID: v.Config["pid"], Channel: v.Config["channel"], PaymentMode: v.Config["payment_mode"], AppID: v.Config["app_id"], PrivateKey: v.Config["private_key"], PublicKey: v.Config["public_key"], Key: v.Config["key"], FeePercent: feePercent, Enabled: v.Enabled, Sort: v.Sort})
 	}
 	// 密钥类字段不回传（仅给是否已配置的标志）；编辑时留空即沿用旧值，
 	// 与保存逻辑一致。
@@ -62,7 +62,7 @@ func (g *AdminGateway) form(w http.ResponseWriter, r *http.Request) {
 	for _, v := range rows {
 		out = append(out, map[string]any{
 			"id": v.ID, "code": v.Code, "driver": v.Driver, "name": v.Name,
-			"api_url": v.APIURL, "pid": v.PID, "channel": v.Channel, "app_id": v.AppID,
+			"api_url": v.APIURL, "pid": v.PID, "channel": v.Channel, "payment_mode": v.PaymentMode, "app_id": v.AppID,
 			"fee_percent": v.FeePercent, "enabled": v.Enabled, "sort": v.Sort,
 			"has_key":         v.Key != "",
 			"has_private_key": v.PrivateKey != "",
@@ -115,13 +115,14 @@ func (g *AdminGateway) save(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cfg := map[string]string{
-		"api_url":     strings.TrimSpace(fv("api_url")),
-		"pid":         strings.TrimSpace(fv("pid")),
-		"channel":     strings.TrimSpace(fv("channel")),
-		"app_id":      strings.TrimSpace(fv("app_id")),
-		"private_key": strings.TrimSpace(fv("private_key")),
-		"public_key":  strings.TrimSpace(fv("public_key")),
-		"fee_percent": feePercent,
+		"api_url":      strings.TrimSpace(fv("api_url")),
+		"pid":          strings.TrimSpace(fv("pid")),
+		"channel":      strings.TrimSpace(fv("channel")),
+		"payment_mode": strings.TrimSpace(fv("payment_mode")),
+		"app_id":       strings.TrimSpace(fv("app_id")),
+		"private_key":  strings.TrimSpace(fv("private_key")),
+		"public_key":   strings.TrimSpace(fv("public_key")),
+		"fee_percent":  feePercent,
 	}
 	old, oldErr := g.GwRepo.Get(r.Context(), code)
 	key := strings.TrimSpace(fv("key"))

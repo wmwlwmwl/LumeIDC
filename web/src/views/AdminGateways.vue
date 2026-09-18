@@ -80,6 +80,7 @@ const form = reactive<Record<string, any>>({
   key: '',
   channel: '',
   channel_choice: 'alipay',
+  payment_mode: 'redirect',
   app_id: '',
   private_key: '',
   public_key: '',
@@ -214,6 +215,7 @@ function resetForm() {
     key: '',
     channel: '',
     channel_choice: 'alipay',
+    payment_mode: 'redirect',
     app_id: '',
     private_key: '',
     public_key: '',
@@ -241,6 +243,7 @@ function openEdit(row: AdminGateway) {
     pid: row.pid || '',
     channel,
     channel_choice: isPreset ? channel : EPAY_CUSTOM_CHANNEL,
+    payment_mode: row.payment_mode || 'redirect',
     app_id: row.app_id || '',
   })
   editing.value = true
@@ -350,6 +353,12 @@ async function copyCallback() {
                 <el-option label="自定义" :value="EPAY_CUSTOM_CHANNEL" />
               </el-select>
               <el-input v-if="isCustomChannel" v-model="form.channel" placeholder="请输入渠道代码，如 bank、jdpay" />
+            </el-form-item>
+            <el-form-item v-if="visibleFields.includes('payment_mode')" label="支付模式">
+              <el-select v-model="form.payment_mode" class="w-full">
+                <el-option label="跳转模式（托管收银台）" value="redirect" />
+                <el-option label="扫码模式（本地二维码页）" value="qrcode" />
+              </el-select>
             </el-form-item>
             <el-form-item v-if="visibleFields.includes('app_id')" label="支付宝应用 ID"><el-input v-model="form.app_id" placeholder="支付宝应用 ID" /></el-form-item>
           </div>

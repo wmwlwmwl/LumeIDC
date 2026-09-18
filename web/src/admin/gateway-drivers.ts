@@ -14,7 +14,7 @@ export interface GatewayDriverMeta {
 export const GATEWAY_DRIVERS: Record<string, GatewayDriverMeta> = {
   epay: {
     label: '易支付',
-    fields: ['api_url', 'pid', 'key', 'channel'],
+    fields: ['api_url', 'pid', 'key', 'channel', 'payment_mode'],
     style: 'color:var(--el-color-success);background:var(--el-color-success-light-9)',
   },
   alipay_f2f: {

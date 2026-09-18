@@ -16,7 +16,7 @@ func TestOrderQuerierCapability(t *testing.T) {
 	}
 }
 
-// 本地二维码结算页由可选能力驱动：当面付实现它，其它网关不实现，
+// 本地二维码结算页由可选能力驱动：当面付、易支付（扫码模式）实现它，
 // 通用处理器不得写死任何支付品牌。
 func TestLocalCheckoutCapability(t *testing.T) {
 	impl, ok := any(AlipayF2F{}).(LocalCheckout)
@@ -26,8 +26,12 @@ func TestLocalCheckoutCapability(t *testing.T) {
 	if impl.CheckoutPath() != LocalCheckoutPath {
 		t.Fatalf("当面付结算页路径应为 %q，实际 %q", LocalCheckoutPath, impl.CheckoutPath())
 	}
-	if _, ok := any(Epay{}).(LocalCheckout); ok {
-		t.Fatal("易支付走外部跳转，不应实现 LocalCheckout")
+	epayImpl, ok := any(Epay{}).(LocalCheckout)
+	if !ok {
+		t.Fatal("易支付应实现 LocalCheckout，扫码模式依赖本地二维码结算页")
+	}
+	if epayImpl.CheckoutPath() != LocalCheckoutPath {
+		t.Fatalf("易支付结算页路径应为 %q，实际 %q", LocalCheckoutPath, epayImpl.CheckoutPath())
 	}
 	if _, ok := any(Mock{}).(LocalCheckout); ok {
 		t.Fatal("模拟支付不应实现 LocalCheckout")

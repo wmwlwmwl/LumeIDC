@@ -8,9 +8,19 @@ type Gateway interface {
 	// Driver identifies the plugin implementation, not a configured instance.
 	Driver() string
 	Name() string
-	// PayURL builds a payment redirect for an invoice.
-	PayURL(ctx context.Context, req PayRequest) (string, error)
+	// PayURL builds a payment redirect for an invoice. Amount field in PayResult
+	// is set when the upstream returns an adjusted/final amount (e.g. EasyPay
+	// mapi.php risk-control floating); empty means "use the requested amount".
+	PayURL(ctx context.Context, req PayRequest) (PayResult, error)
 	VerifyNotify(params map[string]string, cfg map[string]string) (NotifyResult, error)
+}
+
+// PayResult is what PayURL returns. URL is always set; Amount is optional.
+type PayResult struct {
+	// URL 跳转/本地结算页地址
+	URL string
+	// Amount 上游返回的实际金额（如易支付 mapi.php 风控浮动后）；空则用请求金额
+	Amount string
 }
 
 // LocalCheckoutPath is the in-app route that serves the local checkout page
