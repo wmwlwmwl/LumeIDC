@@ -495,7 +495,11 @@ outer:
 	}
 	psID, _ := h.Products.DefaultPricesetID(r.Context())
 	prices := h.Products.PricesByProduct(r.Context(), psID, ids)
-	optsBy := h.Products.ConfigOptionsByProducts(r.Context(), ids)
+	optsBy, err := h.Products.ConfigOptionsByProducts(r.Context(), ids)
+	if err != nil {
+		log.Printf("[home] 批量读取产品配置失败: %v", err)
+		optsBy = map[int64][]repo.ConfigOption{}
+	}
 	fallbacks := h.Products.ServerProfitFallbacks(r.Context(), ids)
 	views := make([]productView, 0, len(picked))
 	for _, p := range picked {
@@ -643,7 +647,11 @@ func (h *Pages) productListPage(w http.ResponseWriter, r *http.Request, _ string
 					}
 					psID, _ := h.Products.DefaultPricesetID(r.Context())
 					prices := h.Products.PricesByProduct(r.Context(), psID, ids)
-					optsBy := h.Products.ConfigOptionsByProducts(r.Context(), ids)
+					optsBy, optsErr := h.Products.ConfigOptionsByProducts(r.Context(), ids)
+					if optsErr != nil {
+						log.Printf("[home] 批量读取产品配置失败: %v", optsErr)
+						optsBy = map[int64][]repo.ConfigOption{}
+					}
 					fallbacks := h.Products.ServerProfitFallbacks(r.Context(), ids)
 					for _, p := range list {
 						m, cycle, label := "-", "monthly", "月"
