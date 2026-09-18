@@ -134,3 +134,23 @@ func TestAPICode(t *testing.T) {
 type errString string
 
 func (e errString) Error() string { return string(e) }
+
+// TestStatusMissingReturnsErrHostMissing 锁定 getVh 返回 500（站点不存在或面板内部错误）时
+// Status 必须返回 ErrHostMissing 包装的错误，让 SyncUpstreamStatus 走累计缺失路径，
+// 而不是一次就当作 terminated 直接删除。之前 Status 错误地返回 {Status: "terminated"}, nil。
+func TestStatusMissingReturnsErrHostMissing(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"result":500,"msg":"站点不存在"}`))
+	}))
+	defer srv.Close()
+
+	cfg := server.Config{APIURL: srv.URL, APIKey: "skey"}
+	_, err := Provider{}.Status(context.Background(), cfg, 999)
+	if err == nil {
+		t.Fatal("Status 返回 nil error，应该返回 ErrHostMissing")
+	}
+	if !server.IsHostMissing(err) {
+		t.Fatalf("错误未被 IsHostMissing 识别: %v", err)
+	}
+}

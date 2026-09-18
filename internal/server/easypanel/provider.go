@@ -225,6 +225,9 @@ func (p Provider) getVh(ctx context.Context, c *client, name string) (map[string
 }
 
 // Status a=getVh 映射上游站点状态。
+// getVh 返回 500 时不再直接当作 terminated 返回成功——EP 面板 500 也可能是内部错误。
+// 改为包装 ErrHostMissing，交给 SyncUpstreamStatus 累计缺失次数（默认 20 轮）再判删，
+// 和 ZJMF 保持一致，避免上游一次抖动就把服务全删了。
 func (p Provider) Status(ctx context.Context, cfg server.Config, upstreamHostID int64) (server.ServiceStatus, error) {
 	id, err := serviceIDFromHost(upstreamHostID)
 	if err != nil {
@@ -234,7 +237,7 @@ func (p Provider) Status(ctx context.Context, cfg server.Config, upstreamHostID 
 	vh, err := p.getVh(ctx, c, SiteName(id))
 	if err != nil {
 		if apiCode(err) == 500 {
-			return server.ServiceStatus{Status: "terminated"}, nil // 站点不存在
+			return server.ServiceStatus{}, fmt.Errorf("%w: %s", server.ErrHostMissing, err.Error())
 		}
 		return server.ServiceStatus{}, fmt.Errorf("EasyPanel 查询状态失败: %w", err)
 	}
