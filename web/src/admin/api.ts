@@ -728,6 +728,7 @@ export interface AdminGateway {
   pid?: string
   channel?: string
   payment_mode?: string
+  mobile_qrcode?: string
   app_id?: string
   fee_percent: string
   enabled: boolean

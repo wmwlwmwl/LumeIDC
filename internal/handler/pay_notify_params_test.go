@@ -8,7 +8,7 @@ import (
 
 func TestNotifyParamsExcludesCode(t *testing.T) {
 	// 回调 URL 带本站路由参数 code，body 为网关真实参数；code 不得参与验签。
-	r := httptest.NewRequest("POST", "/pay/notify?code=alipay_f2f",
+	r := httptest.NewRequest("POST", "/pay/notify?code=alipay",
 		strings.NewReader("out_trade_no=INV1&trade_no=T1&sign=abc"))
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	if err := r.ParseForm(); err != nil {

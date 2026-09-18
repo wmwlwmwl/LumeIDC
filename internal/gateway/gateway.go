@@ -72,5 +72,8 @@ type PayRequest struct {
 	Title     string
 	NotifyURL string // 异步回调
 	ReturnURL string // 支付完成后跳转
-	Config    map[string]string
+	// IsMobile 请求来自移动端浏览器。用于选择 H5 支付通道
+	// （如支付宝手机网站支付 wap.pay）。
+	IsMobile bool
+	Config   map[string]string
 }

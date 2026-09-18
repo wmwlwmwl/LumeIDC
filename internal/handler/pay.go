@@ -519,7 +519,8 @@ func (h *Pay) start(w http.ResponseWriter, r *http.Request) {
 	base := siteBaseURL(r.Context(), h.Settings, r) // 站点地址：后台 site_url 优先，否则按请求推断
 	notifyURL := base + "/pay/notify?" + url.Values{"code": {code}}.Encode()
 	payResult, err := impl.PayURL(r.Context(), gateway.PayRequest{InvoiceNo: no, Amount: prep.Payable, Title: h.currentSiteInfo().Name + " 账单 " + no,
-		NotifyURL: notifyURL, ReturnURL: base + "/pay/" + strconv.FormatInt(id, 10), Config: inst.Config})
+		NotifyURL: notifyURL, ReturnURL: base + "/pay/" + strconv.FormatInt(id, 10),
+		IsMobile: isMobileUA(r.UserAgent()), Config: inst.Config})
 	if err != nil {
 		_ = h.Payment.ReleaseInvoiceCredit(r.Context(), id, prep.AttemptID)
 		log.Printf("[payment] 网关 %s 生成支付链接失败，账单 %s: %v", code, no, err)
@@ -663,6 +664,18 @@ func equalAmount(a, b string) bool {
 	_, x, errX := moneyutil.ParsePositive(a, 999999999999)
 	_, y, errY := moneyutil.ParsePositive(b, 999999999999)
 	return errX == nil && errY == nil && x == y
+}
+
+// isMobileUA 粗略判断请求来自移动端浏览器，用于选择支付宝手机网站支付等 H5 通道。
+// ponytail: 子串匹配已覆盖主流手机 UA；若需精确设备识别可替换为成熟 UA 解析库。
+func isMobileUA(ua string) bool {
+	ua = strings.ToLower(ua)
+	for _, token := range []string{"mobile", "android", "iphone", "ipod", "windows phone"} {
+		if strings.Contains(ua, token) {
+			return true
+		}
+	}
+	return false
 }
 
 // payByBalance 余额支付账单。

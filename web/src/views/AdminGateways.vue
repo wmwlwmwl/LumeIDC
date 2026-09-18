@@ -25,7 +25,7 @@ const searchItems = [
       clearable: true,
       options: [
         { label: '易支付', value: 'epay' },
-        { label: '支付宝当面付', value: 'alipay_f2f' },
+        { label: '支付宝', value: 'alipay' },
         { label: '模拟支付', value: 'mock' },
       ],
     },
@@ -81,6 +81,7 @@ const form = reactive<Record<string, any>>({
   channel: '',
   channel_choice: 'alipay',
   payment_mode: 'redirect',
+  mobile_qrcode: '0',
   app_id: '',
   private_key: '',
   public_key: '',
@@ -216,10 +217,18 @@ function resetForm() {
     channel: '',
     channel_choice: 'alipay',
     payment_mode: 'redirect',
+    mobile_qrcode: '0',
     app_id: '',
     private_key: '',
     public_key: '',
   })
+}
+
+// 切换驱动时把支付模式重置为该驱动的默认值：各驱动默认不同
+// （易支付默认跳转、支付宝默认扫码），沿用上一个驱动的值可能选到不可用的模式。
+function onDriverChange(driver: string) {
+  const fallback = GATEWAY_DRIVERS[driver]?.paymentModeDefault
+  if (fallback) form.payment_mode = fallback
 }
 
 function openNew() {
@@ -243,7 +252,8 @@ function openEdit(row: AdminGateway) {
     pid: row.pid || '',
     channel,
     channel_choice: isPreset ? channel : EPAY_CUSTOM_CHANNEL,
-    payment_mode: row.payment_mode || 'redirect',
+    payment_mode: row.payment_mode || GATEWAY_DRIVERS[row.driver]?.paymentModeDefault || 'redirect',
+    mobile_qrcode: row.mobile_qrcode || '0',
     app_id: row.app_id || '',
   })
   editing.value = true
@@ -338,7 +348,7 @@ async function copyCallback() {
         <div class="admin-form-grid">
           <el-form-item label="实例编码" required><el-input v-model="form.code" :disabled="editing" placeholder="如 epay_main" /></el-form-item>
           <el-form-item label="显示名称" required><el-input v-model="form.name" placeholder="如 易支付主通道" /></el-form-item>
-          <el-form-item label="插件类型"><el-select v-model="form.driver" class="w-full"><el-option v-for="d in gatewayDriverList()" :key="d.value" :label="d.label" :value="d.value" /></el-select></el-form-item>
+          <el-form-item label="插件类型"><el-select v-model="form.driver" class="w-full" @change="onDriverChange"><el-option v-for="d in gatewayDriverList()" :key="d.value" :label="d.label" :value="d.value" /></el-select></el-form-item>
           <el-form-item label="在线支付手续费率（%）"><el-input-number v-model="form.fee_percent" :min="0" :max="100" :precision="2" class="w-full" /></el-form-item>
         </div>
 
@@ -354,14 +364,21 @@ async function copyCallback() {
               </el-select>
               <el-input v-if="isCustomChannel" v-model="form.channel" placeholder="请输入渠道代码，如 bank、jdpay" />
             </el-form-item>
-            <el-form-item v-if="visibleFields.includes('payment_mode')" label="支付模式">
-              <el-select v-model="form.payment_mode" class="w-full">
-                <el-option label="跳转模式（托管收银台）" value="redirect" />
-                <el-option label="扫码模式（本地二维码页）" value="qrcode" />
-              </el-select>
-            </el-form-item>
             <el-form-item v-if="visibleFields.includes('app_id')" label="支付宝应用 ID"><el-input v-model="form.app_id" placeholder="支付宝应用 ID" /></el-form-item>
           </div>
+          <el-form-item v-if="visibleFields.includes('payment_mode')" label="支付模式">
+            <el-select v-model="form.payment_mode" class="w-full">
+              <el-option label="跳转模式（托管收银台）" value="redirect" />
+              <el-option label="扫码模式（本地二维码页）" value="qrcode" />
+            </el-select>
+            <p v-if="GATEWAY_DRIVERS[form.driver]?.paymentModeHint" class="form-tip">
+              {{ GATEWAY_DRIVERS[form.driver]?.paymentModeHint }}
+            </p>
+          </el-form-item>
+          <el-form-item v-if="visibleFields.includes('mobile_qrcode')" label="手机端也扫码">
+            <el-switch v-model="form.mobile_qrcode" active-value="1" inactive-value="0" active-text="启用" />
+            <p class="form-tip">手机端不跳转，直接显示二维码。仅当未签约「手机网站支付」时开启，否则手机用户无法付款。</p>
+          </el-form-item>
           <el-form-item v-if="visibleFields.includes('key')" label="商户密钥"><el-input v-model="form.key" type="password" show-password :placeholder="secretConfigured.key ? '已配置，留空保持不变' : '商户密钥'" /></el-form-item>
           <el-form-item v-if="visibleFields.includes('private_key')" label="应用私钥"><el-input v-model="form.private_key" type="textarea" :rows="3" :placeholder="secretConfigured.private_key ? '已配置，留空保持不变' : '-----BEGIN PRIVATE KEY-----'" /></el-form-item>
           <el-form-item v-if="visibleFields.includes('public_key')" label="支付宝公钥（用于回调验签）"><el-input v-model="form.public_key" type="textarea" :rows="3" :placeholder="secretConfigured.public_key ? '已配置，留空保持不变' : '-----BEGIN PUBLIC KEY-----'" /></el-form-item>
@@ -406,5 +423,14 @@ async function copyCallback() {
   .admin-form-grid {
     grid-template-columns: 1fr;
   }
+}
+
+/* 表单字段下方的补充说明（如支付模式的前置条件） */
+.form-tip {
+  width: 100%;
+  margin: 6px 0 0;
+  color: var(--art-gray-500);
+  font-size: 12px;
+  line-height: 1.5;
 }
 </style>

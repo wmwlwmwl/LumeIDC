@@ -229,9 +229,9 @@ func Build(cfg *config.Config, version string) (*App, error) {
 	paymentSvc := service.NewPayment(database, lifecycle, serversRepo, products, provisions, jobs, balanceRepo, providers, periodGrants, notifier, cryptor)
 	paymentSvc.Promotion = promotionSvc
 	gateways := map[string]gateway.Gateway{
-		"epay":       gateway.Epay{},
-		"alipay_f2f": gateway.AlipayF2F{},
-		"mock":       gateway.Mock{},
+		"epay":   gateway.Epay{},
+		"alipay": gateway.Alipay{},
+		"mock":   gateway.Mock{},
 	}
 	// 自动发现支持订单查询的网关（易支付等），用于异步通知丢失时补单。
 	// 新增网关只要实现 gateway.OrderQuerier，无需改动定时任务或组合根。
