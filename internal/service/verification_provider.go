@@ -64,6 +64,11 @@ func (f *ConfiguredVerificationProvider) get(ctx context.Context, key string) st
 
 func (f *ConfiguredVerificationProvider) Provider(ctx context.Context, key string) (VerificationProvider, error) {
 	key = strings.ToLower(strings.TrimSpace(key))
+	// 优先查注册表中的新适配器
+	if p, found, err := verificationFromRegistry(key, f); found {
+		return p, err
+	}
+	// 未命中注册表，回退旧 switch-case
 	switch key {
 	case "baidu_face":
 		return &baiduFaceProvider{factory: f}, nil
