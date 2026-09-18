@@ -94,28 +94,32 @@ async function saveAdminNotify() {
 
 // ---- 测试邮件 ----
 const testTo = ref('')
-const testAccount = ref(-1)
-const testing = ref(false)
-// 可测试账号 = 已填写主机的账号（顺序与保存后的服务端列表一致），-1 表示自动轮换
-const testAccountOptions = computed(() =>
-  accounts.value
-    .filter((a) => a.host.trim())
-    .map((a, i) => ({ label: a.name || a.host, value: i })),
-)
-async function sendTest() {
-  if (!testTo.value) {
+const testingAccount = ref<number | null>(null)
+// 测试接口按已保存账号的下标发送；修改或排序后必须先保存，避免测试到旧账号。
+async function sendTest(account: MailAccount) {
+  if (!ready.value || saving.value || testingAccount.value !== null) return
+  if (mailSnapshot() !== mailBaseline.value) {
+    ElMessage.warning('请先保存邮件设置，再测试该账号')
+    return
+  }
+  const index = accounts.value.filter(a => a.host.trim()).findIndex(a => a._key === account._key)
+  if (index < 0) {
+    ElMessage.warning('请填写 SMTP 主机并保存邮件设置')
+    return
+  }
+  if (!testTo.value.trim()) {
     ElMessage.warning('请输入收件邮箱')
     return
   }
-  testing.value = true
+  testingAccount.value = account._key
   try {
-    const res = await testAdminEmail(testTo.value, testAccount.value)
+    const res = await testAdminEmail(testTo.value.trim(), index)
     if (res.ok) ElMessage.success(res.msg || '测试邮件已发送')
     else ElMessage.error(res.msg || '发送失败')
   } catch (err: unknown) {
     ElMessage.error((err as Error).message || '发送失败')
   } finally {
-    testing.value = false
+    testingAccount.value = null
   }
 }
 
@@ -188,24 +192,32 @@ void initialize()
 </script>
 
 <template>
-  <div class="art-full-height" v-loading="loading">
+  <div class="notify-page art-full-height" v-loading="loading">
     <ElCard class="art-card">
       <template #header>
         <div class="art-card-header">
           <div class="title">
             <h4>通知设置</h4>
-            <p>邮件与短信发送通道配置。邮件内容、启停与总开关在「邮件模板」页维护。</p>
+            <p>配置发送通道与告警接收人，让每一条通知送达正确的位置。</p>
           </div>
         </div>
       </template>
 
+      <el-alert v-if="loadError" :title="loadError" type="error" :closable="false" class="load-alert" />
+      <div class="notify-overview">
+        <span>通道配置与内容模板分别维护，各区域独立保存。</span>
+        <el-tag v-if="dirty" type="warning" effect="plain">有未保存修改</el-tag>
+      </div>
+      <section class="notify-section">
+      <header class="section-heading">
+        <div><span class="section-kicker">邮件通道</span><h3>SMTP 发送账号</h3><p>支持多账号轮换发送，按排列顺序依次使用。</p></div>
+        <router-link class="template-link" :to="{ name: 'admin-email-templates' }">管理邮件模板</router-link>
+      </header>
       <el-form :disabled="!ready || !!saving" label-position="top">
-      <el-divider content-position="left">邮件通知</el-divider>
-      <p class="mb-3 text-xs text-g-500">可配置多个 SMTP 账号（轮换发送）；密码留空表示沿用旧值。</p>
 
-      <div v-for="(a, i) in accounts" :key="a._key" class="mb-3 rounded-lg border border-[var(--art-card-border)] p-4">
-        <div class="mb-2 flex items-center justify-between">
-          <strong class="text-sm text-g-800">账号 {{ i + 1 }}</strong>
+      <div v-for="(a, i) in accounts" :key="a._key" class="account-card">
+        <div class="account-heading">
+          <div class="account-title"><span class="account-number">{{ String(i + 1).padStart(2, '0') }}</span><strong>{{ a.name || '邮件账号 ' + (i + 1) }}</strong><el-tag size="small" :type="a.enabled ? 'success' : 'info'" effect="plain">{{ a.enabled ? '已启用' : '已停用' }}</el-tag></div>
           <span>
             <el-button size="small" text :disabled="i === 0" @click="moveAccount(i, -1)">上移</el-button>
             <el-button size="small" text :disabled="i === accounts.length - 1" @click="moveAccount(i, 1)">下移</el-button>
@@ -220,51 +232,57 @@ void initialize()
           <el-form-item label="密码"><el-input v-model="a.pass" type="password" show-password placeholder="留空保持不变" /></el-form-item>
           <el-form-item label="发件人"><el-input v-model="a.from" placeholder="如 noreply@qq.com" /></el-form-item>
         </div>
-        <el-checkbox v-model="a.enabled" class="mt-2">启用该账号</el-checkbox>
+        <div class="account-footer">
+        <el-checkbox v-model="a.enabled">启用该账号</el-checkbox>
+        <div class="notify-test">
+          <el-input v-model="testTo" placeholder="测试收件邮箱" :aria-label="`账号 ${i + 1} 测试收件邮箱`" style="width: 220px; max-width: 100%" />
+          <el-button :loading="testingAccount === a._key" :disabled="testingAccount !== null && testingAccount !== a._key" @click="sendTest(a)">测试该账号</el-button>
+        </div>
+        </div>
+        <p class="field-help">密码留空沿用原值。测试使用已保存的配置，修改后请先保存。</p>
       </div>
-      <el-button size="small" @click="addAccount">+ 添加账号</el-button>
+      <el-button class="add-account" plain @click="addAccount">+ 添加邮件账号</el-button>
 
-      <el-divider content-position="left">发送选项</el-divider>
-      <div class="admin-form-grid">
+      <div class="delivery-options">
+      <div><h4>失败冷却</h4><p class="field-help">账号发送失败后，等待指定秒数再尝试使用。</p></div>
+      <div class="cooldown-field">
         <el-form-item label="发送失败冷却（秒，1-86400）">
           <el-input-number v-model="cooldownSeconds" :min="1" :max="86400" class="w-full" />
         </el-form-item>
       </div>
-      <p class="text-xs text-g-500">
+      </div>
+      <p class="field-help">
         业务邮件的内容、启停和总开关在
         <router-link :to="{ name: 'admin-email-templates' }">邮件模板</router-link>
         页维护；此处仅配置发送通道。
       </p>
 
-      <el-divider content-position="left">管理员告警收件邮箱</el-divider>
-      <p class="mb-3 text-xs text-g-500">
-        用于接收系统运维告警：用户提交实名认证，以及开通 / 续费 / 升配 / 降配失败（含上游账户余额不足）时各发一封。
-        多个邮箱用逗号、分号或换行分隔，最多 10 个；留空则不发送告警。
-      </p>
+      <div class="notify-save-row mt-4">
+        <el-button type="primary" :loading="saving === 'mail'" @click="saveMail">保存邮件设置</el-button>
+      </div>
+
+      </el-form>
+      </section>
+
+      <section class="notify-section">
+      <header class="section-heading"><div><span class="section-kicker">管理员告警</span><h3>需要处理的通知，及时送达</h3><p>接收人工实名申请，以及开通、续费、升降配失败告警（含上游余额不足）。</p></div></header>
+      <el-form :disabled="!ready || !!saving" label-position="top">
+      <div class="alert-recipients">
       <el-form-item label="收件邮箱">
         <el-input v-model="adminNotify" type="textarea" :rows="2" placeholder="ops@example.com, admin@example.com" aria-label="管理员告警收件邮箱" />
       </el-form-item>
+      <p class="field-help">最多 10 个邮箱，用逗号、分号或换行分隔；留空则不发送管理员告警。</p>
+      </div>
       <div class="notify-save-row">
         <el-button type="primary" :loading="saving === 'admin_notify'" @click="saveAdminNotify">保存告警收件邮箱</el-button>
       </div>
 
-      <div class="notify-save-row">
-        <el-button type="primary" :loading="saving === 'mail'" @click="saveMail">保存邮件设置</el-button>
-        <span class="notify-test">
-          <el-input v-model="testTo" placeholder="测试收件邮箱" style="width: 220px" />
-          <el-select v-model="testAccount" style="width: 150px" placeholder="发送账号">
-            <el-option label="自动（轮换全部）" :value="-1" />
-            <el-option v-for="o in testAccountOptions" :key="o.value" :label="o.label" :value="o.value" />
-          </el-select>
-          <el-button :loading="testing" @click="sendTest">发送测试邮件</el-button>
-        </span>
-      </div>
-
       </el-form>
-      <el-divider content-position="left">短信</el-divider>
+      </section>
+
+      <section class="notify-section">
+      <header class="section-heading"><div><span class="section-kicker">短信通道</span><h3>按发送范围配置服务商</h3><p>国内、国际与营销通道分别配置，独立使用。</p></div><router-link class="template-link" :to="{ name: 'admin-sms-templates' }">管理短信模板</router-link></header>
       <el-alert title="验证码仅走国内路由。未绑定验证码模板时，仍使用旧的国内单通道配置回退；业务通知按模板范围选择对应路由。" type="warning" :closable="false" />
-      <p class="my-3"><router-link :to="{ name: 'admin-sms-templates' }">管理短信模板、业务场景绑定与投递状态</router-link></p>
-      <el-alert v-if="loadError" :title="loadError" type="error" :closable="false" />
       <el-form :disabled="!ready || !!saving" label-position="top">
         <el-tabs>
           <el-tab-pane v-for="range in smsRanges" :key="range.key" :label="range.label">
@@ -283,24 +301,65 @@ void initialize()
         </el-tabs>
       <div class="notify-save-row">
         <el-button type="primary" :loading="saving === 'sms'" @click="saveSms">保存短信设置</el-button>
-        <el-tag v-if="dirty" type="warning">有未保存修改</el-tag>
       </div>
       </el-form>
+      </section>
     </ElCard>
   </div>
 </template>
 
 <style scoped>
+.notify-page { color: var(--el-text-color-primary); }
+.notify-overview { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; color: var(--el-text-color-secondary); font-size: 13px; margin-bottom: 24px; }
+.load-alert { margin-bottom: 20px; }
+.notify-section { border: 1px solid var(--el-border-color-lighter); border-radius: 12px; padding: 24px; margin-bottom: 24px; }
+.notify-section:last-child { margin-bottom: 0; }
+.section-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 24px; }
+.section-kicker { color: var(--el-color-primary); font-size: 12px; font-weight: 500; }
+.section-heading h3 { font-size: 18px; font-weight: 600; margin: 6px 0; }
+.section-heading p, .field-help { font-size: 13px; line-height: 1.7; color: var(--el-text-color-secondary); margin: 6px 0 0; }
+.template-link { display: inline-flex; align-items: center; min-height: 32px; padding: 0 12px; border: 1px solid var(--el-color-primary-light-5); border-radius: 6px; color: var(--el-color-primary); background: var(--el-color-primary-light-9); font-size: 13px; white-space: nowrap; text-decoration: none; }
+.template-link:hover { border-color: var(--el-color-primary); background: var(--el-color-primary-light-8); }
+.account-card { padding: 20px; border: 1px solid var(--el-border-color-lighter); border-radius: 10px; margin-bottom: 16px; background: var(--el-fill-color-blank); }
+.account-heading, .account-footer { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+.account-heading { margin-bottom: 20px; }
+.account-title { display: flex; align-items: center; gap: 10px; min-width: 0; flex-wrap: wrap; }
+.account-title strong { overflow-wrap: anywhere; font-size: 14px; }
+.account-number { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 8px; background: var(--el-color-primary-light-9); color: var(--el-color-primary); font-size: 13px; }
+.account-footer { border-top: 1px solid var(--el-border-color-lighter); padding-top: 16px; margin-top: 4px; }
+.add-account { width: 100%; border-style: dashed; height: 40px; }
+.delivery-options { display: flex; align-items: center; justify-content: space-between; gap: 24px; flex-wrap: wrap; background: var(--el-fill-color-light); border-radius: 10px; padding: 20px; margin: 24px 0 14px; }
+.delivery-options h4 { margin: 0; font-size: 14px; font-weight: 500; }
+.cooldown-field { width: 240px; max-width: 100%; }
+.cooldown-field :deep(.el-form-item) { margin-bottom: 0; }
+.alert-recipients { max-width: 760px; }
+.notify-section :deep(.admin-form-grid) { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0 20px; }
+.notify-section :deep(.el-tabs) { margin-top: 16px; }
+.notify-section :deep(.el-tab-pane > p) { margin: 0 0 20px; line-height: 1.7; }
 .notify-save-row {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 12px;
+  border-top: 1px solid var(--el-border-color-lighter);
+  padding-top: 20px;
+  margin-top: 24px;
 }
 .notify-test {
   display: inline-flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
+}
+@media (max-width: 1100px) {
+  .notify-section :deep(.admin-form-grid) { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 640px) {
+  .notify-section { padding: 16px; }
+  .account-card { padding: 14px; }
+  .notify-section :deep(.admin-form-grid) { grid-template-columns: minmax(0, 1fr); }
+  .delivery-options { padding: 16px; gap: 16px; }
+  .notify-test { width: 100%; }
+  .notify-test :deep(.el-input) { flex: 1; min-width: 140px; }
 }
 </style>
