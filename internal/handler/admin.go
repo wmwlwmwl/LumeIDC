@@ -2,6 +2,7 @@ package handler
 
 import (
 	"database/sql"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -159,7 +160,9 @@ func (a *Admin) loginSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := a.captchaCheck(r, vals); err != nil {
 		if a.Lockout != nil {
-			_ = a.Lockout.Fail(r.Context(), adminLoginFailKey(requestIP(r))) // 答错也计数，防看图爆破
+			if lerr := a.Lockout.Fail(r.Context(), adminLoginFailKey(requestIP(r))); lerr != nil {
+				log.Printf("[admin] 记录验证码失败出错: %v", lerr)
+			}
 		}
 		jsonStatus(w, r, 401, "图形验证码错误，请重试")
 		return
@@ -179,8 +182,12 @@ func (a *Admin) loginSubmit(w http.ResponseWriter, r *http.Request) {
 	id, err := a.Admins.Verify(r.Context(), email, fv("password"))
 	if err != nil {
 		if a.Lockout != nil {
-			_ = a.Lockout.Fail(r.Context(), email)
-			_ = a.Lockout.Fail(r.Context(), adminLoginFailKey(ip)) // 失败后强制验证码
+			if lerr := a.Lockout.Fail(r.Context(), email); lerr != nil {
+				log.Printf("[admin] 记录账号锁定失败出错 (%s): %v", email, lerr)
+			}
+			if lerr := a.Lockout.Fail(r.Context(), adminLoginFailKey(ip)); lerr != nil {
+				log.Printf("[admin] 记录IP锁定失败出错 (%s): %v", ip, lerr)
+			}
 		}
 		fail(http.StatusUnauthorized, "用户名或密码错误")
 		return
@@ -189,8 +196,12 @@ func (a *Admin) loginSubmit(w http.ResponseWriter, r *http.Request) {
 	if secret, enabled, gerr := a.Admins.GetTOTP(r.Context(), id); gerr == nil && enabled && secret != "" {
 		if !totp.Verify(secret, fv("totp"), time.Now()) {
 			if a.Lockout != nil {
-				_ = a.Lockout.Fail(r.Context(), email)
-				_ = a.Lockout.Fail(r.Context(), adminLoginFailKey(ip))
+				if lerr := a.Lockout.Fail(r.Context(), email); lerr != nil {
+					log.Printf("[admin] 记录 TOTP 失败账号锁定出错 (%s): %v", email, lerr)
+				}
+				if lerr := a.Lockout.Fail(r.Context(), adminLoginFailKey(ip)); lerr != nil {
+					log.Printf("[admin] 记录 TOTP 失败 IP 锁定出错 (%s): %v", ip, lerr)
+				}
 			}
 			// SPA 明确告知该账户已启用两步验证，前端据此才展示验证码输入框，
 			// 避免对未启用两步验证的账户也显示该字段。
