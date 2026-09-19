@@ -97,7 +97,7 @@ func (p Provider) TestConnection(ctx context.Context, cfg server.Config) error {
 //   - =0：弹性模式（白名单配置项直传配额参数）
 //
 // 幂等：500(重名) 时 getVh 验证存在即视为成功；此时密码不可知，用 change_password
-// 强制同步为新密码，保证返回值与上游实际一致。
+// 强制同步为新密码，保证返回值与上游实际一致。检查点命中的续跑路径同理（见下）。
 func (p Provider) Provision(ctx context.Context, cfg server.Config, req server.ProvisionRequest, ck server.CheckpointStore) (server.ProvisionResult, error) {
 	if req.ServiceID <= 0 {
 		return server.ProvisionResult{}, fmt.Errorf("EasyPanel 开通缺少本地服务 ID")
@@ -140,10 +140,18 @@ func (p Provider) Provision(ctx context.Context, cfg server.Config, req server.P
 		}
 	}
 
-	// checkpoint：崩溃重试时先验证已建站则跳过 add_vh
+	// checkpoint：崩溃重试时先验证已建站则跳过 add_vh。
+	// 这里必须与下方 500 重名分支同样强制同步密码：req.Password 为空时 pw 是每次
+	// 调用新生成的随机值，上次建站用的是上一轮的密码，直接返回本次的 pw 会让
+	// services.password_crypt 与站点真实密码不一致（用户拿页面显示的密码登不进面板）。
 	if ck != nil {
 		if v, ok, err := ck.GetCheckpoint(ckAddVH); err == nil && ok && v == name {
 			if _, gerr := p.getVh(ctx, c, name); gerr == nil {
+				if _, cerr := c.call(ctx, "change_password", map[string]string{
+					"name": name, "passwd": pw,
+				}); cerr != nil {
+					return server.ProvisionResult{}, fmt.Errorf("EasyPanel 已建站点密码同步失败: %w", cerr)
+				}
 				return server.ProvisionResult{UpstreamHostID: req.ServiceID, Password: pw}, nil
 			}
 		}
