@@ -241,6 +241,9 @@ func (h *Auth) registerCode(w http.ResponseWriter, r *http.Request) {
 		}
 		// 已注册账号不再发送注册验证码（防止骚扰/枚举，直接提示登录）
 		if _, _, findErr := h.Users.ByEmail(r.Context(), email); findErr == nil {
+			if !h.allowRegisterProbe(w, r) {
+				return
+			}
 			jsonStatus(w, r, 400, "该邮箱已注册，请直接登录")
 			return
 		}
@@ -260,6 +263,9 @@ func (h *Auth) registerCode(w http.ResponseWriter, r *http.Request) {
 		}
 		// 已注册账号不再发送注册验证码
 		if _, _, findErr := h.Users.ByPhone(r.Context(), phone); findErr == nil {
+			if !h.allowRegisterProbe(w, r) {
+				return
+			}
 			jsonStatus(w, r, 400, "该手机号已注册，请直接登录")
 			return
 		}
@@ -269,6 +275,37 @@ func (h *Auth) registerCode(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	jsonStatus(w, r, 202, "验证码已发送")
+}
+
+// registerProbePrefix 注册发码「账号已存在」分支的限速键前缀（按 IP 计数）。
+const registerProbePrefix = "regprobe:"
+
+// allowRegisterProbe 记录一次「探到已注册账号」的请求并判断是否已超限。
+// 该分支既不发码、也不经过验证码服务（限速在 Issue 内），若不单独计数，未认证者就能
+// 无限次请求并按响应文案枚举出已注册的邮箱/手机号。复用登录失败计数（5 次后锁 15 分钟），
+// 与后台测试发信同一套机制；多实例下该计数是共享的（login_attempts 表）。
+// 限流器不可用时按失败关闭：宁可不给登录提示，也不能退化成无限枚举接口。
+func (h *Auth) allowRegisterProbe(w http.ResponseWriter, r *http.Request) bool {
+	if h.Lockout == nil {
+		jsonStatus(w, r, http.StatusServiceUnavailable, "服务暂不可用，请稍后重试")
+		return false
+	}
+	key := registerProbePrefix + requestIP(r)
+	locked, err := h.Lockout.Locked(r.Context(), key)
+	if err != nil {
+		log.Printf("[auth] 读取注册探测计数失败: %v", err)
+		jsonStatus(w, r, http.StatusServiceUnavailable, "服务暂不可用，请稍后重试")
+		return false
+	}
+	if locked {
+		w.Header().Set("Retry-After", "900")
+		jsonStatus(w, r, http.StatusTooManyRequests, "请求过于频繁，请稍后再试")
+		return false
+	}
+	if err := h.Lockout.Fail(r.Context(), key); err != nil {
+		log.Printf("[auth] 记录注册探测次数失败: %v", err)
+	}
+	return true
 }
 
 func (h *Auth) registerSubmit(w http.ResponseWriter, r *http.Request) {
@@ -331,6 +368,8 @@ func (h *Auth) registerSubmit(w http.ResponseWriter, r *http.Request) {
 		h.renderRegisterError(w, r, "密码至少 8 位且两次输入必须一致")
 		return
 	}
+	// 手机号是否「已验证」（发码并校验通过）；both 模式需在此判定，见下方赋值处。
+	phoneVerified := false
 	if mode == "both" {
 		// 同时注册：邮箱/手机验证码按各自开关要求，任一需要即校验；都不需要则走图形验证码
 		needEmail := emailVerify && h.Challenges != nil
@@ -343,6 +382,9 @@ func (h *Auth) registerSubmit(w http.ResponseWriter, r *http.Request) {
 			h.renderRegisterError(w, r, "验证码错误或已过期")
 			return
 		}
+		// both 模式下手机号同样是「发码并校验通过」的，必须一并落 phone_verified_at：
+		// 漏写会让用户之后无法用手机号找回密码、也无法提交人工实名（两者都要求已验证手机号）。
+		phoneVerified = needPhone
 		if !needEmail && !needPhone {
 			if err := checkCaptcha(r.Context(), h.LocalCaptcha, h.Captcha, "register", r, h.settingOn(r.Context(), "captcha_register_enabled", false), vals); err != nil {
 				h.renderRegisterError(w, r, "请完成图形验证码后再注册")
@@ -358,11 +400,12 @@ func (h *Auth) registerSubmit(w http.ResponseWriter, r *http.Request) {
 			h.renderRegisterError(w, r, "验证码错误或已过期")
 			return
 		}
+		phoneVerified = mode == "phone"
 	} else if err := checkCaptcha(r.Context(), h.LocalCaptcha, h.Captcha, "register", r, h.settingOn(r.Context(), "captcha_register_enabled", false), vals); err != nil {
 		h.renderRegisterError(w, r, "请完成图形验证码后再注册")
 		return
 	}
-	id, err := h.Users.CreateAccount(r.Context(), email, phone, pass, strings.TrimSpace(fv("name")), mode == "phone" && phoneVerify)
+	id, err := h.Users.CreateAccount(r.Context(), email, phone, pass, strings.TrimSpace(fv("name")), phoneVerified)
 	if err != nil {
 		h.renderRegisterError(w, r, "注册失败：账号可能已被占用")
 		return
