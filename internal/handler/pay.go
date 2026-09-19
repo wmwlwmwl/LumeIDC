@@ -524,6 +524,13 @@ func (h *Pay) start(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	base := siteBaseURL(r.Context(), h.Settings, r) // 站点地址：后台 site_url 优先，否则按请求推断
+	if base == "" {
+		// 后台未配置 site_url 且请求 Host 不可用：宁可不发起支付，也不能把回调地址拼成
+		// 无效/可被劫持的地址（回调收不到就等于这笔订单永远不到账）。
+		_ = h.Payment.ReleaseInvoiceCredit(r.Context(), id, prep.AttemptID)
+		jsonStatus(w, r, http.StatusBadGateway, "站点地址未配置，请管理员在后台「站点设置」填写站点地址")
+		return
+	}
 	notifyURL := base + "/pay/notify?" + url.Values{"code": {code}}.Encode()
 	// 微信 APIv3 不允许回调地址携带查询参数，由驱动自定义格式。
 	if nb, ok := impl.(gateway.NotifyURLBuilder); ok {
@@ -561,13 +568,11 @@ func (h *Pay) start(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		diff := newCents - oldCents
-		if diff < 0 {
-			diff = -diff
-		}
-		// 容差 50 分（0.50 元）：覆盖正常风控浮动，拦截恶意改价
-		if diff > 50 {
+		// 只接受向上浮动（风控加价）；向下浮动一律拒绝：按更低金额核销等于平台自贴差价，
+		// 且"向下 0.5 元以内都放行"可被上游或中间人持续利用，方向必须收口。
+		if diff < 0 || diff > 50 {
 			_ = h.Payment.ReleaseInvoiceCredit(r.Context(), id, prep.AttemptID)
-			log.Printf("[payment] 网关 %s 账单 %s 上游金额浮动超容差: 请求=%s 上游=%s", code, no, prep.Payable, payResult.Amount)
+			log.Printf("[payment] 网关 %s 账单 %s 上游金额浮动异常（仅接受向上 0.50 元以内）: 请求=%s 上游=%s", code, no, prep.Payable, payResult.Amount)
 			jsonStatus(w, r, http.StatusBadGateway, "上游返回金额超出正常范围，请稍后重试")
 			return
 		}

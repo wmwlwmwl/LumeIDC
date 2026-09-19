@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
 	"testing"
 	"time"
@@ -351,5 +352,102 @@ func TestCreateOrderSkipsNewUserPromotionForExistingUser(t *testing.T) {
 	}
 	if amount != "100.00" {
 		t.Fatalf("应按原价 100.00 下单（而非活动价 1.00），实得 %s", amount)
+	}
+}
+
+// coupon_giveaway 活动发放的专属券不可用（未领取/已用完/已过期）时必须按原价继续下单：
+// 旧实现直接返回优惠码校验错误，导致挂了该活动的商品对该用户永久无法下单
+// （专属券 usage_limit=1，用户用掉一次后就再也买不了）。
+func TestCreateOrderFallsBackWhenGiveawayCouponUnavailable(t *testing.T) {
+	d := testDB(t)
+	ctx := context.Background()
+	products := repo.NewProducts(d)
+	psID, err := products.DefaultPricesetID(ctx)
+	if err != nil {
+		t.Skip("库中暂无价格组，跳过")
+	}
+	suffix := time.Now().Format("150405.000000000")
+	var uid, typeID, pid, promoID, tplCouponID int64
+	if err := d.QueryRowContext(ctx,
+		`INSERT INTO users(email,password_hash) VALUES($1,'x') RETURNING id`,
+		"giveaway-"+suffix+"@example.invalid").Scan(&uid); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.QueryRowContext(ctx,
+		`INSERT INTO product_types(name) VALUES('单元测试-发券活动') RETURNING id`).Scan(&typeID); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.QueryRowContext(ctx,
+		`INSERT INTO products(type_id,name,stock,requires_identity) VALUES($1,'单元测试-发券活动商品',-1,false) RETURNING id`,
+		typeID).Scan(&pid); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.ExecContext(ctx,
+		`INSERT INTO product_prices(product_id,priceset_id,monthly,quarterly,yearly) VALUES($1,$2,100,0,0)`,
+		pid, psID); err != nil {
+		t.Fatal(err)
+	}
+	// 活动模板券：用户「领取」后才会生成 PROMO_{活动}_{用户} 的专属码，本用例刻意不领取。
+	if err := d.QueryRowContext(ctx,
+		`INSERT INTO coupons(code,type,value,min_amount,usage_limit,active) VALUES($1,'fixed',30,0,0,true) RETURNING id`,
+		"单元测试-模板券-"+suffix).Scan(&tplCouponID); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.QueryRowContext(ctx,
+		`INSERT INTO promotions(name,type,starts_at,ends_at,enabled,limit_per_user)
+		 VALUES('单元测试-发券活动','coupon_giveaway',now()-interval '1 day',now()+interval '1 day',true,0) RETURNING id`).
+		Scan(&promoID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.ExecContext(ctx,
+		`INSERT INTO promotion_products(promotion_id,product_id,priceset_id,cycle,rules)
+		 VALUES($1,$2,$3,'monthly',$4::jsonb)`, promoID, pid, psID, fmt.Sprintf(`{"coupon_id":%d}`, tplCouponID)); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx := context.Background()
+		for _, q := range []struct {
+			query string
+			arg   int64
+		}{
+			{`DELETE FROM invoices WHERE user_id=$1`, uid},
+			{`DELETE FROM orders WHERE user_id=$1`, uid},
+			{`DELETE FROM promotions WHERE id=$1`, promoID},
+			{`DELETE FROM coupons WHERE id=$1`, tplCouponID},
+			{`DELETE FROM product_prices WHERE product_id=$1`, pid},
+			{`DELETE FROM products WHERE id=$1`, pid},
+			{`DELETE FROM product_types WHERE id=$1`, typeID},
+			{`DELETE FROM users WHERE id=$1`, uid},
+		} {
+			if _, err := d.ExecContext(ctx, q.query, q.arg); err != nil {
+				t.Errorf("清理测试数据失败(%s): %v", q.query, err)
+			}
+		}
+	})
+
+	orders := &Orders{db: d, Products: products,
+		Promotion: NewPromotionService(d, repo.NewPromotions(d), repo.NewCoupons(d))}
+
+	// 夹具前提自检：必须真的命中 coupon_giveaway 活动，且专属码确实不存在。
+	// 少了这两条，活动没命中（ap=nil）时用例同样会通过，等于没覆盖修复的分支。
+	ap, apErr := orders.Promotion.ActivePromotionFor(ctx, pid, psID, "monthly")
+	if apErr != nil || ap == nil || ap.Type != "coupon_giveaway" {
+		t.Fatalf("夹具前提不成立：应命中 coupon_giveaway 活动，实得 ap=%+v err=%v", ap, apErr)
+	}
+	var couponExists bool
+	if err := d.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM coupons WHERE code=$1)`,
+		fmt.Sprintf("PROMO_%d_%d", promoID, uid)).Scan(&couponExists); err != nil {
+		t.Fatal(err)
+	}
+	if couponExists {
+		t.Fatal("夹具前提不成立：专属券不应存在（本用例模拟未领取）")
+	}
+
+	_, _, amount, err := orders.CreateOrder(ctx, uid, pid, psID, "monthly", map[string]string{}, "")
+	if err != nil {
+		t.Fatalf("专属券不可用时应按原价下单，实得错误: %v", err)
+	}
+	if amount != "100.00" {
+		t.Fatalf("应按原价 100.00 下单，实得 %s", amount)
 	}
 }
