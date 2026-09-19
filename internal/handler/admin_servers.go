@@ -220,7 +220,7 @@ func (s *AdminServers) Delete(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, map[string]any{"ok": 0, "msg": err.Error()})
 			return
 		}
-		http.Redirect(w, r, "/admin/servers?err="+err.Error(), http.StatusSeeOther)
+		http.Redirect(w, r, "/admin/servers?err="+url.QueryEscape(err.Error()), http.StatusSeeOther)
 		return
 	}
 	if wantsJSON(r) {
