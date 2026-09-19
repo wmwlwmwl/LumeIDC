@@ -26,14 +26,25 @@ func writeJSON(w http.ResponseWriter, v any) {
 // 直接 jsonFail(err.Error()) 等于把上游面板地址下发给普通用户，与本项目
 // 「上游地址/令牌不下发浏览器」的设计目标（见 user_vnc.go 顶部说明）直接冲突。
 //
-// 只有明确的中性业务结论原样透传；其余统一笼统文案，原文经 log 留在服务端供排查。
-// 新增「可展示」的错误时，优先在 service 层定义哨兵并加到这里，而不是放开原文。
+// 判据不能只看「是不是我们写的错误类型」——本地业务错误（"商品已售罄"、"服务正在处理中"、
+// "未选择操作系统"）也必须原样告诉用户，否则用户不知道该怎么处理。这里用**是否包装了底层原因**
+// 区分两类错误：
+//   - 带 `%w`（errors.Unwrap 非 nil）：消息里混了上游/网络/DB 细节 → 只记日志、对外收敛；
+//   - 无包装：本仓自己编写的业务文案 → 原样展示（这些文案不含地址/密钥）。
+//
+// 新增「可展示」的错误时，优先在 service 层定义哨兵并加进上面的白名单。
 func consoleErrMsg(err error) string {
+	if err == nil {
+		return ""
+	}
 	switch {
 	case errors.Is(err, server.ErrNotSupported), // 该上游不支持此操作
 		errors.Is(err, service.ErrNoUpstream),           // 该服务未绑定上游
 		errors.Is(err, service.ErrServiceUnavailable),   // 服务不存在或不可操作
 		errors.Is(err, service.ErrUpstreamPriceChanged): // 商品价格已更新，请重新确认
+		return err.Error()
+	}
+	if errors.Unwrap(err) == nil {
 		return err.Error()
 	}
 	log.Printf("[console] 上游操作失败: %v", err)

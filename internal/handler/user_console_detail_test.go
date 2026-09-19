@@ -22,7 +22,7 @@ import (
 	"lumeidc/internal/service"
 )
 
-// consoleErrMsg 必须把带内网地址的上游错误收敛掉，只透传中性业务结论。
+// consoleErrMsg 必须把带内网地址的上游错误收敛掉，同时不能吞掉本仓自己的业务文案。
 func TestConsoleErrMsgHidesUpstreamAddress(t *testing.T) {
 	// 上游 *url.Error 会打印完整请求 URL（含面板域名与已签名查询串）：不能下发到浏览器。
 	upstream := fmt.Errorf("%s 请求失败: %w", "/api/host/list", &url.Error{
@@ -49,6 +49,20 @@ func TestConsoleErrMsgHidesUpstreamAddress(t *testing.T) {
 	} {
 		if got := consoleErrMsg(err); got != err.Error() {
 			t.Errorf("业务性拒绝应原样透传: %v → %q", err, got)
+		}
+	}
+
+	// 无包装的本地业务文案（order.go / provider 里手写的那些）必须原样透传：
+	// 它们不含地址密钥，吞掉会让用户完全不知道该怎么处理。
+	for _, msg := range []string{
+		"商品已售罄",
+		"服务正在处理中，请稍后再试",
+		"该产品未配置月付价格",
+		"服务已到期，请先续费后再升降级",
+		"未选择操作系统",
+	} {
+		if got := consoleErrMsg(errors.New(msg)); got != msg {
+			t.Errorf("本地业务文案被吞掉: %q → %q", msg, got)
 		}
 	}
 }

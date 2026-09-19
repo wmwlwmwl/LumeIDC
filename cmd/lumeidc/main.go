@@ -44,13 +44,16 @@ func runInstaller(version string) {
 	mux.HandleFunc("GET /install", handler.InstallPage)
 	addr := installListenAddr()
 	// 与正式服务同样设超时：安装向导同样对外监听，缺超时会被慢连接长期占用。
-	// WriteTimeout 放宽到 120s——安装请求里要跑完全部迁移与建管理员，慢盘上可能超过 60s。
+	// WriteTimeout 必须远大于正式服务：POST /install 会在**响应写出之前**跑完全部迁移、
+	// 建管理员、写 config.yaml。这个流程不是幂等的——响应被超时切断后重试会撞
+	// 「管理员已存在」而卡在半装状态，故给足 10 分钟（只用于兜住真正的挂死，
+	// 防慢连接靠的是 ReadHeaderTimeout）。
 	srv := &http.Server{
 		Addr:              addr,
 		Handler:           middleware.Recover(mux),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      120 * time.Second,
+		WriteTimeout:      10 * time.Minute,
 		IdleTimeout:       120 * time.Second,
 	}
 	sigCh := make(chan os.Signal, 1)
