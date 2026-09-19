@@ -490,6 +490,35 @@ func TestFulfillmentFailureReleasesAdmission(t *testing.T) {
 	}
 }
 
+// 取锁失败与领取权失效都发生在触及上游之前，必须退回 retry：
+// 留 running 会在租约到期后被 recoverExpired 判成「上游结果未知」隔离。
+func TestFulfillmentLockFailureRetriesInsteadOfLeavingRunning(t *testing.T) {
+	for _, tc := range []struct{ name, stage string }{
+		{"取锁查询报错", "pg_try_advisory_lock"},
+		{"领取权校验查询报错", "SELECT EXISTS(SELECT 1 FROM fulfillment_jobs WHERE id="},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, memory, _ := newFulfillmentMemory(t, 1)
+			failure := errors.New("受控数据库失败")
+			memory.hook = func(_ context.Context, query string, _ bool) error {
+				if strings.Contains(query, tc.stage) {
+					return failure
+				}
+				return nil
+			}
+			worked, err := f.ProcessOne(context.Background())
+			if !worked || !errors.Is(err, failure) {
+				t.Fatalf("真实故障仍须上报：worked=%v err=%v", worked, err)
+			}
+			memory.mu.Lock()
+			defer memory.mu.Unlock()
+			if got := memory.results[1]; got != "retry" {
+				t.Fatalf("未触及上游的失败必须退回 retry，实得 %q（留 running 会被误判为上游结果未知）", got)
+			}
+		})
+	}
+}
+
 func TestFulfillmentBudgetStartsBeforeClaim(t *testing.T) {
 	f, memory, _ := newFulfillmentMemory(t, 1)
 	var workDeadline time.Time

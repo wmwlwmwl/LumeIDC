@@ -58,16 +58,15 @@ func (f *Fulfillment) processOne(ctx context.Context) (bool, error) {
 	conn, unlock, err := f.Jobs.TryExecutionLock(opCtx, job.ServiceID)
 	if err != nil {
 		// 未触及上游，原领取原地延后；不持连接等待执行者退出。
-		if errors.Is(err, repo.ErrFulfillmentBusy) {
-			writeCtx, stop := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
-			defer stop()
-			return true, f.Jobs.RetryLater(writeCtx, job, err, time.Minute)
-		}
-		return true, err
+		// 除 busy 外的取锁失败（连接池耗尽、锁查询报错）同样必须退回 retry：
+		// 留 running 会在租约到期后被 recoverExpired 判为「上游结果未知」而隔离，
+		// 逼管理员去对账一件根本没发出去的上游请求。
+		return true, f.deferClaim(ctx, job, err)
 	}
 	defer unlock()
 	if err := f.Jobs.ValidateClaim(opCtx, conn, job); err != nil {
-		return true, err
+		// 同上：领取权失效或校验查询失败时上游一步都没走，按重试处理而非留 running。
+		return true, f.deferClaim(ctx, job, err)
 	}
 	switch job.Kind {
 	case "provision":
@@ -129,6 +128,29 @@ func (f *Fulfillment) processOne(ctx context.Context) (bool, error) {
 		return true, err
 	}
 	return true, f.Jobs.Complete(ctx, job)
+}
+
+// deferClaim 把「尚未触及上游」的失败退回 retry，避免误判为「上游结果未知」。
+//
+// 留 running 的任务会在租约（3 分钟）到期后被 recoverExpired 隔离成 manual_review +
+// recovery_required，管理员看到的是「请核对上游账单和实例，禁止直接重试」——但对
+// 取锁失败、领取权失效这类错误，上游一步都没走，属于纯误判。
+//
+// 返回值沿用原契约：真实故障原样上报（调用方据此记日志，不能吞掉 DB 错误）；
+// 仅 busy 返回 nil——同一服务有执行者/恢复/退款在跑是常态，不该刷错误日志。
+// 退回动作本身失败（DB 不可用、领取权已失效）时只能上报原因，此时已无更安全的写入口。
+func (f *Fulfillment) deferClaim(ctx context.Context, job *repo.FulfillmentJob, cause error) error {
+	writeCtx, stop := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer stop()
+	if err := f.Jobs.RetryLater(writeCtx, job, cause, time.Minute); err != nil {
+		log.Printf("[fulfillment] 任务 %d 退回重试失败，租约到期后会被当作「上游结果未知」隔离: %v（原因: %v）",
+			job.ID, err, cause)
+		return cause
+	}
+	if errors.Is(cause, repo.ErrFulfillmentBusy) {
+		return nil
+	}
+	return cause
 }
 
 func (f *Fulfillment) isEasyPanelRenew(ctx context.Context, job *repo.FulfillmentJob) bool {
