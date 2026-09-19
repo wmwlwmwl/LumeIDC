@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/md5"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -59,6 +60,23 @@ func (Epay) ValidateConfig(cfg map[string]string) error {
 	return nil
 }
 
+// sanitizeURLError 去掉传输错误里 URL 的查询串。
+//
+// 易支付查单按上游协议把商户密钥放在查询串（无法改），而 *url.Error 会打印完整 URL，
+// 直接 %w 上抛会把密钥写进服务端日志与管理员告警邮件。保留 scheme://host/path 便于排查，
+// 只丢弃查询串。
+func sanitizeURLError(err error) error {
+	var uerr *url.Error
+	if !errors.As(err, &uerr) {
+		return err
+	}
+	if u, perr := url.Parse(uerr.URL); perr == nil && u.RawQuery != "" {
+		u.RawQuery = ""
+		uerr.URL = u.String()
+	}
+	return uerr
+}
+
 // QueryOrder queries an order without changing local state. The caller must
 // still validate the returned order number and amount before marking it paid.
 func (Epay) QueryOrder(ctx context.Context, req QueryOrderRequest) (QueryOrderResult, error) {
@@ -79,7 +97,7 @@ func (Epay) QueryOrder(ctx context.Context, req QueryOrderRequest) (QueryOrderRe
 	}
 	resp, err := epayHTTPClient.Do(httpReq)
 	if err != nil {
-		return QueryOrderResult{}, fmt.Errorf("请求易支付订单查询失败: %w", err)
+		return QueryOrderResult{}, fmt.Errorf("请求易支付订单查询失败: %w", sanitizeURLError(err))
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))

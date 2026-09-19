@@ -1,7 +1,9 @@
 package gateway
 
 import (
+	"context"
 	"net/url"
+	"strings"
 	"testing"
 )
 
@@ -47,6 +49,24 @@ func TestVerifyNotify(t *testing.T) {
 	params["money"] = "0.01" // 篡改金额
 	if _, _, ok := verifyEpaySign(params, key); ok {
 		t.Fatal("篡改后签名应校验失败")
+	}
+}
+
+// TestEpayQueryOrderErrorHidesKey 覆盖「查单报错不得带商户密钥」：
+// 易支付按上游协议把 key 放在查询串，而 *url.Error 会打印完整 URL，
+// 直接 %w 上抛会把密钥写进服务端日志与管理员告警邮件。
+func TestEpayQueryOrderErrorHidesKey(t *testing.T) {
+	const key = "should-never-appear-in-errors"
+	// 127.0.0.1:1 必然拒绝连接，走到传输错误分支。
+	_, err := (Epay{}).QueryOrder(context.Background(), QueryOrderRequest{
+		InvoiceNo: "INV20260826abcdef",
+		Config:    map[string]string{"api_url": "http://127.0.0.1:1", "pid": "1001", "key": key},
+	})
+	if err == nil {
+		t.Fatal("连接失败应返回错误")
+	}
+	if strings.Contains(err.Error(), key) {
+		t.Fatalf("查单报错泄露商户密钥: %v", err)
 	}
 }
 
