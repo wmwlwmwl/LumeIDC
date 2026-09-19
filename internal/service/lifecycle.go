@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -848,7 +849,14 @@ func (lc *Lifecycle) SyncUpstreamStatus(ctx context.Context) {
 		return
 	}
 	defer func() {
-		_, _ = conn.ExecContext(context.Background(), `SELECT pg_advisory_unlock(hashtext($1))`, leaseKey)
+		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		// 解锁失败必须弃用连接。上面注释担心的「锁泄漏后 try_lock 永远失败、同步静默停摆」
+		// 正是解锁报错却把仍持有锁的连接归还连接池导致的；ErrBadConn 让 database/sql
+		// 真正关掉会话，由 PostgreSQL 释放锁，下轮同步即可照常运行。
+		if _, err := conn.ExecContext(cleanup, `SELECT pg_advisory_unlock(hashtext($1))`, leaseKey); err != nil {
+			_ = conn.Raw(func(any) error { return driver.ErrBadConn })
+		}
 		_ = conn.Close()
 	}()
 

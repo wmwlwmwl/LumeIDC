@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"fmt"
 	"io/fs"
 	"sort"
@@ -53,7 +54,17 @@ func Migrate(ctx context.Context, d *sql.DB, migrations fs.FS) error {
 	if !gotLock {
 		return fmt.Errorf("另一个迁移进程正在运行")
 	}
-	defer conn.ExecContext(context.Background(), `SELECT pg_advisory_unlock(hashtext('lumeidc_migrate'))`)
+	// 解锁同样要绑定专用连接，且失败时必须让连接作废：手动解锁落空（如报错/超时）
+	// 时若把仍持有锁的连接归还连接池，后续任何迁移尝试都会一直得到
+	// 「另一个迁移进程正在运行」。ErrBadConn 让 database/sql 真正关掉会话，
+	// 会话断开即由 PostgreSQL 释放 advisory lock。
+	defer func() {
+		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if _, err := conn.ExecContext(cleanup, `SELECT pg_advisory_unlock(hashtext('lumeidc_migrate'))`); err != nil {
+			_ = conn.Raw(func(any) error { return driver.ErrBadConn })
+		}
+	}()
 
 	if _, err := d.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())`); err != nil {
 		return err
