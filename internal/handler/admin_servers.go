@@ -75,7 +75,10 @@ func (s *AdminServers) Form(w http.ResponseWriter, r *http.Request) {
 		}
 		serverRow = sv
 		payload["values"] = map[string]string{
-			"api_url": sv.APIURL, "api_username": sv.APIUsername, "api_key": sv.APIKey,
+			"api_url": sv.APIURL, "api_username": sv.APIUsername,
+			// 上游密钥不回显：provider 声明里该字段是 Secret，本意不下发浏览器。
+			// 表单据此留空提交，由 Save 按"保持不变"处理（与后台其他账号类密钥一致）。
+			"api_key": "",
 		}
 	}
 	provs := make([]map[string]any, 0)
@@ -189,6 +192,16 @@ func (s *AdminServers) Save(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		sv.ID, _ = strconv.ParseInt(idStr, 10, 64)
+		// 上游密钥不回显（见 Form），表单留空表示"保持不变"：直接按空值写回，
+		// 管理员改个名称就会把上游凭据清空、整台服务器失联。读不到原值宁可不保存。
+		if sv.APIKey == "" {
+			cur, gerr := s.Servers.Get(r.Context(), sv.ID)
+			if gerr != nil {
+				fail("读取原上游凭据失败，请重试")
+				return
+			}
+			sv.APIKey = cur.APIKey
+		}
 		if err := s.Servers.Update(r.Context(), sv); err != nil {
 			fail(err.Error())
 			return

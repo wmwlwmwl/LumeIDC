@@ -73,7 +73,8 @@ async function save() {
     return
   }
   for (const f of credFields.value) {
-    if (f.required && !String(form[f.name] || '').trim()) {
+    // 编辑已有服务器时密钥后端不回显，留空表示"保持不变"，不能按必填拦下。
+    if (f.required && !(id.value && f.secret) && !String(form[f.name] || '').trim()) {
       ElMessage.warning(`请填写${f.label}`)
       return
     }
@@ -129,7 +130,7 @@ async function save() {
               v-model="form[f.name]"
               :type="f.secret ? 'password' : 'text'"
               :show-password="f.secret"
-              :placeholder="f.placeholder || ''"
+              :placeholder="f.secret && id ? '留空保持不变' : (f.placeholder || '')"
               :autocomplete="f.secret ? 'new-password' : 'off'"
             />
           </el-form-item>
