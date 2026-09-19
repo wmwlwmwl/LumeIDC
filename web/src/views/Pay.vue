@@ -20,8 +20,17 @@ let generation = 0
 let disposed = false
 let polling = false
 let pollCount = 0
-const MAX_POLLS = 60
 let paused = false
+// 轮询节奏：先密后疏。支付多在一两分钟内完成，之后拉长间隔——
+// 既不会像「到点就停」那样漏掉迟到的支付（钱付了页面仍会自动跳转），
+// 也不让长期打开且可见的页面一直按 4s 打后端。
+const POLL_FAST_UNTIL = 30 // 前 30 次（约 2 分钟）：4s
+const POLL_MID_UNTIL = 60  // 其后 30 次：15s
+function pollDelay(attempts: number): number {
+  if (attempts < POLL_FAST_UNTIL) return 4000
+  if (attempts < POLL_MID_UNTIL) return 15000
+  return 30000
+}
 const gatewayList = computed(() => (Array.isArray(data.value?.gateways) ? data.value.gateways : []))
 
 // 组合支付：余额先抵扣，剩余本金走在线支付，手续费只按在线本金收取。
@@ -68,17 +77,13 @@ function clearRedirect() {
 
 function schedulePolling(id: number, version: number) {
   if (!isCurrent(id, version) || loading.value || busy.value || !data.value || data.value.paid || data.value.expired) return
+  // 页签隐藏时不打后端；回到前台由 visibilitychange 立即补一次。
   if (paused) return
-  if (pollCount >= MAX_POLLS) {
-    stopPolling()
-    ElMessage.warning('支付状态查询超时，如已完成支付请刷新页面或前往账单列表查看')
-    return
-  }
   stopPolling()
   timer = setTimeout(() => {
     timer = null
     void pollPaid(id, version)
-  }, 4000)
+  }, pollDelay(pollCount))
 }
 
 async function load() {
