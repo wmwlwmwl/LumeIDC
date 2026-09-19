@@ -13,6 +13,23 @@ import (
 	"time"
 )
 
+// 易支付 payment_mode 配置值
+const (
+	epayModeRedirect = "redirect" // 默认：submit.php 跳转托管页
+	epayModeQRCode   = "qrcode"   // mapi.php API 模式，返回二维码渲染到本地结算页
+)
+
+// epayHTTPClient 包级单例，复用连接池。外层 QueryOrder 已有 context.WithTimeout(15s)，
+// 这里 20s 作为兜底上限（ctx 先到期就先取消）。
+var epayHTTPClient = &http.Client{
+	Timeout: 20 * time.Second,
+	Transport: &http.Transport{
+		MaxIdleConns:        20,
+		MaxIdleConnsPerHost: 10,
+		IdleConnTimeout:     30 * time.Second,
+	},
+}
+
 // Epay 实现易支付（彩虹易支付）标准提交协议：md5 签名、GET 跳转。
 type Epay struct{}
 
@@ -27,6 +44,11 @@ type epayOrder struct {
 
 func (Epay) Driver() string { return "epay" }
 func (Epay) Name() string   { return "易支付" }
+
+// CheckoutPath 声明易支付可使用本地二维码结算页。
+// 实际是否走本地结算页由 PayURL 内部按 payment_mode 决定，
+// 实现此接口仅让 /pay/qr 的安全校验放行对应账单。
+func (Epay) CheckoutPath() string { return LocalCheckoutPath }
 
 // ValidateConfig 易支付启用前必须配置完整的商户凭据，避免空密钥导致验签失效；
 // 支付渠道同为下单必填项（submit.php 的 type），缺失时能启用但用户点支付必失败。
@@ -55,7 +77,7 @@ func (Epay) QueryOrder(ctx context.Context, req QueryOrderRequest) (QueryOrderRe
 	if err != nil {
 		return QueryOrderResult{}, err
 	}
-	resp, err := http.DefaultClient.Do(httpReq)
+	resp, err := epayHTTPClient.Do(httpReq)
 	if err != nil {
 		return QueryOrderResult{}, fmt.Errorf("请求易支付订单查询失败: %w", err)
 	}
@@ -77,14 +99,19 @@ func (Epay) QueryOrder(ctx context.Context, req QueryOrderRequest) (QueryOrderRe
 	return QueryOrderResult{TradeNo: order.TradeNo, OutTradeNo: order.OutTradeNo, Amount: order.Money, Paid: order.Status == 1}, nil
 }
 
-func (Epay) PayURL(ctx context.Context, req PayRequest) (string, error) {
+func (Epay) PayURL(ctx context.Context, req PayRequest) (PayResult, error) {
 	api := req.Config["api_url"]
 	pid := req.Config["pid"]
 	key := req.Config["key"]
 	channel := req.Config["channel"]
 	if api == "" || pid == "" || key == "" || channel == "" {
-		return "", fmt.Errorf("易支付未配置完整（需要 api_url/pid/key/channel）")
+		return PayResult{}, fmt.Errorf("易支付未配置完整（需要 api_url/pid/key/channel）")
 	}
+	mode := strings.TrimSpace(req.Config["payment_mode"])
+	if mode == epayModeQRCode {
+		return epayQRCodePayURL(ctx, api, pid, key, channel, req)
+	}
+	// 默认 redirect：submit.php 跳转托管页
 	params := map[string]string{
 		"pid":          pid,
 		"type":         channel,
@@ -103,10 +130,104 @@ func (Epay) PayURL(ctx context.Context, req PayRequest) (string, error) {
 	q.Set("sign", md5Sign(q, key))
 	q.Set("sign_type", "MD5")
 	api = strings.TrimRight(api, "/")
-	return api + "/submit.php?" + q.Encode(), nil
+	return PayResult{URL: api + "/submit.php?" + q.Encode()}, nil
 }
 
-func (e Epay) VerifyNotify(params map[string]string, cfg map[string]string) (NotifyResult, error) {
+// epayQRCodePayURL 调用 mapi.php API 获取二维码内容，返回本地结算页路径。
+// 对齐 sub2api 的 EasyPay.createAPIPayment：解析 qrcode 用于渲染，
+// 解析 money 用于风控浮动后的实际支付金额（部分易支付分支会调整）。
+func epayQRCodePayURL(ctx context.Context, api, pid, key, channel string, req PayRequest) (PayResult, error) {
+	params := map[string]string{
+		"pid":          pid,
+		"type":         channel,
+		"out_trade_no": req.InvoiceNo,
+		"notify_url":   req.NotifyURL,
+		"return_url":   req.ReturnURL,
+		"name":         req.Title,
+		"money":        req.Amount,
+	}
+	q := url.Values{}
+	for k, v := range params {
+		if v != "" {
+			q.Set(k, v)
+		}
+	}
+	q.Set("sign", md5Sign(q, key))
+	q.Set("sign_type", "MD5")
+	api = strings.TrimRight(api, "/")
+	endpoint := api + "/mapi.php"
+
+	requestCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	httpReq, err := http.NewRequestWithContext(requestCtx, http.MethodPost, endpoint, strings.NewReader(q.Encode()))
+	if err != nil {
+		return PayResult{}, fmt.Errorf("易支付 mapi 请求构造失败: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := epayHTTPClient.Do(httpReq)
+	if err != nil {
+		return PayResult{}, fmt.Errorf("请求易支付 mapi 失败: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return PayResult{}, fmt.Errorf("读取易支付 mapi 响应失败: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return PayResult{}, fmt.Errorf("易支付 mapi 返回 HTTP %d", resp.StatusCode)
+	}
+	var mapiResp struct {
+		Code   int    `json:"code"`
+		Msg    string `json:"msg"`
+		QRCode string `json:"qrcode"`
+		Money  string `json:"money"`
+	}
+	if err := json.Unmarshal(body, &mapiResp); err != nil {
+		return PayResult{}, fmt.Errorf("易支付 mapi 响应解析失败: %w", err)
+	}
+	if mapiResp.Code != 1 {
+		msg := strings.TrimSpace(mapiResp.Msg)
+		if msg == "" {
+			msg = "未知错误"
+		}
+		return PayResult{}, fmt.Errorf("易支付 mapi 下单失败: %s", msg)
+	}
+	qrText := strings.TrimSpace(mapiResp.QRCode)
+	if qrText == "" {
+		return PayResult{}, fmt.Errorf("易支付 mapi 未返回二维码内容")
+	}
+	qrText = resolveEpayRelativeRef(api, qrText)
+	result := PayResult{URL: LocalCheckoutPath + "?invoice=" + url.QueryEscape(req.InvoiceNo) + "&data=" + url.QueryEscape(qrText)}
+	// 部分易支付分支为风控会对金额做微小浮动（如 10.00 → 10.01），
+	// 这里把实际金额带回去让调用方更新 payment_attempts.amount，
+	// 否则回调时 equalAmount 对不上会导致核销失败。
+	if money := strings.TrimSpace(mapiResp.Money); money != "" {
+		result.Amount = money
+	}
+	return result, nil
+}
+
+// resolveEpayRelativeRef 将 mapi.php 返回的以 "/" 开头的相对路径解析为绝对 URL。
+// 部分易支付分支返回相对路径（如 "/api/pay/toapp/xxx"），直接渲染会变成无效二维码。
+// 以 scheme 开头的（https://、weixin://、alipays://）已经可用，原样返回。
+func resolveEpayRelativeRef(apiBase, ref string) string {
+	trimmed := strings.TrimSpace(ref)
+	if !strings.HasPrefix(trimmed, "/") {
+		return ref
+	}
+	base, err := url.Parse(strings.TrimSpace(apiBase))
+	if err != nil || base.Scheme == "" || base.Host == "" {
+		return ref
+	}
+	parsed, err := url.Parse(trimmed)
+	if err != nil || parsed.Scheme != "" {
+		return ref
+	}
+	return base.ResolveReference(parsed).String()
+}
+
+func (e Epay) VerifyNotify(req NotifyRequest, cfg map[string]string) (NotifyResult, error) {
+	params := req.Params
 	invoiceNo, tradeNo, ok := verifyEpaySign(params, cfg["key"])
 	if !ok {
 		return NotifyResult{}, fmt.Errorf("易支付回调签名校验失败")

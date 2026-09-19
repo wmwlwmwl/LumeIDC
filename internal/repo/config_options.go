@@ -94,16 +94,16 @@ func (p *Products) GetConfigOptions(ctx context.Context, productID int64) ([]Con
 }
 
 // ConfigOptionsByProducts 批量读取产品配置选项 JSON（列表页批量计价用）。
-// 缺失或解析失败的产品不在结果中，调用方按空选项处理（与逐条 GetConfigOptions 出错语义一致）。
-func (p *Products) ConfigOptionsByProducts(ctx context.Context, ids []int64) map[int64][]ConfigOption {
+// DB 查询整体失败时返回 error；单行 Scan/JSON 失败时跳过该产品（降级）。
+func (p *Products) ConfigOptionsByProducts(ctx context.Context, ids []int64) (map[int64][]ConfigOption, error) {
 	out := make(map[int64][]ConfigOption, len(ids))
 	if len(ids) == 0 {
-		return out
+		return out, nil
 	}
 	rows, err := p.db.QueryContext(ctx,
 		`SELECT id, configoption FROM products WHERE id = ANY($1)`, ids)
 	if err != nil {
-		return out
+		return nil, err
 	}
 	defer rows.Close()
 	for rows.Next() {
@@ -121,7 +121,7 @@ func (p *Products) ConfigOptionsByProducts(ctx context.Context, ids []int64) map
 			out[id] = opts
 		}
 	}
-	return out
+	return out, rows.Err()
 }
 
 // SaveConfigOptions writes product configoption JSON.

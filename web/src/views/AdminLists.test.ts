@@ -5,13 +5,14 @@ import * as Vue from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as table from '../admin/useAdminTable'
 import * as labels from '../utils/admin-labels'
+import * as gatewayDrivers from '../admin/gateway-drivers'
 
 const messages = vi.hoisted(() => ({ error: vi.fn(), success: vi.fn(), warning: vi.fn() }))
 vi.mock('element-plus', () => ({ ElMessage: messages }))
 const sources = import.meta.glob('./Admin*.vue', { eager: true, query: '?raw', import: 'default' }) as Record<string, string>
 const api: Record<string, ReturnType<typeof vi.fn>> = {}
 const post = vi.fn()
-const route = Vue.reactive({ params: { id: '1' } })
+const route = Vue.reactive({ params: { id: '1' }, query: {} as Record<string, string> })
 const cases = [
   ['Orders', 'fetchOrders'], ['Users', 'fetchUsers'], ['Tickets', 'fetchAdminTickets'],
   ['Services', 'fetchAdminServices'], ['CancelRequests', 'fetchAdminCancelRequests'],
@@ -50,6 +51,9 @@ const components = Object.fromEntries(cases.map(([name]) => {
     },
     '@element-plus/icons-vue': {}, '../admin/api': api, '../admin/useAdminTable': table,
     '../http/index': { http: { post } }, '../utils/admin-labels': labels,
+    // AdminGateways 在 setup 阶段就会调 gatewayDriverList() 并读 GATEWAY_DRIVERS.mock.style，
+    // 这里直接给真实注册表，避免用空桩再炸一次。
+    '../admin/gateway-drivers': gatewayDrivers,
     '@/utils/clipboard': { copyText: vi.fn(async () => true) },
   }
   const component = new Function('require', 'exports', `const useRouter = () => ({ push() {} });\n${compiled}\nreturn Component`)((id: string) => {

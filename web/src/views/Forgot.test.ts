@@ -3,6 +3,7 @@ import { compileScript, parse } from '@vue/compiler-sfc'
 import ts from 'typescript'
 import * as Vue from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { hasCaptchaResult } from '../components/captcha-registry'
 
 const router = { push: vi.fn(async () => {}) }
 const api = {
@@ -28,6 +29,7 @@ const modules: Record<string, unknown> = {
   '@/components/phone/PhoneInput.vue': {},
   '../http/session': { useSession: () => ({ auth: { forgot_code_external: false, profile_code_external: false } }) },
   '../components/ExternalCaptcha.vue': {},
+  '../components/captcha-registry': { hasCaptchaResult },
 }
 const component = new Function('require', 'exports', `${compiled}\nreturn ForgotComponent`)((name: string) => {
   if (!(name in modules)) throw new Error(`未模拟的模块：${name}`)

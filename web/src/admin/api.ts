@@ -674,16 +674,16 @@ export interface CatalogRow {
 export async function fetchServerCatalog(
   serverId: number,
   fresh = false,
-): Promise<{ server: { id: number; name: string }; rows: CatalogRow[]; types: { id: number; name: string }[]; error?: string }> {
+ ): Promise<{ server: { id: number; name: string; provider?: string }; rows: CatalogRow[]; types: { id: number; name: string; parent_id?: number }[]; error?: string }> {
   const res = await http.get<{
     ok: number
-    server?: { id: number; name: string }
+    server?: { id: number; name: string; provider?: string }
     rows?: CatalogRow[]
     types?: { id: number; name: string }[]
     error?: string
   }>(`/servers/${serverId}/catalog`, fresh ? { fresh: '1' } : undefined)
   return {
-    server: (res.server || { id: serverId, name: '' }) as { id: number; name: string },
+    server: (res.server || { id: serverId, name: '' }) as { id: number; name: string; provider?: string },
     rows: (res.rows || []) as CatalogRow[],
     types: (res.types || []) as { id: number; name: string }[],
     error: res.error,
@@ -727,7 +727,15 @@ export interface AdminGateway {
   api_url: string
   pid?: string
   channel?: string
+  payment_mode?: string
+  mobile_qrcode?: string
   app_id?: string
+  mch_id?: string
+  api_v3_key?: string
+  cert_serial?: string
+  public_key_id?: string
+  h5_app_name?: string
+  h5_app_url?: string
   fee_percent: string
   enabled: boolean
   sort: number
@@ -735,6 +743,7 @@ export interface AdminGateway {
   has_key?: boolean
   has_private_key?: boolean
   has_public_key?: boolean
+  has_api_v3_key?: boolean
 }
 export async function fetchAdminGateways(): Promise<AdminGateway[]> {
   const res = await http.get<{ ok: number; list?: AdminGateway[] }>('/gateway')

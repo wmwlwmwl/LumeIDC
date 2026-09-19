@@ -33,6 +33,14 @@ const dark = computed(() => isPublicDark())
 const activeMenu = ref<'' | 'products' | 'notices' | 'other'>('')
 const userMenuOpen = ref(false)
 const mobileOpen = ref(false)
+// 活动导航入口：后端 /promotions 已过滤 enabled+未结束，list 有内容才显示
+const hasPromotions = ref(false)
+async function checkPromotions() {
+  try {
+    const res = await http.get<{ list?: unknown[] }>('/promotions')
+    hasPromotions.value = Array.isArray(res.list) && res.list.length > 0
+  } catch { /* 网络失败时保守隐藏 */ }
+}
 
 let closeTimer: ReturnType<typeof setTimeout> | null = null
 function openMenu(menu: 'products' | 'notices' | 'other') {
@@ -99,6 +107,7 @@ onMounted(() => {
   // 回到窗口时重取：离开期间可能已收到新消息，也可能已掉线（此时未读数归 0）。
   window.addEventListener('focus', onWindowFocus)
   void refreshUnreadNotifications()
+  void checkPromotions()
 })
 onUnmounted(() => window.removeEventListener('focus', onWindowFocus))
 // 登录/退出（含会话掉线后被置空）都重取未读数，避免残留上一身份的角标。
@@ -126,6 +135,7 @@ watch(() => session.user?.id, () => void refreshUnreadNotifications())
           <el-icon class="main-nav__arrow"><ArrowDown /></el-icon>
         </button>
         <RouterLink
+          v-if="hasPromotions"
           to="/promotions"
           class="main-nav__link"
           :class="{ 'is-active': route.path.startsWith('/promotion') }"
@@ -202,7 +212,7 @@ watch(() => session.user?.id, () => void refreshUnreadNotifications())
       <div v-if="mobileOpen" class="mobile-drawer">
         <RouterLink to="/" @click="mobileOpen = false">首页</RouterLink>
         <RouterLink to="/cart" @click="mobileOpen = false">产品与服务</RouterLink>
-        <RouterLink to="/promotions" @click="mobileOpen = false">营销活动</RouterLink>
+        <RouterLink v-if="hasPromotions" to="/promotions" @click="mobileOpen = false">营销活动</RouterLink>
         <RouterLink to="/notices" @click="mobileOpen = false">公告</RouterLink>
         <RouterLink v-if="session.user" to="/user" @click="mobileOpen = false">账户中心</RouterLink>
         <RouterLink v-if="session.user" to="/services" @click="mobileOpen = false">我的服务</RouterLink>

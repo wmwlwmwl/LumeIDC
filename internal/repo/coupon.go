@@ -91,6 +91,34 @@ func (c *Coupons) Use(ctx context.Context, tx *sql.Tx, couponID, userID, orderID
 	return err
 }
 
+// ReleaseByOrders 释放这批订单占用的优惠码（账单过期未支付时调用）：
+// 回退 used_count 并删除使用记录，使用户可以再次使用该券。
+// 调用方只应传入「本轮刚由未支付变为过期」的订单，故本方法可安全重复调用：
+// 计数与删除取自同一批记录，第二次调用已删不到行、也就减不到计数。
+// coupon_usages 没有唯一约束，幂等只能靠「按 order_id 删」这一条件保证。
+func (c *Coupons) ReleaseByOrders(ctx context.Context, tx *sql.Tx, orderIDs []int64) error {
+	if len(orderIDs) == 0 {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE coupons c SET used_count = GREATEST(c.used_count - s.cnt, 0)
+		 FROM (
+		    SELECT cu.coupon_id AS cid, count(*) AS cnt
+		      FROM coupon_usages cu
+		     WHERE cu.order_id = ANY($1)
+		       AND NOT EXISTS (SELECT 1 FROM invoices i2 WHERE i2.order_id=cu.order_id AND i2.status=1)
+		     GROUP BY cu.coupon_id
+		 ) s
+		 WHERE c.id = s.cid`, orderIDs); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx,
+		`DELETE FROM coupon_usages cu
+		  WHERE cu.order_id = ANY($1)
+		    AND NOT EXISTS (SELECT 1 FROM invoices i2 WHERE i2.order_id=cu.order_id AND i2.status=1)`, orderIDs)
+	return err
+}
+
 func (c *Coupons) List(ctx context.Context) ([]Coupon, error) {
 	rows, err := c.db.QueryContext(ctx,
 		`SELECT id,code,type,value,min_amount,expires_at,usage_limit,used_count,active FROM coupons ORDER BY id DESC`)

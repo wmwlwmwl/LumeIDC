@@ -14,9 +14,11 @@ const serverId = computed(() => Number(route.params.id))
 const loading = ref(false)
 const importing = ref(false)
 const serverName = ref('')
+const provider = ref('')
 const rows = ref<CatalogRow[]>([])
-const types = ref<{ id: number; name: string }[]>([])
+const types = ref<{ id: number; name: string; parent_id?: number }[]>([])
 const errMsg = ref('')
+const isEasyPanel = computed(() => provider.value === 'easypanel')
 
 const parentID = ref('')
 const profitType = ref('0')
@@ -81,6 +83,7 @@ async function load(fresh = false) {
     const d = await fetchServerCatalog(serverId.value, fresh)
     if (!isCurrent()) return
     serverName.value = d.server.name
+    provider.value = d.server.provider || ''
     rows.value = d.rows
     types.value = d.types
     errMsg.value = d.error || ''
@@ -100,7 +103,7 @@ function onSelectionChange(selection: CatalogRow[]) {
 
 async function doImport() {
   if (!parentID.value) {
-    ElMessage.warning('请选择导入目标一级分类')
+    ElMessage.warning(isEasyPanel.value ? '请选择已有二级目录' : '请选择导入目标一级分类')
     return
   }
   if (!selected.value.length) {
@@ -150,10 +153,15 @@ async function doImport() {
       <div class="admin-import-bar">
         <div class="admin-import-field">
           <span class="admin-import-label">导入分类</span>
-          <el-select v-model="parentID" placeholder="请选择目标一级分类" style="width: 240px">
-            <el-option v-for="t in types" :key="t.id" :value="String(t.id)" :label="`上游分组建为「${t.name}」下的二级分类`" />
+          <el-select v-model="parentID" :placeholder="isEasyPanel ? '请选择已有二级目录' : '请选择目标一级分类'" style="width: 280px">
+            <el-option
+              v-for="t in types"
+              :key="t.id"
+              :value="String(t.id)"
+              :label="isEasyPanel ? t.name : `上游分组建为「${t.name}」下的二级分类`"
+            />
           </el-select>
-          <span class="admin-import-hint">建议先在分类管理建好一级分类</span>
+          <span class="admin-import-hint">{{ isEasyPanel ? '直接挂到已存在的二级目录，不创建 EasyPanel 产品分组' : '建议先在分类管理建好一级分类' }}</span>
         </div>
 
         <div class="admin-import-field">
@@ -172,7 +180,7 @@ async function doImport() {
           <span class="admin-import-hint">导入的产品需通过实名才能购买/续费</span>
         </div>
 
-        <div class="admin-import-field admin-import-field-grow">
+        <div v-if="!isEasyPanel" class="admin-import-field admin-import-field-grow">
           <span class="admin-import-label">分类描述</span>
           <el-input
             v-model="desc"

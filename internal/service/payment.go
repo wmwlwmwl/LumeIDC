@@ -650,15 +650,25 @@ func (p *Payment) MarkPaid(ctx context.Context, invoiceNo, tradeNo, gatewayCode 
 	}
 	// 活动订单：查询 promotion_id 用于支付后统计
 	var promoID sql.NullInt64
+	var paidAmountFloat float64
 	if orderID > 0 {
-		tx.QueryRowContext(ctx, `SELECT promotion_id FROM orders WHERE id=$1`, orderID).Scan(&promoID)
+		if err := tx.QueryRowContext(ctx, `SELECT promotion_id FROM orders WHERE id=$1`, orderID).Scan(&promoID); err != nil {
+			return err
+		}
+		paidAmountFloat, _ = strconv.ParseFloat(paidAmount, 64)
+	}
+	// 累加活动统计入 tx：commit 成功才记统计，避免已开通但统计少记一笔
+	if promoID.Valid && p.Promotion != nil {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO promotion_stats(promotion_id,views,claimed,orders,paid_amount)
+			 VALUES($1,0,0,1,$2)
+			 ON CONFLICT(promotion_id) DO UPDATE SET orders=promotion_stats.orders+1, paid_amount=promotion_stats.paid_amount+EXCLUDED.paid_amount`,
+			promoID.Int64, paidAmountFloat); err != nil {
+			return err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return err
-	}
-	// 累加活动统计（支付成功后）
-	if promoID.Valid && p.Promotion != nil {
-		_ = p.Promotion.IncrOrderStats(ctx, promoID.Int64, paidAmount)
 	}
 	if p.TriggerFulfillment != nil {
 		p.TriggerFulfillment()
@@ -792,6 +802,13 @@ func frozenRenewValue(amount, quoteTotal, quoteSetup float64, profitType int16, 
 // fulfillOrderTx 订单账单核销：结账单/结束支付尝试/结束订单后，按订单种类完成
 // 升级（退差+标记升级中）/续费（延期）/新购（建服务）三分支并入队履约。
 func (p *Payment) fulfillOrderTx(ctx context.Context, tx *sql.Tx, a markPaidTx) (markPaidResult, error) {
+	// 同一用户的所有订单事务串行化（与 CreateOrder/CreateRenewOrder/CreateUpgradeOrder 共用同一 key）。
+	// 防止"订单创建"和"支付后开通"之间同一用户的活动订单交叉校验。
+	if _, err := tx.ExecContext(ctx,
+		`SELECT pg_advisory_xact_lock(hashtext($1))`, userOrderLockKey(a.userID)); err != nil {
+		return markPaidResult{}, fmt.Errorf("获取订单锁失败: %w", err)
+	}
+
 	var productID int64
 	var cycle string
 	var amountStr string
@@ -1183,7 +1200,9 @@ type errNotFound string
 func (e errNotFound) Error() string { return string(e) }
 
 // Refund 为已支付订单退款：校验金额上限后写入退款记录，并按方式退回用户余额（method=balance）。
-// gateway 方式仅记账（实际渠道退款由人工处理）。退款金额不得超 已付 - 已退。
+// method 以调用方指定为准：balance 退回用户余额（在线支付的账单同样退余额）；
+// gateway 仅记账，实际渠道退款由人工处理。余额支付的账单只能退余额。
+// 退款金额不得超 已付 - 已退。
 func (p *Payment) Refund(ctx context.Context, adminID, orderID int64, amount, reason, method string) error {
 	if amount == "" {
 		return fmt.Errorf("退款金额不能为空")
@@ -1239,10 +1258,11 @@ func (p *Payment) Refund(ctx context.Context, adminID, orderID int64, amount, re
 	if method != "balance" && method != "gateway" {
 		return fmt.Errorf("退款方式无效")
 	}
+	// 退款方式以调用方指定为准，只对余额支付的账单做强制约束（余额支付不存在渠道退款）。
+	// 不再按 invoices.gateway 把 balance 静默改写成 gateway：调用方（开通前退款/续费退款/升级退款）
+	// 以为钱已退回余额，随后却照常关单终止服务，会造成用户钱货两空。
 	if invGateway == "balance" {
 		method = "balance"
-	} else {
-		method = "gateway"
 	}
 	var refunded string
 	if err := tx.QueryRowContext(ctx,

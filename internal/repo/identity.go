@@ -289,7 +289,9 @@ func (s *IdentityStore) AdminSetPhone(ctx context.Context, userID int64, phone s
 		_, updateErr = tx.ExecContext(ctx, `UPDATE users SET phone_e164=$2,phone_verified_at=NULL,phone_updated_at=$3 WHERE id=$1`, userID, phone, now)
 	}
 	if updateErr != nil {
-		return false, err
+		// 必须返回 updateErr 本身：返回上面那个已为 nil 的 err 会让调用方收到 (false, nil)，
+		// 当成"无需变更"继续按成功回执，管理员被告知已保存而手机号其实没写进去。
+		return false, updateErr
 	}
 	if err := tx.Commit(); err != nil {
 		return false, err

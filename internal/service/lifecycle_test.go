@@ -217,7 +217,7 @@ func setupUpgradeFixture(t *testing.T, d *sql.DB) upgradeFixture {
 		fx.userID, fx.targetPid, psID, fx.svcID).Scan(&fx.orderID); err != nil {
 		t.Fatal(err)
 	}
-	// 已支付账单（Refund 据此校验"订单已付"，gateway=balance 才退回余额）。
+	// 已支付账单（Refund 据此校验"订单已付"；gateway=balance 表示余额支付）。
 	if _, err := d.ExecContext(ctx,
 		`INSERT INTO invoices(no,user_id,order_id,amount,status,gateway,paid_at)
 		 VALUES($1,$2,$3,'50.00',1,'balance',now())`,
@@ -437,6 +437,131 @@ func TestAdminUpgradeActions(t *testing.T) {
 			t.Fatalf("重复退款不应再动余额，%v → %v", before2, got)
 		}
 	})
+}
+
+// 上游同步的删除护栏。
+// 覆盖两个长期缺口：① 服务数不足 missBatchMin 的机器原先永远不触发护栏，
+// 上游整体异常时会被一次性全删；② 上游明确回终态时绕过连续确认直接删除，
+// 把一次抖动或接口异常（EasyPanel 的 500 曾正是如此）读成"实例已释放"。
+func TestSyncProbesGuardAndTerminalConfirmation(t *testing.T) {
+	d := mailTestDB(t) // 隔离 schema：含全部迁移（services.upstream_miss_count 等）
+	ctx := context.Background()
+	lc := &Lifecycle{db: d}
+	// 阈值压到 2 轮：验证的是"要连续确认"，不是默认的 20 轮。
+	mailExec(t, d, `INSERT INTO settings(key,value) VALUES('upstream_miss_threshold','2')`)
+	mailExec(t, d, `INSERT INTO users(email,password_hash) VALUES('sync@x.test','测试')`)
+	mailExec(t, d, `INSERT INTO products(name) VALUES('同步测试产品')`)
+	mailExec(t, d, `INSERT INTO servers(name) VALUES('三服务机器'),('单服务机器')`)
+	// 服务器 1 只有 3 个服务（不足 missBatchMin），服务器 2 只有 1 个。
+	mailExec(t, d, `INSERT INTO services(user_id,product_id,server_id,status,upstream_host_id)
+		SELECT 1,1,1,1,900+i FROM generate_series(1,3) AS s(i)`)
+	mailExec(t, d, `INSERT INTO services(user_id,product_id,server_id,status,upstream_host_id) VALUES(1,1,2,1,950)`)
+
+	state := func(id int64) (int16, int) {
+		t.Helper()
+		var status int16
+		var miss int
+		if err := d.QueryRow(`SELECT status,upstream_miss_count FROM services WHERE id=$1`, id).Scan(&status, &miss); err != nil {
+			t.Fatal(err)
+		}
+		return status, miss
+	}
+	// 服务器 1 整台（服务 1~3）+ 服务器 2 的单条服务一同探测，隔离"整台异常"与"单条删除"。
+	probes := func(status string) []syncProbe {
+		return []syncProbe{
+			{serviceID: 1, serverID: 1, status: status},
+			{serviceID: 2, serverID: 1, status: status},
+			{serviceID: 3, serverID: 1, status: status},
+			{serviceID: 4, serverID: 2, status: status},
+		}
+	}
+
+	lc.applySyncProbes(ctx, probes("terminated"))
+	for _, id := range []int64{1, 2, 3} {
+		if st, miss := state(id); st != 1 || miss != 0 {
+			t.Fatalf("小服务器整台缺失应被护栏拦下（status=1, miss=0），服务 %d 实得 status=%d miss=%d", id, st, miss)
+		}
+	}
+	if st, miss := state(4); st != 1 || miss != 1 {
+		t.Fatalf("明确终态不得由单次响应直接删除，单服务机器应累计一次缺失，实得 status=%d miss=%d", st, miss)
+	}
+
+	// 中途探到在售即清零：误判不会累积成删除。
+	lc.applySyncProbes(ctx, []syncProbe{{serviceID: 4, serverID: 2, status: "active"}})
+	if st, miss := state(4); st != 1 || miss != 0 {
+		t.Fatalf("探到在售应清零缺失计数，实得 status=%d miss=%d", st, miss)
+	}
+	lc.applySyncProbes(ctx, probes("terminated"))
+	if st, _ := state(4); st != 1 {
+		t.Fatalf("未达连续确认阈值不得删除，实得 status=%d", st)
+	}
+	lc.applySyncProbes(ctx, probes("terminated"))
+	if st, miss := state(4); st != 3 {
+		t.Fatalf("连续确认达阈值应标记删除，实得 status=%d miss=%d threshold=%d", st, miss, lc.upstreamMissThreshold(ctx))
+	}
+	// 小服务器整台持续缺失始终判为整体异常，不自动删除，交人工核对（单服务机器仍可正常删除）。
+	lc.applySyncProbes(ctx, probes("terminated"))
+	for _, id := range []int64{1, 2, 3} {
+		if st, _ := state(id); st != 1 {
+			t.Fatalf("整体异常期间小服务器服务 %d 不得被删除，实得 status=%d", id, st)
+		}
+	}
+}
+
+// 升级失败自动回滚必须落 refunds 记录：它是"这一单已退了多少"的唯一凭据。
+// 缺了它，后台还能再对同一订单全额退一次（用户拿两份差价），RefundUpgrade 的可重入判断也一并失效。
+func TestRollbackUpgradeRecordsRefund(t *testing.T) {
+	d := testDB(t)
+	ctx := context.Background()
+	fx := setupUpgradeFixture(t, d)
+	lc := &Lifecycle{db: d}
+
+	balance := func() float64 {
+		t.Helper()
+		var b float64
+		if err := d.QueryRowContext(ctx, `SELECT balance::float8 FROM users WHERE id=$1`, fx.userID).Scan(&b); err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	refunded := func() float64 {
+		t.Helper()
+		var v float64
+		if err := d.QueryRowContext(ctx,
+			`SELECT coalesce(sum(amount::numeric),0)::float8 FROM refunds WHERE order_id=$1 AND status='done'`,
+			fx.orderID).Scan(&v); err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+
+	before := balance()
+	lc.rollbackUpgrade(ctx, fx.userID, 50, fx.orderID)
+	if got := balance(); got != before+50 {
+		t.Fatalf("应退回差价 50，余额 %v → %v", before, got)
+	}
+	if got := refunded(); got != 50 {
+		t.Fatalf("回滚必须写入 refunds 记录（否则后台可重复退款），实得 %v", got)
+	}
+
+	// 幂等：同一订单重跑回滚（"已退款但终局检查点未落库"后任务重试）不得再退一次。
+	before2 := balance()
+	lc.rollbackUpgrade(ctx, fx.userID, 50, fx.orderID)
+	if got := balance(); got != before2 {
+		t.Fatalf("重复回滚不得再动余额，%v → %v", before2, got)
+	}
+	if got := refunded(); got != 50 {
+		t.Fatalf("重复回滚不得新增退款记录，实得 %v", got)
+	}
+
+	// 后台再对同一订单退款必须被上限拦下——这是「同一订单可二次退款」的资损出口。
+	pay := &Payment{db: d}
+	if err := pay.Refund(ctx, fx.userID, fx.orderID, "50.00", "重复退款", "balance"); err == nil {
+		t.Fatal("已回滚的订单不应再允许全额退款")
+	}
+	if got := balance(); got != before2 {
+		t.Fatalf("被拦下的退款不得动余额，%v → %v", before2, got)
+	}
 }
 
 // renewFixture 续费场景夹具：服务已激活且续费待处理，队列里有一条人工复核的续费任务。

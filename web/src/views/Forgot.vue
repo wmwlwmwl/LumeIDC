@@ -8,6 +8,7 @@ import { useSession } from '../http/session'
 import PublicAuthCard from '@/components/public/PublicAuthCard.vue'
 import PhoneInput from '@/components/phone/PhoneInput.vue'
 import ExternalCaptcha from '../components/ExternalCaptcha.vue'
+import { hasCaptchaResult } from '../components/captcha-registry'
 
 const router = useRouter()
 const phoneInputRef = ref<InstanceType<typeof PhoneInput>>()
@@ -122,7 +123,7 @@ async function send() {
     }
   }
   if (session.auth.forgot_code_external) {
-    if (extRequired.value && !extFields.value.captcha_token) {
+    if (extRequired.value && !hasCaptchaResult(extFields.value)) {
       ElMessage.warning('请先完成人机验证')
       return
     }

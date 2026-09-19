@@ -250,21 +250,23 @@ func (p *Promotions) TryReserveQuota(ctx context.Context, tx *sql.Tx, promotionP
 	return err
 }
 
-// ReleaseQuota 释放名额（账单过期未支付时调用）。
-func (p *Promotions) ReleaseQuota(ctx context.Context, tx *sql.Tx, promotionProductID int64) error {
+// ReleaseQuotaByOrders 释放这批订单占用的限量名额（账单过期未支付时调用）。
+// 调用方只应传入「本轮刚由未支付变为过期」的订单，故本方法可安全重复调用：
+// 已支付账单的订单不释放，且不在本批订单里的历史数据不会被重复扣减。
+func (p *Promotions) ReleaseQuotaByOrders(ctx context.Context, tx *sql.Tx, orderIDs []int64) error {
+	if len(orderIDs) == 0 {
+		return nil
+	}
 	_, err := tx.ExecContext(ctx,
-		`UPDATE promotion_quota SET sold=GREATEST(sold-1,0),updated_at=now() WHERE promotion_product_id=$1`,
-		promotionProductID)
-	return err
-}
-
-// IncrStats 支付成功后累加统计。
-func (p *Promotions) IncrStats(ctx context.Context, promotionID int64, paidAmount float64) error {
-	_, err := p.db.ExecContext(ctx,
-		`INSERT INTO promotion_stats(promotion_id,views,claimed,orders,paid_amount)
-		 VALUES($1,0,0,1,$2)
-		 ON CONFLICT(promotion_id) DO UPDATE SET orders=promotion_stats.orders+1, paid_amount=promotion_stats.paid_amount+EXCLUDED.paid_amount`,
-		promotionID, paidAmount)
+		`UPDATE promotion_quota q SET sold = GREATEST(q.sold - s.cnt, 0), updated_at=now()
+		 FROM (
+		    SELECT o.promo_product_id AS ppid, count(*) AS cnt
+		      FROM orders o
+		     WHERE o.id = ANY($1) AND o.promo_product_id IS NOT NULL
+		       AND NOT EXISTS (SELECT 1 FROM invoices i2 WHERE i2.order_id=o.id AND i2.status=1)
+		     GROUP BY o.promo_product_id
+		 ) s
+		 WHERE q.promotion_product_id = s.ppid`, orderIDs)
 	return err
 }
 
@@ -373,6 +375,10 @@ func (p *Promotions) CheckLimitPerUser(ctx context.Context, tx *sql.Tx, promotio
 		return nil
 	}
 	var n int
+	// 这里不能加 FOR UPDATE：PostgreSQL 禁止聚合函数与行锁同用，语句会直接报错，
+	// 导致凡配置了「每人限购」的活动一单都下不了。
+	// 并发安全由调用方保证：CreateOrder 在同一事务内先取 pg_advisory_xact_lock('user_order_lock:'||userID)，
+	// 而限购是按 (活动, 用户) 判定的，同一用户的下单事务已被串行化。
 	if err := tx.QueryRowContext(ctx,
 		`SELECT count(*) FROM orders WHERE promotion_id=$1 AND user_id=$2`, promotionID, userID).Scan(&n); err != nil {
 		return err

@@ -21,6 +21,18 @@ import (
 	"lumeidc/internal/service"
 )
 
+func TestEasyPanelConfigSummary(t *testing.T) {
+	got := easyPanelConfigSummary(&server.HostOverview{Detail: server.HostDetail{
+		WebQuota: "1000M",
+		DBQuota:  "1000M",
+		Domain:   "不限",
+	}})
+	want := "你现在是：网页空间 1000M，数据库 1000M，域名不限"
+	if got != want {
+		t.Fatalf("摘要=%q，期望=%q", got, want)
+	}
+}
+
 func TestParseUpstreamExpiryIn(t *testing.T) {
 	cst := time.FixedZone("CST", 8*3600)
 	// 同一无时区串在不同时区下解释为不同绝对时刻

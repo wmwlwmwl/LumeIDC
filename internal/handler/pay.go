@@ -1,12 +1,14 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"html/template"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -39,6 +41,11 @@ func (h *Pay) Register(mux *http.ServeMux) {
 	// 网关编码使用查询参数，避免与 /pay/{invoiceID}/start 的通配符路由冲突。
 	mux.HandleFunc("GET /pay/notify", h.notify)
 	mux.HandleFunc("POST /pay/notify", h.notify)
+	// 微信 APIv3 禁止回调地址携带查询参数，改用路径段承载网关编码。
+	// 形状取 /pay/{编码}/notify 而非 /pay/notify/{编码}：后者与
+	// /pay/{invoiceID}/start、/pay/{invoiceID}/balance 重叠且互不更具体，
+	// 会让 ServeMux 在注册时 panic。第 3 段为字面量即可与它们区分开。
+	mux.HandleFunc("POST /pay/{code}/notify", h.notify)
 	mux.HandleFunc("POST /pay/{invoiceID}/start", h.start)
 	mux.HandleFunc("POST /pay/{invoiceID}/balance", h.payByBalance)
 	mux.HandleFunc("GET /pay/{invoiceID}", h.payPage)
@@ -71,7 +78,11 @@ func (h *Pay) localCheckoutPage(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	// 优先使用后台配置的网关实例显示名称，fallback 到驱动硬编码名
 	brand := impl.Name()
+	if inst, gerr := h.GwRepo.Get(r.Context(), gatewayCode); gerr == nil && inst.Name != "" {
+		brand = inst.Name
+	}
 	attempt, err := h.GwRepo.LatestAttempt(r.Context(), no, gatewayCode, true)
 	if err != nil {
 		http.NotFound(w, r)
@@ -95,7 +106,7 @@ func (h *Pay) localCheckoutPage(w http.ResponseWriter, r *http.Request) {
 // 5 账单金额 6 二维码 dataURI 7 账单 ID（结算页链接与轮询）。
 const qrPageHTML = `<!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>%[2]s扫码支付</title>%[1]s</head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>%[2]s - 扫码支付</title>%[1]s</head>
 <body>
 <main class="art-card">
   <div class="art-card__body">
@@ -392,7 +403,7 @@ func (h *Pay) settleReturn(r *http.Request, invoiceNo string) error {
 	if !ok {
 		return fmt.Errorf("支付网关驱动未注册")
 	}
-	result, err := impl.VerifyNotify(params, inst.Config)
+	result, err := impl.VerifyNotify(gateway.NotifyRequest{Params: params}, inst.Config)
 	if err != nil {
 		return err
 	}
@@ -514,19 +525,65 @@ func (h *Pay) start(w http.ResponseWriter, r *http.Request) {
 	}
 	base := siteBaseURL(r.Context(), h.Settings, r) // 站点地址：后台 site_url 优先，否则按请求推断
 	notifyURL := base + "/pay/notify?" + url.Values{"code": {code}}.Encode()
-	u, err := impl.PayURL(r.Context(), gateway.PayRequest{InvoiceNo: no, Amount: prep.Payable, Title: h.currentSiteInfo().Name + " 账单 " + no,
-		NotifyURL: notifyURL, ReturnURL: base + "/pay/" + strconv.FormatInt(id, 10), Config: inst.Config})
+	// 微信 APIv3 不允许回调地址携带查询参数，由驱动自定义格式。
+	if nb, ok := impl.(gateway.NotifyURLBuilder); ok {
+		notifyURL = nb.NotifyURL(base, code)
+	}
+	ua := r.UserAgent()
+	payResult, err := impl.PayURL(r.Context(), gateway.PayRequest{InvoiceNo: no, Amount: prep.Payable, Title: h.currentSiteInfo().Name + " 账单 " + no,
+		NotifyURL: notifyURL, ReturnURL: base + "/pay/" + strconv.FormatInt(id, 10),
+		ClientIP: requestIP(r), IsMobile: isMobileUA(ua),
+		// 微信内置浏览器无法使用 H5 支付（JSAPI 需公众号授权，尚未实现）
+		IsWeChatBrowser: strings.Contains(strings.ToLower(ua), "micromessenger"),
+		Config:          inst.Config})
 	if err != nil {
 		_ = h.Payment.ReleaseInvoiceCredit(r.Context(), id, prep.AttemptID)
 		log.Printf("[payment] 网关 %s 生成支付链接失败，账单 %s: %v", code, no, err)
-		jsonStatus(w, r, http.StatusBadGateway, "生成支付链接失败")
+		// 驱动主动给出的引导提示（如"请在浏览器中打开"）原样透传给用户，
+		// 其余内部故障统一显示笼统文案，避免泄露细节。
+		msg := "生成支付链接失败"
+		var uf gateway.UserFacingError
+		if errors.As(err, &uf) {
+			msg = uf.Msg
+		}
+		jsonStatus(w, r, http.StatusBadGateway, msg)
 		return
+	}
+	// 上游返回了实际金额（如易支付 mapi.php 风控浮动）时：
+	//   - 容差 ±0.50 元：正常浮动范围，同步 payment_attempts.amount
+	//   - 超容差：可能是恶意篡改，拒绝并释放已抵扣余额
+	if payResult.Amount != "" && !equalAmount(payResult.Amount, prep.Payable) {
+		_, newCents, nerr := moneyutil.ParsePositive(payResult.Amount, 999999999999)
+		_, oldCents, oerr := moneyutil.ParsePositive(prep.Payable, 999999999999)
+		if nerr != nil || oerr != nil {
+			_ = h.Payment.ReleaseInvoiceCredit(r.Context(), id, prep.AttemptID)
+			jsonStatus(w, r, http.StatusBadGateway, "网关返回金额无效")
+			return
+		}
+		diff := newCents - oldCents
+		if diff < 0 {
+			diff = -diff
+		}
+		// 容差 50 分（0.50 元）：覆盖正常风控浮动，拦截恶意改价
+		if diff > 50 {
+			_ = h.Payment.ReleaseInvoiceCredit(r.Context(), id, prep.AttemptID)
+			log.Printf("[payment] 网关 %s 账单 %s 上游金额浮动超容差: 请求=%s 上游=%s", code, no, prep.Payable, payResult.Amount)
+			jsonStatus(w, r, http.StatusBadGateway, "上游返回金额超出正常范围，请稍后重试")
+			return
+		}
+		if uerr := h.GwRepo.UpdateAttemptAmount(r.Context(), prep.AttemptID, payResult.Amount); uerr != nil {
+			_ = h.Payment.ReleaseInvoiceCredit(r.Context(), id, prep.AttemptID)
+			log.Printf("[payment] 网关 %s 账单 %s 更新支付尝试金额失败: %v", code, no, uerr)
+			jsonStatus(w, r, http.StatusInternalServerError, "支付状态更新失败")
+			return
+		}
+		log.Printf("[payment] 网关 %s 账单 %s 支付尝试金额同步: %s → %s (差 %d 分)", code, no, prep.Payable, payResult.Amount, diff)
 	}
 	if wantsJSON(r) {
-		writeJSON(w, map[string]any{"ok": 1, "url": u})
+		writeJSON(w, map[string]any{"ok": 1, "url": payResult.URL})
 		return
 	}
-	http.Redirect(w, r, u, http.StatusSeeOther)
+	http.Redirect(w, r, payResult.URL, http.StatusSeeOther)
 }
 
 func (h *Pay) ownsInvoice(r *http.Request, userID int64, no string) bool {
@@ -537,6 +594,10 @@ func (h *Pay) ownsInvoice(r *http.Request, userID int64, no string) bool {
 // notify 由网关实例 code 分发到对应插件，账单核销保持统一。
 func (h *Pay) notify(w http.ResponseWriter, r *http.Request) {
 	code := strings.TrimSpace(r.URL.Query().Get("code"))
+	if code == "" {
+		// 路径式回调（微信 APIv3 不允许回调地址带查询参数）
+		code = strings.TrimSpace(r.PathValue("code"))
+	}
 	if code == "" {
 		// 兜底：部分网关（如支付宝后台配置固定异步通知地址）回调不带 code。
 		// 账单支付时已绑定网关实例（invoices.gateway），按 out_trade_no 反查。
@@ -571,23 +632,35 @@ func (h *Pay) notify(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	// 网关回调不是浏览器请求，但仍限制原始 body，避免无界表单解析。
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	// 网关回调不是浏览器请求，但仍限制原始 body，避免无界读取。
+	// 必须先留存原始字节：表单类网关从 r.Form 取参数，JSON 类网关（微信 APIv3）
+	// 的验签与解密都基于原始报文。
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
+	if err != nil {
+		log.Printf("[notify] 网关 %s 读取请求体失败: %v", code, err)
+		w.Write([]byte("fail"))
+		return
+	}
+	r.Body = io.NopCloser(bytes.NewReader(raw))
 	if err := r.ParseForm(); err != nil {
 		log.Printf("[notify] 网关 %s 表单解析失败: %v", code, err)
 		w.Write([]byte("fail"))
 		return
 	}
 	params := notifyParams(r)
-	result, err := impl.VerifyNotify(params, inst.Config)
+	ack := notifyAck(impl)
+	result, err := impl.VerifyNotify(gateway.NotifyRequest{
+		Params: params, RawBody: string(raw), Headers: lowerHeaders(r),
+	}, inst.Config)
 	if err != nil {
-		log.Printf("[notify] 网关 %s 校验失败: %v (out_trade_no=%s trade_no=%s trade_status=%s) 参数=%s", code, err, params["out_trade_no"], params["trade_no"], params["trade_status"], notifyParamDump(params))
+		log.Printf("[notify] 网关 %s 校验失败: %v (out_trade_no=%s trade_no=%s trade_status=%s) 参数=%s 报文=%s",
+			code, err, params["out_trade_no"], params["trade_no"], params["trade_status"], notifyParamDump(params), rawPreview(string(raw)))
 		w.Write([]byte("fail"))
 		return
 	}
 	if !result.Successful {
 		log.Printf("[notify] 网关 %s 交易未成功: out_trade_no=%s trade_status=%s", code, result.InvoiceNo, params["trade_status"])
-		w.Write([]byte("success"))
+		w.Write([]byte(ack))
 		return
 	}
 	if err := h.applyGatewayPayment(r.Context(), result, code); err != nil {
@@ -596,7 +669,34 @@ func (h *Pay) notify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("[notify] 网关 %s 处理到账成功 账单 %s trade_no=%s 金额=%s", code, result.InvoiceNo, result.TradeNo, result.Amount)
-	w.Write([]byte("success"))
+	w.Write([]byte(ack))
+}
+
+// notifyAck 网关受理回调后应答的响应体。默认 "success"；
+// 微信 APIv3 要求应答 JSON，否则会持续重试。
+func notifyAck(impl gateway.Gateway) string {
+	if a, ok := impl.(gateway.NotifyAcker); ok {
+		return a.NotifyAck()
+	}
+	return "success"
+}
+
+// lowerHeaders 把请求头拍平成小写键名的 map（微信 APIv3 的签名在请求头里）。
+func lowerHeaders(r *http.Request) map[string]string {
+	headers := make(map[string]string, len(r.Header))
+	for k := range r.Header {
+		headers[strings.ToLower(k)] = r.Header.Get(k)
+	}
+	return headers
+}
+
+// rawPreview 压缩并截断报文，用于验签失败时排查（避免超长内容刷屏）。
+func rawPreview(s string) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if len([]rune(s)) > 100 {
+		return string([]rune(s)[:100]) + "..."
+	}
+	return s
 }
 
 // notifyParams 提取网关回调参数。r.ParseForm() 会把本站 URL 查询参数
@@ -629,6 +729,18 @@ func equalAmount(a, b string) bool {
 	_, x, errX := moneyutil.ParsePositive(a, 999999999999)
 	_, y, errY := moneyutil.ParsePositive(b, 999999999999)
 	return errX == nil && errY == nil && x == y
+}
+
+// isMobileUA 粗略判断请求来自移动端浏览器，用于选择支付宝手机网站支付等 H5 通道。
+// ponytail: 子串匹配已覆盖主流手机 UA；若需精确设备识别可替换为成熟 UA 解析库。
+func isMobileUA(ua string) bool {
+	ua = strings.ToLower(ua)
+	for _, token := range []string{"mobile", "android", "iphone", "ipod", "windows phone"} {
+		if strings.Contains(ua, token) {
+			return true
+		}
+	}
+	return false
 }
 
 // payByBalance 余额支付账单。

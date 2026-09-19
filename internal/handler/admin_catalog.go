@@ -115,18 +115,12 @@ func (m *AdminManage) CatalogPage(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[catalog] 查询已对接商品失败: %v", lerr)
 		linked = map[int]bool{}
 	}
-	// 一级分类清单：供导入时选择“上游分组建为某分类下的二级”
-	var firstTypes []repo.ProductType
+	// EasyPanel 直接选择已有二级分类；其他供应商保留“选一级、按上游分组建二级”的旧逻辑。
 	types, terr := m.Products.ListTypes(r.Context())
 	if terr != nil {
-		// 查询失败会导致下拉为空，管理员会误以为没建一级分类，必须留痕
-		log.Printf("[catalog] 查询一级分类失败: %v", terr)
+		log.Printf("[catalog] 查询产品分类失败: %v", terr)
 	}
-	for _, t := range types {
-		if t.ParentID == 0 {
-			firstTypes = append(firstTypes, t)
-		}
-	}
+	categoryOptions := catalogTypeOptions(types, sv.Provider)
 	crows := toCatalogRows(list, linked)
 	rowsJSON := make([]map[string]any, 0, len(crows))
 	for _, c := range crows {
@@ -136,13 +130,13 @@ func (m *AdminManage) CatalogPage(w http.ResponseWriter, r *http.Request) {
 			"stock": c.Stock, "linked": c.Linked,
 		})
 	}
-	typesJSON := make([]map[string]any, 0, len(firstTypes))
-	for _, t := range firstTypes {
-		typesJSON = append(typesJSON, map[string]any{"id": t.ID, "name": t.Name})
+	typesJSON := make([]map[string]any, 0, len(categoryOptions))
+	for _, t := range categoryOptions {
+		typesJSON = append(typesJSON, map[string]any{"id": t.ID, "name": t.Name, "parent_id": t.ParentID})
 	}
 	out := map[string]any{
 		"ok":     1,
-		"server": map[string]any{"id": sv.ID, "name": sv.Name},
+		"server": map[string]any{"id": sv.ID, "name": sv.Name, "provider": sv.Provider},
 		"rows":   rowsJSON,
 		"types":  typesJSON,
 		"error": func() string {
@@ -160,6 +154,36 @@ func catalogErr(err error) string {
 		return ""
 	}
 	return "拉取目录失败: " + err.Error()
+}
+
+func catalogTypeOptions(types []repo.ProductType, provider string) []repo.ProductType {
+	options := make([]repo.ProductType, 0)
+	if provider == "easypanel" {
+		parents := make(map[int64]repo.ProductType)
+		for _, t := range types {
+			if t.ParentID == 0 {
+				parents[t.ID] = t
+			}
+		}
+		for _, t := range types {
+			if t.ParentID == 0 || t.Hidden {
+				continue
+			}
+			parent, ok := parents[t.ParentID]
+			if !ok || parent.Hidden {
+				continue
+			}
+			t.Name = parent.Name + " / " + t.Name
+			options = append(options, t)
+		}
+		return options
+	}
+	for _, t := range types {
+		if t.ParentID == 0 {
+			options = append(options, t)
+		}
+	}
+	return options
 }
 
 type catalogRow struct {
@@ -358,16 +382,24 @@ func (m *AdminManage) ImportProducts(w http.ResponseWriter, r *http.Request) {
 	requiresIdentity := fv("requires_identity") == "1"
 	// 本次导入填写的分类描述（选填）：写入上游分组对应的本地分类（前台分类页展示）。
 	desc := strings.TrimSpace(fv("desc"))
-	// 导入目标父分类：必须为已存在的一级分类，上游分组名建为其下的二级分类
+	// EasyPanel 直接挂到已有二级分类；其他供应商仍选择一级分类后按上游分组创建二级分类。
 	parentID, _ := strconv.ParseInt(fv("parent_id"), 10, 64)
 	if parentID <= 0 {
-		fail("请选择导入目标一级分类")
+		if sv.Provider == "easypanel" {
+			fail("请选择已有二级分类")
+		} else {
+			fail("请选择导入目标一级分类")
+		}
 		return
 	}
 	types, terr := m.Products.ListTypes(r.Context())
 	t, ok := repo.FindType(types, parentID)
-	if terr != nil || !ok || t.ParentID != 0 {
-		fail("导入目标分类无效（需为一级分类）")
+	if terr != nil || !ok || (sv.Provider == "easypanel" && t.ParentID == 0) || (sv.Provider != "easypanel" && t.ParentID != 0) {
+		if sv.Provider == "easypanel" {
+			fail("导入目标分类无效（需为已有二级分类）")
+		} else {
+			fail("导入目标分类无效（需为一级分类）")
+		}
 		return
 	}
 	// 只拉一次目录（内含全部商品的名称/分组/价格/库存/描述），
@@ -407,7 +439,7 @@ func (m *AdminManage) ImportProducts(w http.ResponseWriter, r *http.Request) {
 		if up == nil {
 			continue
 		}
-		if m.importUpstreamProduct(ctx, sv, serverID, up, int16(profitType), profitValue, parentID, requiresIdentity, desc) {
+		if m.importUpstreamProduct(ctx, sv, serverID, up, int16(profitType), profitValue, parentID, sv.Provider == "easypanel", requiresIdentity, desc) {
 			imported++
 		}
 	}
@@ -426,11 +458,12 @@ func (m *AdminManage) ImportProducts(w http.ResponseWriter, r *http.Request) {
 
 // importUpstreamProduct 幂等导入：已按 (server_id, upstream_pid) 对接则更新价格/绑定/配置项，
 // 否则新建分类+产品+价格+绑定+配置项。profitType/profitValue 仅对新建产品生效（不覆盖已有产品利润）。
-// parentID：新建产品的分类归属（0=上游分组建一级；>0=建为该一级下的二级）。
-// desc：本次导入填写的「分类描述」，写入上游分组对应的本地分类（前台分类页展示）；为空则新建分类留空、已有分类不动。
+// parentID：EasyPanel 为已有二级分类 ID；其他供应商为目标一级分类 ID。
+// directType：EasyPanel 直接挂到 parentID，不创建或按上游分组创建分类。
+// desc：其他供应商用于分类描述；EasyPanel 不修改分类描述。
 // up 由调用方一次性拉取目录后传入（本函数不再全量拉目录，避免导入 N 项触发 N×M 次上游请求）。
 
-func (m *AdminManage) importUpstreamProduct(ctx context.Context, sv *repo.Server, serverID int64, up *server.UpstreamProduct, profitType int16, profitValue float64, parentID int64, requiresIdentity bool, desc string) bool {
+func (m *AdminManage) importUpstreamProduct(ctx context.Context, sv *repo.Server, serverID int64, up *server.UpstreamProduct, profitType int16, profitValue float64, parentID int64, directType bool, requiresIdentity bool, desc string) bool {
 	prov, err := m.Providers.Get(sv.Provider)
 	if err != nil {
 		return false
@@ -448,11 +481,16 @@ func (m *AdminManage) importUpstreamProduct(ctx context.Context, sv *repo.Server
 	var productID int64
 	// 产品描述：搬上游的（清洗成安全文本）；上游没有就留空，不再编默认文案。
 	pdesc := cleanDesc(up.Description)
-	// 分类（上游分组 → 本地二级分类）：描述是前台分类页的说明，导入时填了就覆盖它，
-	// 已有产品同样适用（分组描述与本次导入的商品无关，只跟分组有关）。
-	typeID, terr := m.ensureType(ctx, up.GroupName, parentID, desc)
-	if terr != nil {
-		return false
+	var typeID int64
+	if directType {
+		typeID = parentID
+	} else {
+		// 非 EasyPanel 供应商保留旧逻辑：按上游分组创建/匹配本地分类。
+		var terr error
+		typeID, terr = m.ensureType(ctx, up.GroupName, parentID, desc)
+		if terr != nil {
+			return false
+		}
 	}
 	if existingID > 0 {
 		productID = existingID

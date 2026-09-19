@@ -192,7 +192,7 @@ func (n *Notifier) notify(ctx context.Context, userID int64, title, body, code s
 	}
 	defer func() {
 		if err != nil {
-			log.Printf("通知保存失败，用户编号=%d，请重试", userID)
+			log.Printf("通知保存失败，用户编号=%d，请重试: %v", userID, err)
 		}
 	}()
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)

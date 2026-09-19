@@ -12,6 +12,7 @@ import {
 } from '../api/store'
 import { useSession } from '../http/session'
 import ExternalCaptcha from '../components/ExternalCaptcha.vue'
+import { hasCaptchaResult } from '../components/captcha-registry'
 import PublicAuthCard from '@/components/public/PublicAuthCard.vue'
 import PhoneInput from '@/components/phone/PhoneInput.vue'
 
@@ -86,7 +87,7 @@ async function loadCaptcha() {
 async function submit() {
   const valid = await formRef.value?.validate().catch(() => false)
   if (!valid) return
-  if (extRequired.value && !extFields.value.captcha_token) {
+  if (extRequired.value && !hasCaptchaResult(extFields.value)) {
     ElMessage.warning('请先完成人机验证')
     return
   }
@@ -185,7 +186,7 @@ async function sendCode() {
     ElMessage.warning('请输入图形验证码')
     return
   }
-  if (phoneExtRequired.value && !phoneExtFields.value.captcha_token) {
+  if (phoneExtRequired.value && !hasCaptchaResult(phoneExtFields.value)) {
     ElMessage.warning('请先完成人机验证')
     return
   }
@@ -211,7 +212,7 @@ async function sendCode() {
 async function submitPhone() {
   const valid = await phoneFormRef.value?.validate().catch(() => false)
   if (!valid) return
-  if (phoneExtRequired.value && !phoneExtFields.value.captcha_token) {
+  if (phoneExtRequired.value && !hasCaptchaResult(phoneExtFields.value)) {
     ElMessage.warning('请先完成人机验证')
     return
   }

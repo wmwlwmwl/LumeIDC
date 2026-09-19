@@ -9,23 +9,16 @@
  */
 import { ref, shallowRef, onMounted, onBeforeUnmount } from 'vue'
 import { http } from '../http/index'
+import { getCaptchaInit, type CaptchaConfig as RegCaptchaConfig } from './captcha-registry'
+
+// 复用注册表的 CaptchaConfig 定义
+type CaptchaConfig = RegCaptchaConfig
 
 const props = defineProps<{ scene: string }>()
 const emit = defineEmits<{
   (e: 'update:fields', v: Record<string, string>): void
   (e: 'update:required', v: boolean): void
 }>()
-
-interface CaptchaConfig {
-  enabled: boolean
-  provider?: string
-  public_id?: string
-  sdk_url?: string
-  script_url?: string
-  api_base_url?: string
-  purpose?: string
-  scene: string
-}
 
 const box = ref<HTMLElement | null>(null)
 const error = ref('')
@@ -81,33 +74,9 @@ function loadScript(url: string): Promise<void> {
   return task
 }
 
-type W = Window & {
-  initGeetest4?: (opts: Record<string, unknown>, cb: (i: GtInstance) => void) => void
-  vaptcha?: (opts: Record<string, unknown>) => Promise<VpWidget>
-  Corptcha?: { render: (el: HTMLElement, opts: Record<string, unknown>) => { execute?: () => void } }
-}
-interface GtInstance {
-  appendTo: (el: HTMLElement) => void
-  onSuccess: (cb: () => void) => void
-  onError: (cb: () => void) => void
-  onClose: (cb: () => void) => void
-  getValidate: () => Record<string, string>
-}
 interface VpWidget {
   validate: () => Promise<void>
   getVerifyResult: () => { token?: string; knock?: string; dfu?: string; ip?: string }
-}
-
-const w = window as W
-
-async function initGeetest(el: HTMLElement, cfg: CaptchaConfig) {
-  if (typeof w.initGeetest4 !== 'function') throw new Error('Geetest SDK 初始化失败')
-  w.initGeetest4({ captchaId: cfg.public_id, product: 'bind' }, (instance) => {
-    instance.appendTo(el)
-    instance.onSuccess(() => setFields(instance.getValidate()))
-    instance.onError(() => { clearFields(); ready.value = false })
-    instance.onClose(() => { clearFields(); ready.value = false })
-  })
 }
 
 // SDK 只认 container 挂载点，不注入任何 UI；触发按钮由模板渲染
@@ -116,6 +85,7 @@ let vpCfg: CaptchaConfig | null = null
 
 async function mountVaptcha() {
   if (!vpMount || !vpCfg) return
+  const w = window as Window & { vaptcha?: (opts: Record<string, unknown>) => Promise<VpWidget> }
   if (typeof w.vaptcha !== 'function') throw new Error('Vaptcha SDK 初始化失败')
   // 每次都用全新的挂载点建实例：旧实例在挑战失败/关闭后不再接受 validate()
   const mount = document.createElement('div')
@@ -125,12 +95,6 @@ async function mountVaptcha() {
     throw new Error('Vaptcha SDK 版本不受支持')
   }
   vpWidget.value = widget
-}
-
-async function initVaptcha(el: HTMLElement, cfg: CaptchaConfig) {
-  vpMount = el
-  vpCfg = cfg
-  await mountVaptcha()
 }
 
 async function runVaptcha() {
@@ -162,21 +126,6 @@ async function runVaptcha() {
   }
 }
 
-async function initCorptcha(el: HTMLElement, cfg: CaptchaConfig) {
-  if (!w.Corptcha || typeof w.Corptcha.render !== 'function') throw new Error('Corptcha SDK 初始化失败')
-  const mount = document.createElement('div')
-  el.append(mount)
-  w.Corptcha.render(mount, {
-    siteKey: cfg.public_id,
-    apiBaseUrl: cfg.api_base_url,
-    purpose: cfg.purpose || cfg.scene || props.scene,
-    autoExecute: true,
-    onSuccess: (token: string) => setFields({ captcha_token: token }),
-    onError: () => { clearFields(); ready.value = false },
-    onExpired: () => { clearFields(); ready.value = false },
-  })
-}
-
 async function init() {
   emit('update:required', false)
   try {
@@ -192,10 +141,19 @@ async function init() {
     await loadScript(sdk)
     // 先定型 provider：vaptcha 的触发按钮随模板立即渲染，SDK 就绪前保持禁用
     provider.value = conf.provider || ''
-    if (conf.provider === 'geetest') await initGeetest(el, conf)
-    else if (conf.provider === 'vaptcha') await initVaptcha(el, conf)
-    else if (conf.provider === 'corptcha') await initCorptcha(el, conf)
-    else throw new Error('未知验证码 provider')
+    const initFn = getCaptchaInit(conf.provider || '')
+    if (!initFn) throw new Error('未知验证码 provider')
+    // Vaptcha 需要保留组件内 mountVaptcha 引用（runVaptcha 失败重建时用）
+    if (conf.provider === 'vaptcha') {
+      vpMount = el
+      vpCfg = conf
+    }
+    await initFn(el, conf, {
+      setFields,
+      clearFields,
+      readyOff: () => { ready.value = false },
+      setWidget: (w) => { vpWidget.value = w as VpWidget | null },
+    })
   } catch (e) {
     provider.value = ''
     emit('update:required', true)

@@ -19,13 +19,26 @@ type AdminGateway struct {
 	*Deps
 }
 
-type adminGatewayRow struct {
-	ID                                                                     int64
-	Code, Driver, Name, APIURL, PID, Channel, AppID, PrivateKey, PublicKey string
-	Key                                                                    string // 易支付商户密钥（仅用于“是否已配置”判断，不回传）
-	FeePercent                                                             string
-	Enabled                                                                bool
-	Sort                                                                   int
+// adminGatewayConfigFields 后台表单可提交、列表可回传的配置键。
+// 新增驱动所需字段时在此追加即可，无需改动结构体与逐字段赋值。
+var adminGatewayConfigFields = []string{
+	"api_url", "pid", "key", "channel", "payment_mode", "mobile_qrcode",
+	"app_id", "mch_id", "private_key", "public_key",
+	"api_v3_key", "cert_serial", "public_key_id",
+	"h5_app_name", "h5_app_url",
+}
+
+// adminGatewaySecretFields 密钥类配置：不回传原值（仅回报 has_<key> 是否已配置），
+// 编辑时留空表示沿用旧值。
+var adminGatewaySecretFields = []string{"key", "private_key", "public_key", "api_v3_key"}
+
+func isAdminGatewaySecretField(key string) bool {
+	for _, k := range adminGatewaySecretFields {
+		if k == key {
+			return true
+		}
+	}
+	return false
 }
 
 func (g *AdminGateway) Register(mux *http.ServeMux) {
@@ -47,27 +60,24 @@ func (g *AdminGateway) form(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "查询支付网关失败", 500)
 		return
 	}
-	rows := make([]adminGatewayRow, 0, len(list))
+	out := make([]map[string]any, 0, len(list))
 	for _, v := range list {
 		feePercent, _, feeErr := moneyutil.ParsePercent(v.Config["fee_percent"])
 		if feeErr != nil {
 			feePercent = v.Config["fee_percent"]
 		}
-		rows = append(rows, adminGatewayRow{ID: v.ID, Code: v.Code, Driver: v.Driver, Name: v.Name,
-			APIURL: v.Config["api_url"], PID: v.Config["pid"], Channel: v.Config["channel"], AppID: v.Config["app_id"], PrivateKey: v.Config["private_key"], PublicKey: v.Config["public_key"], Key: v.Config["key"], FeePercent: feePercent, Enabled: v.Enabled, Sort: v.Sort})
-	}
-	// 密钥类字段不回传（仅给是否已配置的标志）；编辑时留空即沿用旧值，
-	// 与保存逻辑一致。
-	out := make([]map[string]any, 0, len(rows))
-	for _, v := range rows {
-		out = append(out, map[string]any{
+		row := map[string]any{
 			"id": v.ID, "code": v.Code, "driver": v.Driver, "name": v.Name,
-			"api_url": v.APIURL, "pid": v.PID, "channel": v.Channel, "app_id": v.AppID,
-			"fee_percent": v.FeePercent, "enabled": v.Enabled, "sort": v.Sort,
-			"has_key":         v.Key != "",
-			"has_private_key": v.PrivateKey != "",
-			"has_public_key":  v.PublicKey != "",
-		})
+			"fee_percent": feePercent, "enabled": v.Enabled, "sort": v.Sort,
+		}
+		for _, k := range adminGatewayConfigFields {
+			if isAdminGatewaySecretField(k) {
+				row["has_"+k] = strings.TrimSpace(v.Config[k]) != ""
+				continue
+			}
+			row[k] = v.Config[k]
+		}
+		out = append(out, row)
 	}
 	writeJSON(w, map[string]any{"ok": 1, "list": out})
 }
@@ -114,25 +124,16 @@ func (g *AdminGateway) save(w http.ResponseWriter, r *http.Request) {
 		fail("手续费率无效（请输入 0 到 100 之间、最多两位小数的百分比）")
 		return
 	}
-	cfg := map[string]string{
-		"api_url":     strings.TrimSpace(fv("api_url")),
-		"pid":         strings.TrimSpace(fv("pid")),
-		"channel":     strings.TrimSpace(fv("channel")),
-		"app_id":      strings.TrimSpace(fv("app_id")),
-		"private_key": strings.TrimSpace(fv("private_key")),
-		"public_key":  strings.TrimSpace(fv("public_key")),
-		"fee_percent": feePercent,
+	cfg := make(map[string]string, len(adminGatewayConfigFields)+1)
+	for _, k := range adminGatewayConfigFields {
+		cfg[k] = strings.TrimSpace(fv(k))
 	}
-	old, oldErr := g.GwRepo.Get(r.Context(), code)
-	key := strings.TrimSpace(fv("key"))
-	if key == "" && oldErr == nil {
-		key = old.Config["key"]
-	}
-	cfg["key"] = key
-	if oldErr == nil {
-		for _, name := range []string{"private_key", "public_key"} {
-			if cfg[name] == "" {
-				cfg[name] = old.Config[name]
+	cfg["fee_percent"] = feePercent
+	// 密钥类字段留空表示沿用旧值：编辑时后台不回传原文，用户无需重填。
+	if old, oldErr := g.GwRepo.Get(r.Context(), code); oldErr == nil {
+		for _, k := range adminGatewaySecretFields {
+			if cfg[k] == "" {
+				cfg[k] = old.Config[k]
 			}
 		}
 	}

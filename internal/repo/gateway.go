@@ -193,3 +193,12 @@ func (g *Gateways) InvoiceGateway(ctx context.Context, invoiceNo string) (string
 	err := g.db.QueryRowContext(ctx, `SELECT gateway FROM invoices WHERE no=$1`, invoiceNo).Scan(&code)
 	return code, err
 }
+
+// UpdateAttemptAmount 把指定支付尝试的金额更新为上游返回的实际金额。
+// 用于易支付 mapi.php 风控浮动场景：下游金额（如 10.01）与本地请求金额（如 10.00）
+// 可能有微小差异，必须同步 payment_attempts.amount 否则回调 equalAmount 会对不上。
+func (g *Gateways) UpdateAttemptAmount(ctx context.Context, attemptID int64, newAmount string) error {
+	_, err := g.db.ExecContext(ctx,
+		`UPDATE payment_attempts SET amount=$1::numeric WHERE id=$2`, newAmount, attemptID)
+	return err
+}

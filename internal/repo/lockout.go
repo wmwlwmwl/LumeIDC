@@ -31,14 +31,17 @@ func (l *LoginAttempts) Locked(ctx context.Context, key string) (bool, error) {
 }
 
 // Fail 记录一次失败；达到阈值则锁定一段时间。
+// 注意 $3/$4 必须显式转型：CASE 的某个分支里只有参数和 NULL 时 PostgreSQL 无法推断参数类型，
+// 会退化成 text，于是另一个分支出现「timestamptz 与 text 不匹配」(SQLSTATE 42804)，
+// 整条语句直接失败。该错误曾被调用方用 `_ =` 吞掉，导致登录锁定长期完全不可用。
 func (l *LoginAttempts) Fail(ctx context.Context, key string) error {
 	now := time.Now()
 	_, err := l.db.ExecContext(ctx,
 		`INSERT INTO login_attempts(key,attempts,first_at,locked_until)
 		 VALUES($1,1,$2,NULL)
 		 ON CONFLICT (key) DO UPDATE SET attempts=login_attempts.attempts+1,
-		   locked_until = CASE WHEN login_attempts.attempts+1 >= $3 THEN $4 ELSE NULL END,
-		   first_at = CASE WHEN login_attempts.attempts+1 >= $3 THEN $4 ELSE login_attempts.first_at END`,
+		   locked_until = CASE WHEN login_attempts.attempts+1 >= $3::int THEN $4::timestamptz ELSE NULL END,
+		   first_at = CASE WHEN login_attempts.attempts+1 >= $3::int THEN $4::timestamptz ELSE login_attempts.first_at END`,
 		key, now, lockMaxAttempts, now.Add(lockDuration))
 	return err
 }

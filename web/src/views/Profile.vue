@@ -9,6 +9,7 @@ import PublicPageHead from '@/components/public/PublicPageHead.vue'
 import { useSession } from '../http/session'
 import PhoneInput from '@/components/phone/PhoneInput.vue'
 import ExternalCaptcha from '../components/ExternalCaptcha.vue'
+import { hasCaptchaResult } from '../components/captcha-registry'
 
 const data = ref<ProfileData | null>(null)
 const loadError = ref(false)
@@ -416,7 +417,7 @@ async function loadProfileCaptcha() {
 // 发码前校验人机验证是否完成；未启用验证时直接放行。
 async function profileVerifyReady(): Promise<boolean> {
   if (session.auth.profile_code_external) {
-    if (profileExtRequired.value && !profileExtFields.value.captcha_token) {
+    if (profileExtRequired.value && !hasCaptchaResult(profileExtFields.value)) {
       ElMessage.warning('请先完成人机验证')
       return false
     }
