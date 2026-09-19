@@ -2,6 +2,8 @@ package cron
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"io/fs"
 	"net"
@@ -17,6 +19,129 @@ import (
 	"lumeidc/internal/repo"
 	"lumeidc/internal/service"
 )
+
+// alertTaskDB 起一个独立 schema 并跑全量迁移（模式同 service/admin_notify_test.go）。
+func alertTaskDB(t *testing.T) *sql.DB {
+	t.Helper()
+	dsn := os.Getenv("TEST_DATABASE_DSN")
+	if dsn == "" {
+		t.Skip("未设置隔离测试数据库，跳过定时任务告警测试")
+	}
+	cfg, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		t.Fatal("测试数据库配置无效")
+	}
+	if !strings.Contains(strings.ToLower(cfg.Database), "test") || (cfg.Host != "localhost" && !net.ParseIP(cfg.Host).IsLoopback()) {
+		t.Fatal("仅允许本机测试数据库")
+	}
+	admin := stdlib.OpenDB(*cfg)
+	schema := fmt.Sprintf("cron_alert_test_%d", time.Now().UnixNano())
+	if _, err := admin.Exec(`CREATE SCHEMA ` + schema); err != nil {
+		t.Fatal(err)
+	}
+	cfg.RuntimeParams["search_path"] = schema
+	d := stdlib.OpenDB(*cfg)
+	t.Cleanup(func() {
+		_ = d.Close()
+		_, _ = admin.Exec(`DROP SCHEMA ` + schema + ` CASCADE`)
+		_ = admin.Close()
+	})
+	if err := db.Migrate(context.Background(), d, db.Migrations()); err != nil {
+		t.Fatal(err)
+	}
+	return d
+}
+
+// alertJobs 配好「管理员告警可用」的 Jobs（邮件总开关开 + 收件人已设）。
+func alertJobs(t *testing.T, d *sql.DB) Jobs {
+	t.Helper()
+	ctx := context.Background()
+	n := service.NewNotifier(d, repo.NewSettings(d))
+	if err := n.SetEmailForwardEnabled(ctx, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := n.SetAdminNotifyEmail(ctx, "ops@x.test"); err != nil {
+		t.Fatal(err)
+	}
+	return Jobs{DB: d, Notifier: n}
+}
+
+// TestAlertTaskFailureNotifiesAdminOncePerDay 覆盖「定时任务级失败必须给管理员告警」：
+// 到期停机/删除、补单、账单过期退款这些任务没有用户可见入口，失败只写一行日志
+// 等于静默停摆，管理员往往要等到用户投诉才发现。
+func TestAlertTaskFailureNotifiesAdminOncePerDay(t *testing.T) {
+	d := alertTaskDB(t)
+	ctx := context.Background()
+	j := alertJobs(t, d)
+
+	// 未注入通知服务时必须安全跳过（cron 在无邮件配置的环境下也要能跑）。
+	(&Jobs{DB: d}).alertTaskFailure(ctx, "unit", "无通知服务", errors.New("x"))
+
+	j.alertTaskFailure(ctx, taskExpireInvoices, "开启过期账单事务", errors.New("连接中断"))
+	// 同一任务同一天再次失败（含换一个失败阶段）只发一封：该任务每 10 分钟一轮，
+	// 不按天去重会把管理员邮箱刷爆。
+	j.alertTaskFailure(ctx, taskExpireInvoices, "提交过期账单事务", errors.New("提交超时"))
+
+	count := func(q string) int {
+		t.Helper()
+		var c int
+		if err := d.QueryRow(q).Scan(&c); err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	if got := count(`SELECT count(*) FROM admin_alert_log`); got != 1 {
+		t.Fatalf("同一任务当天应只记一条告警，实得 %d", got)
+	}
+	if got := count(`SELECT count(*) FROM mail_outbox`); got != 1 {
+		t.Fatalf("同一任务当天应只发一封告警邮件，实得 %d", got)
+	}
+	var key, subject, body string
+	if err := d.QueryRow(`SELECT alert_key,subject,body FROM admin_alert_log`).Scan(&key, &subject, &body); err != nil {
+		t.Fatal(err)
+	}
+	if want := "cron:" + taskExpireInvoices + ":" + time.Now().Format("2006-01-02"); key != want {
+		t.Fatalf("去重键应含任务与当天日期：期望 %q，实得 %q", want, key)
+	}
+	if !strings.Contains(subject, "开启过期账单事务失败") || !strings.Contains(body, "连接中断") {
+		t.Fatalf("告警应带上首次失败的任务与原因：subject=%q body=%q", subject, body)
+	}
+
+	// 不同任务各自告警，不能互相顶掉。
+	j.alertTaskFailure(ctx, taskReleaseStock, "释放过期库存预留", errors.New("锁等待超时"))
+	if got := count(`SELECT count(*) FROM admin_alert_log`); got != 2 {
+		t.Fatalf("不同任务应各自告警，实得 %d", got)
+	}
+	// err 为 nil 不是失败，不该告警。
+	j.alertTaskFailure(ctx, "unit", "没有失败", nil)
+	if got := count(`SELECT count(*) FROM admin_alert_log`); got != 2 {
+		t.Fatalf("nil 错误不应告警，实得 %d", got)
+	}
+}
+
+// TestTaskFailureWiringAlertsAdmin 端到端验证接线：真实任务失败必须真的产出告警
+// （只测 alertTaskFailure 本身无法证明各任务把它调上了）。
+func TestTaskFailureWiringAlertsAdmin(t *testing.T) {
+	d := alertTaskDB(t)
+	ctx := context.Background()
+	j := alertJobs(t, d)
+	// 抽掉任务依赖的表，制造一次真实的任务级失败。
+	if _, err := d.Exec(`DROP TABLE stock_reservations CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	j.releaseExpiredStock(ctx)
+
+	var key, body string
+	if err := d.QueryRow(`SELECT alert_key,body FROM admin_alert_log`).Scan(&key, &body); err != nil {
+		t.Fatalf("任务失败必须落到管理员告警：%v", err)
+	}
+	if want := "cron:" + taskReleaseStock + ":" + time.Now().Format("2006-01-02"); key != want {
+		t.Fatalf("告警键不符：期望 %q，实得 %q", want, key)
+	}
+	if !strings.Contains(body, "释放过期库存预留") || !strings.Contains(body, "stock_reservations") {
+		t.Fatalf("告警正文应指明失败的任务阶段与原因：%q", body)
+	}
+}
 
 func TestReminderMarksOnlyAfterEnqueue(t *testing.T) {
 	dsn := os.Getenv("TEST_DATABASE_DSN")
