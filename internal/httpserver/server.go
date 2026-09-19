@@ -346,6 +346,8 @@ func Build(cfg *config.Config, version string) (*App, error) {
 	root := handler.SPAGate(mux)
 	h := store.Middleware(middleware.CSRF(root))
 	h = middleware.AdminPath(h, adminPathCfg)
+	// 最外层兜 panic：任意中间件或 handler 崩溃都要变成结构化 500，而不是断连。
+	h = middleware.Recover(h)
 	addr := defaultListen
 	if a := os.Getenv("LISTEN"); a != "" {
 		addr = a // 环境变量覆盖配置，便于本地多实例测试

@@ -85,8 +85,10 @@ func (h *Installer) submit(w http.ResponseWriter, r *http.Request) {
 		fail("数据库地址/端口/库名/用户、管理员用户名必填，管理员密码至少 8 位")
 		return
 	}
-	dsn := fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=disable",
-		url.PathEscape(f.DBUser), url.QueryEscape(f.DBPass), f.Host, f.Port, f.DBName)
+	// userinfo 必须用 url.UserPassword 生成：PathEscape 不会转义 ':' 与 '@'，
+	// 数据库用户名/密码里含这两个字符时 DSN 的 userinfo 与 host 会被解析错位。
+	dsn := fmt.Sprintf("postgres://%s@%s:%s/%s?sslmode=disable",
+		url.UserPassword(f.DBUser, f.DBPass).String(), f.Host, f.Port, f.DBName)
 	database, err := db.Open(dsn)
 	if err != nil {
 		fail(err.Error())

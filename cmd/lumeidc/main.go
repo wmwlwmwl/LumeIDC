@@ -15,6 +15,7 @@ import (
 	"lumeidc/internal/config"
 	"lumeidc/internal/handler"
 	"lumeidc/internal/httpserver"
+	"lumeidc/internal/middleware"
 )
 
 // version 由构建期 -ldflags 注入（含 v 前缀的 git tag，如 v0.0.10），dev 为本地未打 tag 构建。
@@ -42,7 +43,16 @@ func runInstaller(version string) {
 	// 精确匹配优先于 RegisterWebUI 的 GET /{path...} 兜底。
 	mux.HandleFunc("GET /install", handler.InstallPage)
 	addr := installListenAddr()
-	srv := &http.Server{Addr: addr, Handler: mux}
+	// 与正式服务同样设超时：安装向导同样对外监听，缺超时会被慢连接长期占用。
+	// WriteTimeout 放宽到 120s——安装请求里要跑完全部迁移与建管理员，慢盘上可能超过 60s。
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           middleware.Recover(mux),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      120 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 	go func() {
