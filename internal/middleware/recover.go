@@ -26,7 +26,8 @@ func Recover(next http.Handler) http.Handler {
 			if rec == http.ErrAbortHandler {
 				panic(rec)
 			}
-			log.Printf("[recover] %s %s 处理时 panic: %v\n%s", r.Method, r.URL.Path, rec, debug.Stack())
+			// 路径用 %q：它由客户端控制，直接 %s 打出换行可以在日志里伪造行。
+			log.Printf("[recover] %s %q 处理时 panic: %v\n%s", r.Method, r.URL.Path, rec, debug.Stack())
 			http.Error(w, "服务器内部错误", http.StatusInternalServerError)
 		}()
 		next.ServeHTTP(w, r)

@@ -32,7 +32,7 @@ func writeJSON(w http.ResponseWriter, v any) {
 //   - 带 `%w`（errors.Unwrap 非 nil）：消息里混了上游/网络/DB 细节 → 只记日志、对外收敛；
 //   - 无包装：本仓自己编写的业务文案 → 原样展示（这些文案不含地址/密钥）。
 //
-// 新增「可展示」的错误时，优先在 service 层定义哨兵并加进上面的白名单。
+// 新增「可展示」的错误时，优先在 service 层定义哨兵并加进下面的白名单。
 func consoleErrMsg(err error) string {
 	if err == nil {
 		return ""
