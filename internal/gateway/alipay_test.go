@@ -47,17 +47,21 @@ func TestAlipaySignatureRoundTrip(t *testing.T) {
 	}
 }
 
-// TestAlipayVerifyNotifyMerchantBinding 覆盖「通知必须属于本商户」：
-// 同一支付宝账号下的多个应用可共用公钥，仅验签无法区分通知归属，
-// app_id / seller_id 不一致必须拒绝；字段缺失的老通知不能被误杀。
+// TestAlipayVerifyNotifyMerchantBinding 覆盖「通知必须来自本应用」：
+// app_id 不一致必须拒绝；字段缺失的老通知不能被误杀。
+// 不校验 seller_id——公钥按 APPID 签发、验签已绑定归属，而它是「只用于校验
+// 不参与下单」的可选字段，填错会让下单照常成功、回调被静默拒掉。
 func TestAlipayVerifyNotifyMerchantBinding(t *testing.T) {
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatal(err)
 	}
 	cfg := map[string]string{
-		"app_id": "2021000000000001", "seller_id": "2088000000000001",
+		"app_id":     "2021000000000001",
 		"public_key": publicPEM(&key.PublicKey),
+		// 老部署的 config 里可能残留 seller_id（曾短暂支持过）：必须被忽略，
+		// 否则历史配置配错过的站点会重新开始静默拒收回调。
+		"seller_id": "2088000000000001",
 	}
 	// notify 按支付宝 rsaCheckV1 规则签名：签名内容剔除 sign 与 sign_type；
 	// extra 里值为空的键不写入参数（模拟老版本通知不带该字段）。
@@ -85,20 +89,18 @@ func TestAlipayVerifyNotifyMerchantBinding(t *testing.T) {
 	cases := []struct {
 		name    string
 		appID   string
-		seller  string
 		wantErr bool
 	}{
-		{name: "本应用本收款账号", appID: cfg["app_id"], seller: cfg["seller_id"]},
-		{name: "仅 app_id 缺失不误杀", seller: cfg["seller_id"]},
-		{name: "仅 seller_id 缺失不误杀", appID: cfg["app_id"]},
-		{name: "两者都缺失不误杀"},
-		{name: "应用 ID 不匹配", appID: "9999999999999999", seller: cfg["seller_id"], wantErr: true},
-		{name: "收款账号不匹配", appID: cfg["app_id"], seller: "2088999999999999", wantErr: true},
+		{name: "本应用", appID: cfg["app_id"]},
+		{name: "app_id 缺失不误杀"},
+		{name: "应用 ID 不匹配", appID: "9999999999999999", wantErr: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			result, verr := (Alipay{}).VerifyNotify(notify(map[string]string{
-				"app_id": tc.appID, "seller_id": tc.seller,
+				"app_id": tc.appID,
+				// 通知里带别的收款账号也不该影响结果（不再比对 seller_id）。
+				"seller_id": "2088999999999999",
 			}), cfg)
 			if tc.wantErr {
 				if verr == nil {

@@ -25,7 +25,7 @@ export const GATEWAY_DRIVERS: Record<string, GatewayDriverMeta> = {
   },
   alipay: {
     label: '支付宝',
-    fields: ['api_url', 'app_id', 'seller_id', 'private_key', 'public_key', 'payment_mode', 'mobile_qrcode'],
+    fields: ['api_url', 'app_id', 'private_key', 'public_key', 'payment_mode', 'mobile_qrcode'],
     style: 'color:var(--el-color-primary);background:var(--el-color-primary-light-9)',
     // 与后端一致：空值为扫码模式（仅签约当面付也能用，风险最低）
     paymentModeDefault: 'qrcode',
