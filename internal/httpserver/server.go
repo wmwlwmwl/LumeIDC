@@ -367,10 +367,10 @@ func Build(cfg *config.Config, version string) (*App, error) {
 		Server: &http.Server{
 			Addr:              addr,
 			Handler:           h,
-			ReadHeaderTimeout: 10 * time.Second,
-			ReadTimeout:       30 * time.Second,
-			WriteTimeout:      60 * time.Second,
-			IdleTimeout:       120 * time.Second,
+			ReadHeaderTimeout: 10 * time.Second,  // 防慢头攻击：读完全部请求头的超时
+			WriteTimeout:      0,                 // WebSocket 隧道不能被响应写入超时断开
+			ReadTimeout:       0,                 // 同上，读请求体也不设上限
+			IdleTimeout:       120 * time.Second, // Keep-Alive 空闲超时
 		},
 		DB:       database,
 		Notifier: notifier,
