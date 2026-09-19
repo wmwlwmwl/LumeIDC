@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -20,6 +21,37 @@ import (
 	"lumeidc/internal/server"
 	"lumeidc/internal/service"
 )
+
+// consoleErrMsg 必须把带内网地址的上游错误收敛掉，只透传中性业务结论。
+func TestConsoleErrMsgHidesUpstreamAddress(t *testing.T) {
+	// 上游 *url.Error 会打印完整请求 URL（含面板域名与已签名查询串）：不能下发到浏览器。
+	upstream := fmt.Errorf("%s 请求失败: %w", "/api/host/list", &url.Error{
+		Op: "Get", URL: "https://panel.example.com/api/host/list?token=secret",
+		Err: errors.New("dial tcp 10.0.0.5:443: i/o timeout"),
+	})
+	got := consoleErrMsg(upstream)
+	for _, leak := range []string{"panel.example.com", "token=secret", "10.0.0.5", "dial tcp"} {
+		if strings.Contains(got, leak) {
+			t.Fatalf("上游地址/令牌泄露给用户: %q", got)
+		}
+	}
+	if got != "操作失败，请稍后重试" {
+		t.Fatalf("内部故障应使用统一文案，实际 %q", got)
+	}
+
+	// 中性业务结论必须保留原文，否则用户不知道该怎么处理。
+	for _, err := range []error{
+		server.ErrNotSupported,
+		service.ErrNoUpstream,
+		service.ErrServiceUnavailable,
+		service.ErrUpstreamPriceChanged,
+		fmt.Errorf("开通失败: %w", service.ErrNoUpstream), // 包装一层也要能识别
+	} {
+		if got := consoleErrMsg(err); got != err.Error() {
+			t.Errorf("业务性拒绝应原样透传: %v → %q", err, got)
+		}
+	}
+}
 
 func TestEasyPanelConfigSummary(t *testing.T) {
 	got := easyPanelConfigSummary(&server.HostOverview{Detail: server.HostDetail{

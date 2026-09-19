@@ -170,11 +170,12 @@ func (h *Pages) serviceUpgradeOrder(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, map[string]any{"ok": 0, "code": "price_changed", "msg": err.Error()})
 			return
 		}
+		msg := consoleErrMsg(err)
 		if wantsJSON(r) {
-			writeJSON(w, map[string]any{"ok": 0, "msg": err.Error()})
+			writeJSON(w, map[string]any{"ok": 0, "msg": msg})
 			return
 		}
-		http.Redirect(w, r, "/services/"+strconv.FormatInt(serviceID, 10)+"/upgrade?err="+url.QueryEscape(err.Error()), http.StatusSeeOther)
+		http.Redirect(w, r, "/services/"+strconv.FormatInt(serviceID, 10)+"/upgrade?err="+url.QueryEscape(msg), http.StatusSeeOther)
 		return
 	}
 	if diff > 0 {

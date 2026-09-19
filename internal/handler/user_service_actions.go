@@ -78,8 +78,9 @@ func (h *Pages) serviceRenew(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, "/user/verification?err="+url.QueryEscape(err.Error()), http.StatusSeeOther)
 			return
 		}
-		h.Svc.AppendLog(r.Context(), serviceID, userID, "续费下单", "失败："+err.Error())
-		jsonStatus(w, r, http.StatusBadRequest, err.Error())
+		msg := consoleErrMsg(err)
+		h.Svc.AppendLog(r.Context(), serviceID, userID, "续费下单", "失败："+msg)
+		jsonStatus(w, r, http.StatusBadRequest, msg)
 		return
 	}
 	h.Svc.AppendLog(r.Context(), serviceID, userID, "续费下单", "周期 "+cycle)
@@ -266,7 +267,7 @@ func (h *Pages) serviceChart(w http.ResponseWriter, r *http.Request) {
 	sel := r.URL.Query().Get("range")
 	series, err := h.Console.Chart(r.Context(), userID, id, typ, sel)
 	if err != nil {
-		jsonFail(w, err.Error())
+		jsonFail(w, consoleErrMsg(err))
 		return
 	}
 	jsonOK(w, "series", series)
@@ -282,7 +283,7 @@ func (h *Pages) serviceUsage(w http.ResponseWriter, r *http.Request) {
 	id, _ := strconv.ParseInt(r.PathValue("serviceID"), 10, 64)
 	u, err := h.Console.Usage(r.Context(), userID, id)
 	if err != nil {
-		jsonFail(w, err.Error())
+		jsonFail(w, consoleErrMsg(err))
 		return
 	}
 	jsonOK(w, "usage", u)
@@ -298,7 +299,7 @@ func (h *Pages) servicePower(w http.ResponseWriter, r *http.Request) {
 	id, _ := strconv.ParseInt(r.PathValue("serviceID"), 10, 64)
 	ps, err := h.Console.PowerStatus(r.Context(), userID, id)
 	if err != nil {
-		jsonFail(w, err.Error())
+		jsonFail(w, consoleErrMsg(err))
 		return
 	}
 	jsonOK(w, "power", ps)
@@ -314,7 +315,7 @@ func (h *Pages) serviceTraffic(w http.ResponseWriter, r *http.Request) {
 	id, _ := strconv.ParseInt(r.PathValue("serviceID"), 10, 64)
 	days, err := h.Console.TrafficUsage(r.Context(), userID, id)
 	if err != nil {
-		jsonFail(w, err.Error())
+		jsonFail(w, consoleErrMsg(err))
 		return
 	}
 	jsonOK(w, "days", days)
@@ -330,7 +331,7 @@ func (h *Pages) serviceSnapshot(w http.ResponseWriter, r *http.Request) {
 	id, _ := strconv.ParseInt(r.PathValue("serviceID"), 10, 64)
 	info, err := h.Console.SnapshotInfo(r.Context(), userID, id)
 	if err != nil {
-		jsonFail(w, err.Error())
+		jsonFail(w, consoleErrMsg(err))
 		return
 	}
 	jsonOK(w, "info", info)
@@ -352,7 +353,7 @@ func (h *Pages) serviceSnapshotAction(w http.ResponseWriter, r *http.Request) {
 	}
 	raw, err := h.Console.SnapshotAction(r.Context(), userID, id, fn, r.Form)
 	if err != nil {
-		jsonFail(w, err.Error())
+		jsonFail(w, consoleErrMsg(err))
 		return
 	}
 	writeJSON(w, moduleResultJSON(raw))
@@ -372,7 +373,7 @@ func (h *Pages) serviceBlocks(w http.ResponseWriter, r *http.Request) {
 	// 方块集合因产品而异：按模块清单 Areas 里有哪些 key 拉哪些。
 	sum, err := h.Console.ModuleSummary(cctx, userID, id)
 	if err != nil {
-		jsonFail(w, err.Error())
+		jsonFail(w, consoleErrMsg(err))
 		return
 	}
 	has := map[string]bool{}
@@ -396,7 +397,8 @@ func (h *Pages) serviceBlocks(w http.ResponseWriter, r *http.Request) {
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
-				errs[key] = err.Error()
+				// 逐方块错误也会回发给浏览器，同样须收敛（原文进服务端日志）。
+				errs[key] = consoleErrMsg(err)
 				return
 			}
 			blocks[key] = v
@@ -433,7 +435,7 @@ func (h *Pages) serviceBlockAction(w http.ResponseWriter, r *http.Request) {
 	// showSecurityRules 走 BlockAction 白名单之外，单独放行（只读）。
 	raw, err := h.Console.BlockAction(r.Context(), userID, id, fn, r.Form)
 	if err != nil {
-		jsonFail(w, err.Error())
+		jsonFail(w, consoleErrMsg(err))
 		return
 	}
 	writeJSON(w, moduleResultJSON(raw))
@@ -450,7 +452,7 @@ func (h *Pages) serviceBlockRules(w http.ResponseWriter, r *http.Request) {
 	gid, _ := strconv.ParseInt(r.URL.Query().Get("gid"), 10, 64)
 	rules, err := h.Console.SecurityRules(r.Context(), userID, id, gid)
 	if err != nil {
-		jsonFail(w, err.Error())
+		jsonFail(w, consoleErrMsg(err))
 		return
 	}
 	jsonOK(w, "rules", rules)
@@ -465,7 +467,7 @@ func (h *Pages) reinstallOptions(w http.ResponseWriter, r *http.Request) {
 	id, _ := strconv.ParseInt(r.PathValue("serviceID"), 10, 64)
 	opts, err := h.Console.OSOptions(r.Context(), userID, id)
 	if err != nil {
-		jsonFail(w, err.Error())
+		jsonFail(w, consoleErrMsg(err))
 		return
 	}
 	jsonOK(w, "os", opts)
@@ -481,7 +483,7 @@ func (h *Pages) serviceRescueState(w http.ResponseWriter, r *http.Request) {
 	id, _ := strconv.ParseInt(r.PathValue("serviceID"), 10, 64)
 	on, err := h.Console.RescueState(r.Context(), userID, id)
 	if err != nil {
-		jsonFail(w, err.Error())
+		jsonFail(w, consoleErrMsg(err))
 		return
 	}
 	jsonOK(w, "rescue", on)

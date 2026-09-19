@@ -154,7 +154,7 @@ func (h *Pages) serviceRefresh(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	ov, err := h.Console.Overview(ctx, userID, id)
 	if err != nil {
-		jsonFail(w, err.Error())
+		jsonFail(w, consoleErrMsg(err))
 		return
 	}
 	if err := h.Svc.SaveHostSnapshot(r.Context(), id, userID, ov); err != nil {
@@ -243,14 +243,16 @@ func (h *Pages) consoleAction(w http.ResponseWriter, r *http.Request) {
 	}
 	dest := "/services/" + strconv.FormatInt(serviceID, 10)
 	if err != nil {
+		// 原文含上游地址，只进服务端日志；回显与服务日志统一用收敛后的文案。
+		msg := consoleErrMsg(err)
 		if !wantsJSON(r) {
 			if sess := middleware.FromSession(r.Context()); sess != nil {
-				sess.SetFlash("操作失败：" + err.Error())
+				sess.SetFlash("操作失败：" + msg)
 			}
 		}
-		h.Svc.AppendLog(r.Context(), serviceID, userID, opLabel(action), "失败："+err.Error())
+		h.Svc.AppendLog(r.Context(), serviceID, userID, opLabel(action), "失败："+msg)
 		if wantsJSON(r) {
-			writeJSON(w, map[string]any{"ok": 0, "msg": "操作失败：" + err.Error()})
+			writeJSON(w, map[string]any{"ok": 0, "msg": "操作失败：" + msg})
 			return
 		}
 	} else {

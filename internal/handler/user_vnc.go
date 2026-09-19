@@ -31,7 +31,7 @@ func (h *Pages) serviceVncPass(w http.ResponseWriter, r *http.Request) {
 	id, _ := strconv.ParseInt(r.PathValue("serviceID"), 10, 64)
 	info, err := h.Console.VNCInfo(r.Context(), userID, id)
 	if err != nil {
-		jsonFail(w, err.Error())
+		jsonFail(w, consoleErrMsg(err))
 		return
 	}
 	jsonOK(w, "password", info.Password)

@@ -75,12 +75,14 @@ func resolveProvider(ctx context.Context, providers *server.Registry, servers *r
 func (lc *Lifecycle) providerFor(ctx context.Context, s *serviceRef) (server.Provider, server.Config, error) {
 	// 同 console.resolve：hostID>0 即有上游；upstream_pid=0 为合法弹性模式（EasyPanel）。
 	if !s.ServerID.Valid || s.UpstreamHost == 0 {
-		return nil, server.Config{}, errNoUpstream
+		return nil, server.Config{}, ErrNoUpstream
 	}
 	return resolveProvider(ctx, lc.Providers, lc.Servers, s.UpstreamProvider, s.ServerID.Int64)
 }
 
-var errNoUpstream = lifecycleErr("该服务未绑定上游")
+// ErrNoUpstream 该服务未绑定上游（本地服务）。属业务性拒绝：文案中性、
+// 可直接展示给用户，与上游故障区分（见 handler.consoleErrMsg）。
+var ErrNoUpstream = lifecycleErr("该服务未绑定上游")
 
 type lifecycleErr string
 
@@ -117,7 +119,7 @@ func (lc *Lifecycle) Renew(ctx context.Context, serviceID int64, cycle string, o
 		return err
 	}
 	prov, cfg, err := lc.providerFor(ctx, s)
-	if err == errNoUpstream {
+	if err == ErrNoUpstream {
 		return nil // 本地服务，无需上游操作
 	}
 	if err != nil {
@@ -295,7 +297,7 @@ func (lc *Lifecycle) transition(ctx context.Context, s *serviceRef, from, to int
 	defer lc.releaseExecutionLock()
 
 	prov, cfg, err := lc.providerFor(ctx, s)
-	if err == errNoUpstream {
+	if err == ErrNoUpstream {
 		res, err := lc.db.ExecContext(ctx,
 			`UPDATE services SET status=$1 WHERE id=$2 AND status`+cmp+`$3`, to, s.ID, from)
 		if err != nil {
@@ -969,7 +971,7 @@ func (lc *Lifecycle) Upgrade(ctx context.Context, serviceID int64, cycle string,
 		return fmt.Errorf("升级订单缺少目标产品")
 	}
 	prov, cfg, err := lc.providerFor(ctx, s)
-	if err == errNoUpstream {
+	if err == ErrNoUpstream {
 		// 防御性兜底（升级订单必绑定服务器）：仅本地换产品
 		return lc.localUpgradeApply(ctx, serviceID, targetProductID, cycle, snapshot)
 	}

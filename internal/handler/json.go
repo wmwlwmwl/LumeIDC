@@ -2,16 +2,42 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
+	"log"
 	"math"
 	"net/http"
 	"strconv"
 	"strings"
+
+	"lumeidc/internal/server"
+	"lumeidc/internal/service"
 )
 
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	json.NewEncoder(w).Encode(v)
+}
+
+// consoleErrMsg 把用户侧实例操作（控制台/续费/升级）的上游故障收敛成可展示文案。
+//
+// 上游 provider 的错误里带内网地址与已签名 URL：`*url.Error` 会打印完整请求 URL
+// （如 `/api/xx 请求失败: Get "https://panel.example.com/api/xx": dial tcp 10.0.0.5 ...`），
+// 直接 jsonFail(err.Error()) 等于把上游面板地址下发给普通用户，与本项目
+// 「上游地址/令牌不下发浏览器」的设计目标（见 user_vnc.go 顶部说明）直接冲突。
+//
+// 只有明确的中性业务结论原样透传；其余统一笼统文案，原文经 log 留在服务端供排查。
+// 新增「可展示」的错误时，优先在 service 层定义哨兵并加到这里，而不是放开原文。
+func consoleErrMsg(err error) string {
+	switch {
+	case errors.Is(err, server.ErrNotSupported), // 该上游不支持此操作
+		errors.Is(err, service.ErrNoUpstream),           // 该服务未绑定上游
+		errors.Is(err, service.ErrServiceUnavailable),   // 服务不存在或不可操作
+		errors.Is(err, service.ErrUpstreamPriceChanged): // 商品价格已更新，请重新确认
+		return err.Error()
+	}
+	log.Printf("[console] 上游操作失败: %v", err)
+	return "操作失败，请稍后重试"
 }
 
 // jsonOK 输出 {ok:1, key:value} 成功响应（前端以 ok===1 判断）。
