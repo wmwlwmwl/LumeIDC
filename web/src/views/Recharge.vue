@@ -80,6 +80,9 @@ function handleLogPage(p: number) {
 }
 
 async function submit() {
+  // 按钮 loading 只拦点击，表单 @submit.prevent 仍可被 Enter 反复触发，
+  // 不拦会下出两笔充值单。
+  if (submitting.value) return
   if (!amount.value || amount.value <= 0) {
     ElMessage.warning('请输入充值金额')
     return

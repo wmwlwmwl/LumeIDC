@@ -89,14 +89,14 @@
           <!-- 价格 -->
           <div class="px-5 pt-3 pb-4">
             <div class="flex items-baseline gap-2">
-              <span class="text-3xl font-bold text-rose-500">¥{{ item.promo_price ?? item.original_price }}</span>
+              <span class="text-3xl font-bold text-rose-500">¥{{ formatMoney(item.promo_price ?? item.original_price) }}</span>
               <span v-if="item.promo_price !== undefined && Number(item.original_price) > Number(item.promo_price)" class="text-slate-400 line-through text-sm">
-                ¥{{ item.original_price }}
+                ¥{{ formatMoney(item.original_price) }}
               </span>
               <span class="text-slate-400 text-sm">/月起</span>
             </div>
-            <div v-if="item.discount" class="text-rose-500 text-sm mt-1">立省 ¥{{ item.discount }}</div>
-            <div v-if="item.threshold" class="text-amber-600 text-sm mt-1">满 ¥{{ item.threshold }} 减 ¥{{ item.reduce }}</div>
+            <div v-if="item.discount" class="text-rose-500 text-sm mt-1">立省 ¥{{ formatMoney(item.discount) }}</div>
+            <div v-if="item.threshold" class="text-amber-600 text-sm mt-1">满 ¥{{ formatMoney(item.threshold) }} 减 ¥{{ formatMoney(item.reduce) }}</div>
           </div>
           <!-- 库存 -->
           <div v-if="promotion.type === 'flash_sale'" class="px-5 pb-3">
@@ -168,7 +168,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Bell, Document, ArrowDown } from '@element-plus/icons-vue'
 import { http } from '../http'
-import { formatDate as fmtDateTime, parseDate } from '@/utils/format'
+import { formatDate as fmtDateTime, formatMoney, parseDate } from '@/utils/format'
 
 interface PromoProduct {
   product_id: number
@@ -268,8 +268,9 @@ async function claimCoupon(item: PromoProduct) {
     } else {
       ElMessage.error(res.msg || '领取失败')
     }
-  } catch (e) {
-    ElMessage.error('领取失败，请先登录')
+  } catch (err: unknown) {
+    // 真实原因可能是未登录、网络失败或后端拒绝，统一写死「请先登录」会误导用户。
+    ElMessage.error((err as Error).message || '领取失败，请先登录后重试')
   } finally {
     couponClaiming.value = false
   }

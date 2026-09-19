@@ -5,6 +5,7 @@ import { ElMessage, ElTag, ElButton } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
 import type { ColumnOption } from '@/types'
 import { fetchAdminCoupons, createAdminCoupon, type AdminCoupon } from '../admin/api'
+import { formatMoney } from '@/utils/format'
 
 const list = ref<AdminCoupon[]>([])
 const loading = ref(false)
@@ -79,7 +80,7 @@ const columns = ref<ColumnOption[]>([
     label: '最低消费',
     width: 110,
     sortable: true,
-    formatter: (row) => (Number(row.min_amount) > 0 ? `￥${row.min_amount}` : '不限'),
+    formatter: (row) => (Number(row.min_amount) > 0 ? `￥${formatMoney(row.min_amount)}` : '不限'),
   },
   { prop: 'used', label: '使用情况', width: 180, sortable: true, formatter: (row) => usageCell(row) },
   { prop: 'expires_at', label: '有效期', width: 140, sortable: true, formatter: (row) => expiresCell(row) },
@@ -180,7 +181,7 @@ async function save() {
 }
 
 function typeLabel(c: AdminCoupon): string {
-  return c.type === 'fixed' ? `满减 ￥${c.value}` : `折扣 ${c.value}%`
+  return c.type === 'fixed' ? `满减 ￥${formatMoney(c.value)}` : `折扣 ${c.value}%`
 }
 
 // 过期判断：expires_at 为 'YYYY-MM-DD'，当天仍有效

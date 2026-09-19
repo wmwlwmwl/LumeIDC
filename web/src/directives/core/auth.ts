@@ -41,6 +41,11 @@ function checkAuthPermission(el: HTMLElement, binding: DirectiveBinding<string>)
   // 获取当前路由的权限列表
   const authList = (getAppRouter().currentRoute.value.meta.authList as Array<{ authMark: string }>) || []
 
+  // 本项目后端只有「是否管理员」这一层鉴权，没有任何路由配置 meta.authList。
+  // 列表为空时必须放行：否则按上面示例写下的 v-auth 元素会被静默移除（DOM 删了
+  // 就回不来，updated 也救不回），表现为「加了权限标记的按钮凭空消失」。
+  if (authList.length === 0) return
+
   // 检查是否有对应的权限标识
   const hasPermission = authList.some((item) => item.authMark === binding.value)
 
