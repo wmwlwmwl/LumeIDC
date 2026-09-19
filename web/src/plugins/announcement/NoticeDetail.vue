@@ -3,7 +3,7 @@ import { ref, onMounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { ArrowLeft, Clock, Document } from '@element-plus/icons-vue'
-import { fetchNotice, type Announcement } from '../api/store'
+import { fetchNotice, type Announcement } from '@/api/store'
 import { formatDate } from '@/utils/format'
 import PublicContainer from '@/components/public/PublicContainer.vue'
 

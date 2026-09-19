@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"sort"
+	"strings"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -39,7 +40,18 @@ func Open(dsn string) (*sql.DB, error) {
 
 // Migrate applies embedded migration files in order. schema_migrations tracks applied versions.
 // Uses advisory lock to prevent concurrent migrations.
+// 核心迁移 version 键保持裸文件名（兼容已部署库）。
 func Migrate(ctx context.Context, d *sql.DB, migrations fs.FS) error {
+	return migrate(ctx, d, migrations, "")
+}
+
+// MigratePrefixed 以 prefix 隔离 version 命名空间，供插件迁移使用。
+// version 键为 "{prefix}/{文件名}"，避免插件与核心、插件之间同名文件冲突。
+func MigratePrefixed(ctx context.Context, d *sql.DB, migrations fs.FS, prefix string) error {
+	return migrate(ctx, d, migrations, strings.TrimSuffix(prefix, "/"))
+}
+
+func migrate(ctx context.Context, d *sql.DB, migrations fs.FS, prefix string) error {
 	// 会话级 advisory lock 必须绑定专用连接：连接池上执行时加锁/解锁会落到不同连接，
 	// 解锁无效且锁残留后其他实例永远报"另一个迁移进程正在运行"。
 	conn, err := d.Conn(ctx)
@@ -75,8 +87,12 @@ func Migrate(ctx context.Context, d *sql.DB, migrations fs.FS) error {
 	}
 	sort.Strings(entries)
 	for _, name := range entries {
+		version := name
+		if prefix != "" {
+			version = prefix + "/" + name
+		}
 		var exists bool
-		if err := d.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=$1)`, name).Scan(&exists); err != nil {
+		if err := d.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=$1)`, version).Scan(&exists); err != nil {
 			return err
 		}
 		if exists {
@@ -92,14 +108,14 @@ func Migrate(ctx context.Context, d *sql.DB, migrations fs.FS) error {
 		}
 		if _, err := tx.ExecContext(ctx, string(b)); err != nil {
 			tx.Rollback()
-			return fmt.Errorf("迁移 %s 失败: %w", name, err)
+			return fmt.Errorf("迁移 %s 失败: %w", version, err)
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO schema_migrations(version) VALUES($1)`, name); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO schema_migrations(version) VALUES($1)`, version); err != nil {
 			tx.Rollback()
 			return err
 		}
 		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("迁移 %s 提交失败: %w", name, err)
+			return fmt.Errorf("迁移 %s 提交失败: %w", version, err)
 		}
 	}
 	return nil

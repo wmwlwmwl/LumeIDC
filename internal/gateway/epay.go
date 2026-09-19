@@ -44,6 +44,9 @@ type epayOrder struct {
 }
 
 func (Epay) Driver() string { return "epay" }
+
+// init 自注册到网关注册表（新增网关照此一行接入，组合根无需改动）。
+func init() { Register(Epay{}) }
 func (Epay) Name() string   { return "易支付" }
 
 // CheckoutPath 声明易支付可使用本地二维码结算页。

@@ -13,6 +13,7 @@ import (
 
 	"lumeidc/internal/gateway"
 	"lumeidc/internal/money"
+	"lumeidc/internal/plugin"
 	"lumeidc/internal/repo"
 	"lumeidc/internal/server"
 	"lumeidc/internal/service"
@@ -78,7 +79,6 @@ const (
 	taskReleaseStock       = "release_expired_stock"
 	taskReconcilePayments  = "reconcile_pending_payments"
 	taskNotifyExpiringSoon = "notify_expiring_soon"
-	taskNotifyStaleTickets = "notify_stale_tickets"
 	taskNotifyEndingPromos = "notify_ending_promotions"
 	taskSyncPrices         = "sync_prices"
 )
@@ -147,8 +147,29 @@ func (j *Jobs) Start() *cron.Cron {
 	})
 	// 定时同步上游产品价格与库存（每 6 小时）
 	c.AddFunc("@every 6h", func() { j.syncPrices(context.Background()) })
-	c.AddFunc("@every 1h", func() { j.notifyStaleTickets(context.Background()) })
 	c.AddFunc("@every 1h", func() { j.notifyEndingPromotions(context.Background()) })
+	// 插件定时任务（CronContributor 能力）：插件禁用时跳过；失败与核心任务同待遇告警。
+	for _, pl := range plugin.All() {
+		cc, ok := pl.(plugin.CronContributor)
+		if !ok {
+			continue
+		}
+		pluginName := pl.Info().Name
+		for _, job := range cc.CronJobs() {
+			job := job // 闭包捕获
+			if _, err := c.AddFunc(job.Spec, func() {
+				if !plugin.Enabled(pluginName) {
+					return
+				}
+				ctx := context.Background()
+				if err := job.Run(ctx); err != nil {
+					j.failTask(ctx, "plugin:"+pluginName+":"+job.Name, job.What, err)
+				}
+			}); err != nil {
+				log.Printf("[cron] 插件 %s 任务 %s 注册失败（表达式 %q 无效）: %v", pluginName, job.Name, job.Spec, err)
+			}
+		}
+	}
 	c.Start()
 	return c
 }
@@ -199,57 +220,6 @@ func (j *Jobs) notifyEndingPromotions(ctx context.Context) {
 		}
 		if _, err := j.DB.ExecContext(ctx, `INSERT INTO promotion_ending_notifications(promotion_id,user_id) VALUES($1,$2) ON CONFLICT DO NOTHING`, it.promotionID, it.userID); err != nil {
 			j.failTask(ctx, taskNotifyEndingPromos, "写入活动即将结束提醒标记", err)
-		}
-	}
-}
-
-func (j *Jobs) notifyStaleTickets(ctx context.Context) {
-	if j.DB == nil || j.Notifier == nil {
-		return
-	}
-	rows, err := j.DB.QueryContext(ctx, `SELECT id,user_id,subject FROM tickets WHERE status<>'closed' AND updated_at < now()-interval '24 hours' AND (timeout_notified_at IS NULL OR timeout_notified_at < now()-interval '24 hours')`)
-	if err != nil {
-		j.failTask(ctx, taskNotifyStaleTickets, "查询超时工单", err)
-		return
-	}
-	type ticket struct {
-		id, userID int64
-		subject    string
-	}
-	var tickets []ticket
-	for rows.Next() {
-		var it ticket
-		if err := rows.Scan(&it.id, &it.userID, &it.subject); err != nil {
-			rows.Close()
-			log.Print("读取超时工单失败，稍后重试")
-			j.alertTaskFailure(ctx, taskNotifyStaleTickets, "读取超时工单", err)
-			return
-		}
-		tickets = append(tickets, it)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		log.Print("遍历超时工单失败，稍后重试")
-		j.alertTaskFailure(ctx, taskNotifyStaleTickets, "遍历超时工单", err)
-		return
-	}
-	// 查询连接先释放，再保存通知，避免小连接池被占满时等待自身。
-	title, _ := j.Notifier.Settings.Get(ctx, "ticket_notify_timeout_title")
-	if strings.TrimSpace(title) == "" {
-		title = "工单处理提醒"
-	}
-	var notifiedIDs []int64
-	for _, it := range tickets {
-		body := "你的工单「" + it.subject + "」仍在处理中，客服会尽快跟进。"
-		if err := j.Notifier.NotifyTemplate(ctx, it.userID, "ticket_timeout", title, body, map[string]string{"subject": it.subject}); err != nil {
-			continue
-		}
-		notifiedIDs = append(notifiedIDs, it.id)
-	}
-	// 仅标记已可靠入队的通知；提交后标记前崩溃可能重复提醒，但不会吞通知。
-	if len(notifiedIDs) > 0 {
-		if _, err := j.DB.ExecContext(ctx, `UPDATE tickets SET timeout_notified_at=now() WHERE id = ANY($1)`, notifiedIDs); err != nil {
-			j.failTask(ctx, taskNotifyStaleTickets, "批量更新工单提醒标记", err)
 		}
 	}
 }
@@ -367,6 +337,7 @@ func (j *Jobs) expireInvoices(ctx context.Context) {
 		return
 	}
 	var orderIDs []int64
+	var invIDs []int64
 	var n int
 	for expired.Next() {
 		var id int64
@@ -377,6 +348,7 @@ func (j *Jobs) expireInvoices(ctx context.Context) {
 			return
 		}
 		n++
+		invIDs = append(invIDs, id)
 		if orderID.Valid {
 			orderIDs = append(orderIDs, orderID.Int64)
 		}
@@ -411,6 +383,9 @@ func (j *Jobs) expireInvoices(ctx context.Context) {
 	}
 	if n > 0 || len(refunds) > 0 {
 		log.Printf("[cron] 已将 %d 条账单标记为过期，退回 %d 笔抵扣", n, len(refunds))
+	}
+	if n > 0 {
+		plugin.Emit(ctx, plugin.EventInvoiceExpired, plugin.InvoiceExpiredPayload{InvoiceIDs: invIDs, Count: n})
 	}
 }
 

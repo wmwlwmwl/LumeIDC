@@ -62,6 +62,9 @@ const (
 type Wxpay struct{}
 
 func (Wxpay) Driver() string { return "wxpay" }
+
+// init 自注册到网关注册表（新增网关照此一行接入，组合根无需改动）。
+func init() { Register(Wxpay{}) }
 func (Wxpay) Name() string   { return "微信支付" }
 
 // CheckoutPath 声明微信 Native 支付复用本站的本地二维码结算页。

@@ -270,7 +270,7 @@ func (c *fulfillmentMemoryConn) QueryContext(ctx context.Context, query string, 
 	case strings.Contains(query, "RETURNING claim_version"):
 		return fulfillmentRow(int64(1)), nil
 	case strings.Contains(query, "SELECT server_id,coalesce(upstream_provider"):
-		return fulfillmentRow(nil, "", int64(0)), nil
+		return fulfillmentRow(nil, "", int64(0), int64(1), int64(1)), nil
 	case strings.Contains(query, "SELECT id FROM services"), strings.Contains(query, "SELECT id FROM fulfillment_jobs"):
 		return fulfillmentRow(args[0].Value), nil
 	default:

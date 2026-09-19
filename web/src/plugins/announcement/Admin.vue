@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { useAdminRequest } from '../admin/useAdminTable'
+import { useAdminRequest } from '@/admin/useAdminTable'
 import { ref, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Bell } from '@element-plus/icons-vue'
-import { fetchAdminAnnouncements, saveAnnouncement, deleteAnnouncement, type AdminAnnouncement } from '../admin/api'
+import { fetchAdminAnnouncements, saveAnnouncement, deleteAnnouncement, type AdminAnnouncement } from '@/admin/api'
 
 const list = ref<AdminAnnouncement[]>([])
 const loading = ref(false)

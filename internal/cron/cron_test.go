@@ -172,11 +172,9 @@ func TestReminderMarksOnlyAfterEnqueue(t *testing.T) {
 	}
 	exec(`CREATE TABLE users(id bigint PRIMARY KEY,email text);
 	CREATE TABLE settings(key text PRIMARY KEY,value text);
-	CREATE TABLE tickets(id bigint,user_id bigint,subject text,status text,updated_at timestamptz,timeout_notified_at timestamptz);
 	CREATE TABLE services(id bigint,user_id bigint,status int,expires_at timestamptz,expire_warn_sent boolean);
 	INSERT INTO users VALUES(1,'to@x.test');
 	INSERT INTO settings VALUES('notify_email_forward_enabled','1');
-	INSERT INTO tickets VALUES(1,1,'工单','open',now()-interval '2 days',NULL);
 	INSERT INTO services VALUES(1,1,1,now()+interval '1 day',false)`)
 	// 必须含短信相关迁移：notify 在同一事务里还要按场景绑定写 sms_outbox，
 	// 缺表会让入队整体失败，测出的"标记与入队不一致"是夹具缺表而非业务缺陷。
@@ -193,28 +191,24 @@ func TestReminderMarksOnlyAfterEnqueue(t *testing.T) {
 	exec(`ALTER TABLE mail_outbox ADD CONSTRAINT reject_test CHECK (subject='不可能的主题')`)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	j.notifyStaleTickets(ctx)
+	// 工单侧同款「标记与入队一致性」测试随功能迁至 internal/plugins/tickets。
 	j.notifyExpiringSoon(ctx)
 	check := func(want bool) {
 		t.Helper()
-		var ticketMarked, serviceMarked bool
-		if err := d.QueryRow(`SELECT timeout_notified_at IS NOT NULL FROM tickets`).Scan(&ticketMarked); err != nil {
-			t.Fatal(err)
-		}
+		var serviceMarked bool
 		if err := d.QueryRow(`SELECT expire_warn_sent FROM services`).Scan(&serviceMarked); err != nil {
 			t.Fatal(err)
 		}
-		if ticketMarked != want || serviceMarked != want {
+		if serviceMarked != want {
 			t.Fatal("提醒标记与入队结果不一致")
 		}
 	}
 	check(false)
 	exec(`ALTER TABLE mail_outbox DROP CONSTRAINT reject_test`)
-	j.notifyStaleTickets(ctx)
 	j.notifyExpiringSoon(ctx)
 	check(true)
 	var count int
-	if err := d.QueryRow(`SELECT count(*) FROM mail_outbox`).Scan(&count); err != nil || count != 2 {
+	if err := d.QueryRow(`SELECT count(*) FROM mail_outbox`).Scan(&count); err != nil || count != 1 {
 		t.Fatal("提醒未完整保存到邮件队列")
 	}
 }

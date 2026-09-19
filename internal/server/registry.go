@@ -12,7 +12,15 @@ type Registry struct {
 	providers map[string]Provider
 }
 
-// NewRegistry 创建空注册表。内置供应商在组装层（httpserver）统一注册。
+// DefaultRegistry 进程级默认注册表：各供应商包在 init() 中经 Register 自注册，
+// 组合根直接使用。新增供应商 = 新目录 + 包内一行 init，无需改动组合根。
+// 测试用 NewRegistry 建独立实例，与默认表隔离。
+var DefaultRegistry = NewRegistry()
+
+// Register 向 DefaultRegistry 注册供应商（覆盖写）。
+func Register(p Provider) { DefaultRegistry.Register(p) }
+
+// NewRegistry 创建空注册表（测试隔离用；生产路径用 DefaultRegistry）。
 func NewRegistry() *Registry {
 	return &Registry{providers: map[string]Provider{}}
 }

@@ -10,6 +10,9 @@ import (
 type Mock struct{}
 
 func (Mock) Driver() string { return "mock" }
+
+// init 自注册到网关注册表（mock 仅测试环境启用，由后台按配置决定可用性）。
+func init() { Register(Mock{}) }
 func (Mock) Name() string   { return "模拟支付（测试）" }
 
 func (Mock) PayURL(ctx context.Context, req PayRequest) (PayResult, error) {

@@ -3,7 +3,8 @@ import { computed, onMounted, ref, h } from 'vue'
 import { ElMessage, ElTag } from 'element-plus'
 import { Check, User } from '@element-plus/icons-vue'
 import type { ColumnOption } from '@/types'
-import ArtStatsCard from '../components/core/cards/art-stats-card/index.vue'
+import ArtStatsCard from '@/components/core/cards/art-stats-card/index.vue'
+import { apiPrefix } from '@/http/index'
 import {
   addAdminTicketNote,
   assignAdminTicket,
@@ -17,9 +18,9 @@ import {
   type AdminTicketMessage,
   type AdminTicketAttachment,
   uploadAdminTicketAttachment,
-} from '../admin/api'
+} from '@/admin/api'
 
-import { useAdminRequest } from '../admin/useAdminTable'
+import { useAdminRequest } from '@/admin/useAdminTable'
 
 type TicketDetail = AdminTicket & { body: string; assignee_id?: number; assignee_name?: string }
 const list = ref<AdminTicket[]>([])
@@ -155,6 +156,11 @@ function priorityColor(value: string) {
     : value === 'high'
       ? 'color:var(--el-color-warning);font-weight:650'
       : 'color:var(--art-gray-600)'
+}
+
+// 管理侧附件下载 URL 由前端按 apiPrefix 拼接（自定义后台路径下后端无法预知前缀）。
+function attachmentUrl(f: AdminTicketAttachment) {
+  return `${apiPrefix()}/plugin/tickets/${selected.value?.id}/attachments/${f.id}`
 }
 
 const columns = ref<ColumnOption[]>([
@@ -461,7 +467,7 @@ function toggleUnassigned() {
         </div>
         <div v-if="attachments.length" class="drawer-attachments">
           <span class="message-label">工单附件</span>
-          <a v-for="file in attachments" :key="file.id" :href="file.url" target="_blank" rel="noreferrer">{{ file.name }}</a>
+          <a v-for="file in attachments" :key="file.id" :href="attachmentUrl(file)" target="_blank" rel="noreferrer">{{ file.name }}</a>
         </div>
         <div class="conversation">
           <div

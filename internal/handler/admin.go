@@ -25,7 +25,6 @@ type Admin struct {
 	PrivateFiles  *storage.PrivateFiles
 	Admins        *repo.Admins
 	Lockout       *repo.LoginAttempts
-	Announcements *repo.Announcements
 	LocalCaptcha  *captcha.Service
 	Coupons       *repo.Coupons
 	Refunds       *repo.Refunds
@@ -52,20 +51,7 @@ func (a *Admin) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /admin/orders", a.adminOrders)
 	mux.HandleFunc("GET /admin/logs", a.adminLogs)
 	mux.HandleFunc("GET /admin/refunds", a.adminRefunds)
-	mux.HandleFunc("GET /admin/announcements", a.adminAnnouncements)
-	mux.HandleFunc("GET /admin/tickets", a.adminTickets)
-	mux.HandleFunc("GET /admin/tickets/stats", a.adminTicketStats)
-	mux.HandleFunc("GET /admin/tickets/{ticketID}", a.adminTicketDetail)
-	mux.HandleFunc("POST /admin/tickets/{ticketID}/reply", a.adminTicketReply)
-	mux.HandleFunc("POST /admin/tickets/{ticketID}/status", a.adminTicketStatus)
-	mux.HandleFunc("POST /admin/tickets/{ticketID}/assign", a.adminTicketAssign)
-	mux.HandleFunc("POST /admin/tickets/{ticketID}/internal-note", a.adminTicketInternalNote)
-	mux.HandleFunc("POST /admin/tickets/{ticketID}/attachments", a.adminTicketAttachment)
-	mux.HandleFunc("GET /admin/tickets/{ticketID}/attachments/{attachmentID}", a.adminTicketAttachmentDownload)
-	mux.HandleFunc("GET /admin/ticket-assignees", a.adminTicketAssignees)
-	mux.HandleFunc("GET /admin/announcements/edit", a.adminAnnouncementForm)
-	mux.HandleFunc("POST /admin/announcements/save", a.adminAnnouncementSave)
-	mux.HandleFunc("POST /admin/announcements/{id}/delete", a.adminAnnouncementDelete)
+	// 工单管理 API 由 tickets 插件提供（/admin/plugin/tickets/...）。
 	mux.HandleFunc("GET /admin/coupons", a.adminCoupons)
 	mux.HandleFunc("POST /admin/coupons/save", a.adminCouponCreate)
 	// 营销活动

@@ -11,7 +11,7 @@ import {
   type TicketAttachment,
   type TicketItem,
   type TicketMessage,
-} from '../api/user'
+} from '@/api/user'
 import { formatDate } from '@/utils/format'
 
 const route = useRoute()

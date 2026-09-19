@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"lumeidc/internal/middleware"
+	"lumeidc/internal/plugin"
 	"lumeidc/internal/repo"
 	"lumeidc/internal/service"
 	"lumeidc/internal/storage"
@@ -92,17 +93,8 @@ func (h *Pages) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /notifications/read-all", h.notificationMarkAllRead)
 	mux.HandleFunc("POST /notifications/{notificationID}/delete", h.notificationDelete)
 	mux.HandleFunc("POST /notifications/delete-all", h.notificationDeleteAll)
-	mux.HandleFunc("GET /tickets", h.tickets)
-	mux.HandleFunc("POST /tickets", h.createTicket)
-	mux.HandleFunc("GET /tickets/{ticketID}", h.ticketDetail)
-	mux.HandleFunc("POST /tickets/{ticketID}/reply", h.ticketReply)
-	mux.HandleFunc("POST /tickets/{ticketID}/close", h.ticketClose)
-	mux.HandleFunc("POST /tickets/{ticketID}/reopen", h.ticketReopen)
-	mux.HandleFunc("POST /tickets/{ticketID}/attachments", h.ticketAttachment)
-	mux.HandleFunc("GET /tickets/{ticketID}/attachments/{attachmentID}", h.ticketAttachmentDownload)
-	// 公告中心（前台 JSON）：列表（分类/关键字/分页）与详情（阅读量 +1）。
-	mux.HandleFunc("GET /announcements", h.announcementsList)
-	mux.HandleFunc("GET /announcements/{id}", h.announcementDetail)
+	// 工单 API 由 tickets 插件提供（/plugin/tickets/...）；页面路由见前台 SPA。
+	// 公告中心 API 由 announcement 插件提供（/plugin/announcement/list|detail/{id}）。
 }
 
 // NotFound 全局 404（未匹配路由的统一兜底）。
@@ -139,8 +131,9 @@ func (h *Pages) notifications(w http.ResponseWriter, r *http.Request) {
 }
 
 // listAnnouncements 取前台展示的公告（显示中、置顶优先）。
+// 公告数据表由 announcement 插件拥有；插件禁用时返回空（首页新闻区/用户中心公告自动隐藏）。
 func (h *Pages) listAnnouncements(ctx context.Context) []map[string]any {
-	if h.Announcements == nil {
+	if h.Announcements == nil || !plugin.Enabled("announcement") {
 		return nil
 	}
 	list, err := h.Announcements.List(ctx, true)

@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"lumeidc/internal/plugin"
 	"lumeidc/internal/repo"
 )
 
@@ -190,6 +191,15 @@ func (n *Notifier) notify(ctx context.Context, userID int64, title, body, code s
 	if n == nil || n.db == nil {
 		return fmt.Errorf("通知服务不可用")
 	}
+	// 插件过滤器（notify.message）：可改写标题/正文/模板变量（如追加签名、敏感词处理）；
+	// 过滤器禁用/出错时保留原文。
+	msg := &plugin.NotificationMessage{UserID: userID, Code: code, Title: title, Body: body, Values: values}
+	if out, ok := plugin.ApplyFilters(ctx, plugin.FilterNotifyMessage, msg).(*plugin.NotificationMessage); ok && out != nil {
+		title, body = out.Title, out.Body
+		if out.Values != nil {
+			values = out.Values
+		}
+	}
 	defer func() {
 		if err != nil {
 			log.Printf("通知保存失败，用户编号=%d，请重试: %v", userID, err)
@@ -266,22 +276,7 @@ func (n *Notifier) notify(ctx context.Context, userID int64, title, body, code s
 	return nil
 }
 
-// TicketNotify renders the configurable ticket message template before delivery.
-func (n *Notifier) TicketNotify(ctx context.Context, userID int64, event, subject string) {
-	if n == nil || n.Settings == nil {
-		return
-	}
-	title, _ := n.Settings.Get(ctx, "ticket_notify_"+event+"_title")
-	body, _ := n.Settings.Get(ctx, "ticket_notify_"+event+"_body")
-	if strings.TrimSpace(title) == "" {
-		title = "工单通知"
-	}
-	if strings.TrimSpace(body) == "" {
-		body = "你的工单「{{subject}}」有新的处理动态。"
-	}
-	body = strings.ReplaceAll(body, "{{subject}}", subject)
-	n.NotifyTemplate(ctx, userID, "ticket_"+event, title, body, map[string]string{"subject": subject})
-}
+// 工单通知（TicketNotify）已随工单功能迁入 tickets 插件（internal/plugins/tickets/cron.go）。
 
 func notificationCategory(title string) string {
 	switch {

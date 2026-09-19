@@ -35,10 +35,9 @@ export const adminPageRoutes: RouteRecordRaw[] = [
   { path: 'users/:id(\\d+)/edit', name: 'admin-user-edit', component: () => import('@views/AdminUserEdit.vue'), meta: { title: '编辑用户', isHide: true, activePath: '/users' } },
   { path: 'verifications', name: 'admin-verifications', component: () => import('@views/AdminVerifications.vue'), meta: { title: '实名审核', icon: 'ri:shield-check-line' } },
   { path: 'verifications/:id(\\d+)', name: 'admin-verification-detail', component: () => import('@views/AdminVerificationDetail.vue'), meta: { title: '实名详情', isHide: true, activePath: '/verifications' } },
-  { path: 'announcements', name: 'admin-announcements', component: () => import('@views/AdminAnnouncements.vue'), meta: { title: '系统公告', icon: 'ri:notification-3-line' } },
-  { path: 'tickets', name: 'admin-tickets', component: () => import('@views/AdminTickets.vue'), meta: { title: '工单管理', icon: 'ri:customer-service-2-line' } },
 
   { path: 'gateway', name: 'admin-gateway', component: () => import('@views/AdminGateways.vue'), meta: { title: '支付网关', icon: 'ri:bank-card-line' } },
+  { path: 'plugins', name: 'admin-plugins', component: () => import('@views/AdminPlugins.vue'), meta: { title: '插件管理', icon: 'ri:puzzle-line' } },
   { path: 'site', name: 'admin-site', component: () => import('@views/AdminSite.vue'), meta: { title: '站点设置', icon: 'ri:global-line' } },
   { path: 'settings', redirect: { name: 'admin-notify-settings' } },
   { path: 'settings/notify', name: 'admin-notify-settings', component: () => import('@views/AdminNotifySettings.vue'), meta: { title: '通知设置', icon: 'ri:mail-send-line' } },
@@ -51,6 +50,8 @@ export const adminPageRoutes: RouteRecordRaw[] = [
   { path: 'totp', name: 'admin-totp', component: () => import('@views/AdminTotp.vue'), meta: { title: '安全验证', icon: 'ri:fingerprint-line' } },
   { path: 'password', name: 'admin-password', component: () => import('@views/AdminPassword.vue'), meta: { title: '账户设置', icon: 'ri:user-settings-line' } },
   { path: 'update', name: 'admin-update', component: () => import('@views/AdminUpdate.vue'), meta: { title: '系统更新', icon: 'ri:refresh-line' } },
+  // 插件页：动态壳按 :name 从 web/src/plugins/registry.ts 取插件组件渲染。
+  { path: 'plugin/:name', name: 'admin-plugin', component: () => import('@/plugins/PluginShell.vue'), meta: { title: '插件', isHide: true } },
 ]
 
 /** 叶子菜单项需要非空 component 才会被 Art 侧栏渲染；实际跳转只用到 path。 */
@@ -102,8 +103,6 @@ export const adminMenu: AppRouteRecord[] = [
     children: [
       leaf('/users', 'admin-users', '用户管理', 'ri:user-3-line'),
       leaf('/verifications', 'admin-verifications', '实名审核', 'ri:shield-check-line'),
-      leaf('/announcements', 'admin-announcements', '系统公告', 'ri:notification-3-line'),
-      leaf('/tickets', 'admin-tickets', '工单管理', 'ri:customer-service-2-line'),
     ],
   },
   {
@@ -126,6 +125,7 @@ export const adminMenu: AppRouteRecord[] = [
     meta: { title: '系统设置', icon: 'ri:tools-line' },
     children: [
       leaf('/gateway', 'admin-gateway', '支付网关', 'ri:bank-card-line'),
+      leaf('/plugins', 'admin-plugins', '插件管理', 'ri:puzzle-line'),
       leaf('/logs', 'admin-logs', '审计日志', 'ri:file-text-line'),
       leaf('/totp', 'admin-totp', '安全验证', 'ri:fingerprint-line'),
       leaf('/password', 'admin-password', '账户设置', 'ri:user-settings-line'),
@@ -133,3 +133,35 @@ export const adminMenu: AppRouteRecord[] = [
     ],
   },
 ]
+
+/** 后端插件清单条目（GET /admin/plugins 返回）。 */
+export interface PluginMenuInfo {
+  name: string
+  title: string
+  enabled?: boolean
+  hasAdminPage?: boolean
+  menuTitle?: string
+  menuIcon?: string
+}
+
+/**
+ * 把有后台页的启用插件追加为「插件」菜单分组；无插件时原样返回核心菜单。
+ * 插件页面路由统一为 /plugin/{name}（PluginShell 动态渲染）。
+ */
+export function mergePluginMenus(base: AppRouteRecord[], plugins: PluginMenuInfo[]): AppRouteRecord[] {
+  const items = plugins
+    .filter((p) => p.hasAdminPage && p.enabled !== false)
+    .map((p) =>
+      leaf(`/plugin/${p.name}`, `admin-plugin-${p.name}`, p.menuTitle || p.title || p.name, p.menuIcon || 'ri:puzzle-line'),
+    )
+  if (items.length === 0) return base
+  return [
+    ...base,
+    {
+      path: '/group-plugins',
+      name: 'group-plugins',
+      meta: { title: '插件', icon: 'ri:puzzle-line' },
+      children: items,
+    },
+  ]
+}

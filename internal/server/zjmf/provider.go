@@ -19,6 +19,9 @@ import (
 
 type Provider struct{}
 
+// init 自注册到默认供应商注册表（新增供应商照此一行接入，组合根无需改动）。
+func init() { server.Register(Provider{}) }
+
 func (Provider) Code() string { return "zjmf" }
 func (Provider) Name() string { return "智简魔方财务（ZJMF）" }
 

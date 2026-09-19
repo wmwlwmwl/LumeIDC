@@ -15,6 +15,9 @@ import (
 // 续费策略：上游建站不设过期（month 不传 = 永不过期），生命周期完全由本系统本地管控。
 type Provider struct{}
 
+// init 自注册到默认供应商注册表（新增供应商照此一行接入，组合根无需改动）。
+func init() { server.Register(Provider{}) }
+
 func (Provider) Code() string { return "easypanel" }
 func (Provider) Name() string { return "EasyPanel（kangle）" }
 

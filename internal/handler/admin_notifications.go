@@ -7,6 +7,7 @@ import (
 	"strconv"
 
 	"lumeidc/internal/middleware"
+	"lumeidc/internal/plugin"
 )
 
 // noticeFulfillmentOp 由服务的过渡态推断失败的操作类型；开通不设过渡态，故为兜底值。
@@ -147,41 +148,45 @@ func (a *Admin) adminNotifications(w http.ResponseWriter, r *http.Request) {
 		},
 	)
 
-	// 工单（未关闭）→ 消息
-	pending += count(`SELECT count(*) FROM tickets WHERE status='pending'`)
-	collect(&messages,
-		`SELECT t.id, t.subject, coalesce(nullif(u.name,''), u.email, ''), to_char(t.updated_at,'YYYY-MM-DD HH24:MI')
-		 FROM tickets t
-		 LEFT JOIN users u ON u.id=t.user_id
-		 WHERE t.status<>'closed' ORDER BY t.updated_at DESC LIMIT 10`,
-		func(rows *sql.Rows) (map[string]any, error) {
-			var id int64
-			var subject, user, t string
-			if err := rows.Scan(&id, &subject, &user, &t); err != nil {
-				return nil, err
-			}
-			return map[string]any{
-				"type": "ticket", "title": "工单 · " + subject,
-				"time": t, "link": "/tickets",
-			}, nil
-		},
-	)
+	// 工单（未关闭）→ 消息（工单由 tickets 插件拥有；禁用时铃铛不含工单条目）
+	if plugin.Enabled("tickets") {
+		pending += count(`SELECT count(*) FROM tickets WHERE status='pending'`)
+		collect(&messages,
+			`SELECT t.id, t.subject, coalesce(nullif(u.name,''), u.email, ''), to_char(t.updated_at,'YYYY-MM-DD HH24:MI')
+			 FROM tickets t
+			 LEFT JOIN users u ON u.id=t.user_id
+			 WHERE t.status<>'closed' ORDER BY t.updated_at DESC LIMIT 10`,
+			func(rows *sql.Rows) (map[string]any, error) {
+				var id int64
+				var subject, user, t string
+				if err := rows.Scan(&id, &subject, &user, &t); err != nil {
+					return nil, err
+				}
+				return map[string]any{
+					"type": "ticket", "title": "工单 · " + subject,
+					"time": t, "link": "/plugin/tickets",
+				}, nil
+			},
+		)
+	}
 
-	// 公告 → 通知
-	collect(&notices,
-		`SELECT id, title, to_char(created_at,'YYYY-MM-DD') FROM announcements
-		 WHERE hidden=false ORDER BY pinned DESC, id DESC LIMIT 10`,
-		func(rows *sql.Rows) (map[string]any, error) {
-			var id int64
-			var title, t string
-			if err := rows.Scan(&id, &title, &t); err != nil {
-				return nil, err
-			}
-			return map[string]any{
-				"type": "notice", "title": title, "time": t, "link": "/announcements",
-			}, nil
-		},
-	)
+	// 公告 → 通知（公告由 announcement 插件拥有；插件禁用时铃铛不含公告条目）
+	if plugin.Enabled("announcement") {
+		collect(&notices,
+			`SELECT id, title, to_char(created_at,'YYYY-MM-DD') FROM announcements
+			 WHERE hidden=false ORDER BY pinned DESC, id DESC LIMIT 10`,
+			func(rows *sql.Rows) (map[string]any, error) {
+				var id int64
+				var title, t string
+				if err := rows.Scan(&id, &title, &t); err != nil {
+					return nil, err
+				}
+				return map[string]any{
+					"type": "notice", "title": title, "time": t, "link": "/announcements",
+				}, nil
+			},
+		)
+	}
 
 	writeJSON(w, map[string]any{
 		"ok": 1, "pending": pending,

@@ -2,7 +2,7 @@
 import { ref, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { ChatDotRound, Plus } from '@element-plus/icons-vue'
-import { createTicket, fetchServices, fetchTickets, type ServiceLite, type TicketItem } from '../api/user'
+import { createTicket, fetchServices, fetchTickets, type ServiceLite, type TicketItem } from '@/api/user'
 import { formatDate } from '@/utils/format'
 import PublicPageHead from '@/components/public/PublicPageHead.vue'
 

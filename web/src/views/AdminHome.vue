@@ -6,6 +6,8 @@ import ArtStatsCard from '../components/core/cards/art-stats-card/index.vue'
 import ArtLineChart from '../components/core/charts/art-line-chart/index.vue'
 import ArtBarChart from '../components/core/charts/art-bar-chart/index.vue'
 import ArtDataListCard from '../components/core/cards/art-data-list-card/index.vue'
+import ArtSvgIcon from '../components/core/base/art-svg-icon/index.vue'
+import { http } from '@/http/index'
 import {
   fetchDashboard,
   fetchOrders,
@@ -19,6 +21,20 @@ const counts = ref<AdminCounts>({ users: 0, orders: 0, services: 0 })
 const trends = ref<AdminTrendPoint[]>([])
 const orders = ref<OrderItem[]>([])
 const loading = ref(false)
+
+// 插件挂件（GET /admin/widgets；启用插件贡献，JSON 统一渲染，不注入插件 HTML）
+interface WidgetRow {
+  label: string
+  value: string
+  to?: string
+}
+interface PluginWidget {
+  plugin: string
+  title: string
+  icon: string
+  rows: WidgetRow[]
+}
+const widgets = ref<PluginWidget[]>([])
 
 onMounted(async () => {
   loading.value = true
@@ -34,6 +50,13 @@ onMounted(async () => {
     ElMessage.error((err as Error).message || '看板加载失败')
   } finally {
     loading.value = false
+  }
+  // 挂件独立拉取、失败静默：插件故障不应拖垮看板
+  try {
+    const res = await http.get<{ ok: number; widgets?: PluginWidget[] }>('/widgets')
+    widgets.value = res.widgets || []
+  } catch {
+    widgets.value = []
   }
 })
 
@@ -162,6 +185,32 @@ const recentList = computed(() =>
           show-more-button
           @more="router.push('/orders')"
         />
+      </ElCol>
+    </ElRow>
+
+    <!-- 插件挂件区：启用插件实现的 AdminWidgetProvider 在此渲染（JSON 卡片，无插件时不占位） -->
+    <ElRow v-if="widgets.length" :gutter="20">
+      <ElCol v-for="w in widgets" :key="w.plugin" :xs="24" :md="12" :lg="8" style="display: flex">
+        <div class="art-card flex flex-1 flex-col p-5 mb-5">
+          <div class="art-card-header shrink-0">
+            <div class="title">
+              <h4 class="flex items-center gap-2">
+                <ArtSvgIcon v-if="w.icon" :icon="w.icon" />
+                {{ w.title }}
+              </h4>
+            </div>
+          </div>
+          <div
+            v-for="(row, i) in w.rows"
+            :key="i"
+            class="flex items-center justify-between py-2 border-b border-g-200/60 last:border-0"
+            :class="{ 'cursor-pointer hover:bg-g-200/40': row.to }"
+            @click="row.to && router.push(row.to)"
+          >
+            <span class="text-sm text-g-600">{{ row.label }}</span>
+            <span class="text-sm font-medium text-g-800">{{ row.value }}</span>
+          </div>
+        </div>
       </ElCol>
     </ElRow>
 

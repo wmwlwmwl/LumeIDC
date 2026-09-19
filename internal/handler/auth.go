@@ -11,6 +11,7 @@ import (
 
 	"lumeidc/internal/captcha"
 	"lumeidc/internal/middleware"
+	"lumeidc/internal/plugin"
 	"lumeidc/internal/repo"
 	"lumeidc/internal/service"
 )
@@ -414,6 +415,7 @@ func (h *Auth) registerSubmit(w http.ResponseWriter, r *http.Request) {
 		jsonStatus(w, r, 500, "注册完成失败")
 		return
 	}
+	plugin.Emit(r.Context(), plugin.EventUserRegistered, plugin.UserPayload{UserID: id})
 	sess := h.Sessions.Start(r, w)
 	sess.UserID = id
 	if wantsJSON(r) {
@@ -505,6 +507,7 @@ func (h *Auth) loginByPhoneCode(w http.ResponseWriter, r *http.Request) {
 	_ = h.Users.TouchLogin(r.Context(), user.ID)
 	sess := h.Sessions.Start(r, w)
 	sess.UserID = user.ID
+	plugin.Emit(r.Context(), plugin.EventUserLogin, plugin.UserPayload{UserID: user.ID})
 	if wantsJSON(r) {
 		writeJSON(w, map[string]any{"ok": 1})
 		return
@@ -684,6 +687,7 @@ func (h *Auth) loginSubmit(w http.ResponseWriter, r *http.Request) {
 	_ = h.Users.TouchLogin(r.Context(), u.ID)
 	sess := h.Sessions.Start(r, w)
 	sess.UserID = u.ID
+	plugin.Emit(r.Context(), plugin.EventUserLogin, plugin.UserPayload{UserID: u.ID})
 	if wantsJSON(r) {
 		writeJSON(w, map[string]any{"ok": 1})
 		return

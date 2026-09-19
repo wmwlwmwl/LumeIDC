@@ -2,7 +2,7 @@
 import { ref, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Search, Document, ArrowRight, ChatDotRound, Clock } from '@element-plus/icons-vue'
-import { fetchNotices, type Announcement } from '../api/store'
+import { fetchNotices, type Announcement } from '@/api/store'
 import { formatDate } from '@/utils/format'
 import PublicContainer from '@/components/public/PublicContainer.vue'
 import PublicPageHead from '@/components/public/PublicPageHead.vue'

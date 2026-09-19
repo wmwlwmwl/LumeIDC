@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"lumeidc/internal/plugin"
 	"lumeidc/internal/repo"
 	"lumeidc/internal/server"
 )
@@ -34,6 +35,8 @@ type Lifecycle struct {
 type serviceRef struct {
 	ID               int64
 	Status           int16
+	UserID           int64
+	ProductID        int64
 	ServerID         sql.NullInt64
 	UpstreamPID      int64
 	UpstreamProvider string
@@ -45,14 +48,14 @@ type serviceRef struct {
 func (lc *Lifecycle) loadService(ctx context.Context, serviceID int64) (*serviceRef, error) {
 	var s serviceRef
 	err := lc.db.QueryRowContext(ctx,
-		`SELECT sv.id,sv.status,coalesce(sv.server_id,p.server_id),
+		`SELECT sv.id,sv.status,sv.user_id,sv.product_id,coalesce(sv.server_id,p.server_id),
 		        coalesce(nullif(sv.upstream_pid,0),p.upstream_pid),
 		        coalesce(nullif(sv.upstream_provider,''),srv.provider,''),
 		        sv.upstream_host_id,coalesce(p.upstream_cycle,'')
 		 FROM services sv JOIN products p ON p.id=sv.product_id
 		 LEFT JOIN servers srv ON srv.id=coalesce(sv.server_id,p.server_id)
 		 WHERE sv.id=$1`,
-		serviceID).Scan(&s.ID, &s.Status, &s.ServerID, &s.UpstreamPID, &s.UpstreamProvider,
+		serviceID).Scan(&s.ID, &s.Status, &s.UserID, &s.ProductID, &s.ServerID, &s.UpstreamPID, &s.UpstreamProvider,
 		&s.UpstreamHost, &s.UpstreamCycle)
 	if err != nil {
 		return nil, err
@@ -165,6 +168,8 @@ func (lc *Lifecycle) Renew(ctx context.Context, serviceID int64, cycle string, o
 		return &server.ManualReviewError{Msg: fmt.Sprintf("上游续费已返回成功，但保存终态检查点失败，请人工核对: %v", err)}
 	}
 	lc.clearRenewPending(ctx, serviceID)
+	// 仅首次成功发出（checkpoint 已存在时提前返回，不会重复触发）
+	plugin.Emit(ctx, plugin.EventServiceRenewed, plugin.ServicePayload{ServiceID: s.ID, UserID: s.UserID, ProductID: s.ProductID})
 	return nil
 }
 
@@ -383,10 +388,14 @@ func (lc *Lifecycle) Suspend(ctx context.Context, serviceID int64) error {
 	if s.Status != 1 {
 		return fmt.Errorf("服务当前状态不可停机")
 	}
-	return lc.transition(ctx, s, 1, 2, "=", "suspending", "上游停机失败",
+	err = lc.transition(ctx, s, 1, 2, "=", "suspending", "上游停机失败",
 		func(ctx context.Context, p server.Provider, cfg server.Config, host int64) error {
 			return p.Suspend(ctx, cfg, host)
 		})
+	if err == nil {
+		plugin.Emit(ctx, plugin.EventServiceSuspended, plugin.ServicePayload{ServiceID: s.ID, UserID: s.UserID, ProductID: s.ProductID})
+	}
+	return err
 }
 
 // Unsuspend 解除停机。
@@ -425,6 +434,7 @@ func (lc *Lifecycle) Terminate(ctx context.Context, serviceID int64) error {
 			`UPDATE services SET provision_error='' WHERE id=$1 AND status=3`, serviceID); e != nil {
 			log.Printf("[lifecycle] service %d 删除后清空失败原因失败: %v", serviceID, e)
 		}
+		plugin.Emit(ctx, plugin.EventServiceTerminated, plugin.ServicePayload{ServiceID: s.ID, UserID: s.UserID, ProductID: s.ProductID})
 	}
 	return err
 }
