@@ -274,6 +274,12 @@ func (Alipay) VerifyNotify(req NotifyRequest, cfg map[string]string) (NotifyResu
 	if appID := cfg["app_id"]; strings.TrimSpace(appID) != "" && params["app_id"] != "" && params["app_id"] != appID {
 		return NotifyResult{}, fmt.Errorf("支付宝回调应用 ID 不匹配")
 	}
+	// 收款账号（seller_id / PID）同样属本商户：一个支付宝账号可开多个应用，
+	// 只比 app_id 挡不住「同一账号下另一应用」的通知；两处都配齐后互为交叉校验。
+	// 未配置 seller_id 时跳过，不引入强制填写要求。
+	if sellerID := cfg["seller_id"]; strings.TrimSpace(sellerID) != "" && params["seller_id"] != "" && params["seller_id"] != sellerID {
+		return NotifyResult{}, fmt.Errorf("支付宝回调收款账号不匹配")
+	}
 	if params["trade_status"] != "TRADE_SUCCESS" && params["trade_status"] != "TRADE_FINISHED" {
 		return NotifyResult{InvoiceNo: params["out_trade_no"], TradeNo: params["trade_no"]}, nil
 	}

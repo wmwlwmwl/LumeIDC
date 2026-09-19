@@ -26,6 +26,8 @@ var adminGatewayConfigFields = []string{
 	"app_id", "mch_id", "private_key", "public_key",
 	"api_v3_key", "cert_serial", "public_key_id",
 	"h5_app_name", "h5_app_url",
+	// seller_id 选填：支付宝回调归属校验用（与 app_id 同属一个账号），留空则跳过该比对。
+	"seller_id",
 }
 
 // adminGatewaySecretFields 密钥类配置：不回传原值（仅回报 has_<key> 是否已配置），

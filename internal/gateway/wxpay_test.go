@@ -387,6 +387,55 @@ func TestWxpayVerifyNotify(t *testing.T) {
 	}
 }
 
+// TestWxpayVerifyNotifyMerchantBinding 覆盖「通知必须属于本商户」：
+// 旧版平台证书为全商户共用，验签无法区分通知归属，只能靠解密后的 mchid/appid 兜底；
+// 字段缺失时不误杀（新版「微信支付公钥」已按商户签发，归属由验签绑定）。
+func TestWxpayVerifyNotifyMerchantBinding(t *testing.T) {
+	merchantKey, _ := rsa.GenerateKey(rand.Reader, 2048)
+	wechatKey, _ := rsa.GenerateKey(rand.Reader, 2048)
+	cfg := wxpayTestConfig(t, merchantKey, &wechatKey.PublicKey, "")
+
+	const aad = "transaction"
+	notify := func(mchID, appID string) NotifyRequest {
+		plain := `{"out_trade_no":"INV20260919wx","transaction_id":"4200001234202609190001",` +
+			`"trade_state":"SUCCESS","amount":{"total":2001},` +
+			`"mchid":"` + mchID + `","appid":"` + appID + `"}`
+		body := `{"id":"EV-1","event_type":"TRANSACTION.SUCCESS","resource_type":"encrypt-resource",` +
+			`"resource":{"algorithm":"AEAD_AES_256_GCM","ciphertext":"` + wxpayEncryptForTest(t, plain, aad) +
+			`","nonce":"` + wxpayTestGCMNonce + `","associated_data":"` + aad + `"}}`
+		ts, nonce, sig := wxpaySignedResponse(t, wechatKey, body)
+		return NotifyRequest{RawBody: body, Headers: map[string]string{
+			"wechatpay-timestamp": ts, "wechatpay-nonce": nonce, "wechatpay-signature": sig,
+		}}
+	}
+
+	cases := []struct {
+		name    string
+		mchID   string
+		appID   string
+		wantErr bool
+	}{
+		{name: "本商户本应用", mchID: cfg["mch_id"], appID: cfg["app_id"]},
+		{name: "字段缺失不误杀"},
+		{name: "商户号不匹配", mchID: "other-mch-id", appID: cfg["app_id"], wantErr: true},
+		{name: "应用 ID 不匹配", mchID: cfg["mch_id"], appID: "other-wx-appid", wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := (Wxpay{}).VerifyNotify(notify(tc.mchID, tc.appID), cfg)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("应被拒绝，实际受理: %+v", got)
+				}
+				return
+			}
+			if err != nil || !got.Successful {
+				t.Fatalf("应受理: err=%v result=%+v", err, got)
+			}
+		})
+	}
+}
+
 // 非支付成功事件（如退款通知）验签通过后应受理但不核销账单。
 func TestWxpayVerifyNotifyIgnoresOtherEvents(t *testing.T) {
 	merchantKey, _ := rsa.GenerateKey(rand.Reader, 2048)

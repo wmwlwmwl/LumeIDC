@@ -202,12 +202,23 @@ func (Wxpay) VerifyNotify(req NotifyRequest, cfg map[string]string) (NotifyResul
 		OutTradeNo    string `json:"out_trade_no"`
 		TransactionID string `json:"transaction_id"`
 		TradeState    string `json:"trade_state"`
+		MchID         string `json:"mchid"`
+		AppID         string `json:"appid"`
 		Amount        struct {
 			Total int64 `json:"total"`
 		} `json:"amount"`
 	}
 	if err := json.Unmarshal(plain, &tx); err != nil {
 		return NotifyResult{}, fmt.Errorf("微信支付回调解密内容解析失败: %w", err)
+	}
+	// 解密后的报文才带商户身份，需确认「该通知属于本商户」。新版「微信支付公钥」
+	// 按商户签发，归属已由验签绑定；旧版平台证书是全商户共用，只能靠这里兜底。
+	// 双方都带该字段且不一致才拒绝，缺字段时不误杀。
+	if mchID := cfg[wxpayCfgMchID]; strings.TrimSpace(mchID) != "" && tx.MchID != "" && tx.MchID != mchID {
+		return NotifyResult{}, fmt.Errorf("微信支付回调商户号不匹配")
+	}
+	if appID := cfg[wxpayCfgAppID]; strings.TrimSpace(appID) != "" && tx.AppID != "" && tx.AppID != appID {
+		return NotifyResult{}, fmt.Errorf("微信支付回调应用 ID 不匹配")
 	}
 	if strings.TrimSpace(tx.OutTradeNo) == "" {
 		return NotifyResult{}, fmt.Errorf("微信支付回调缺少商户订单号")

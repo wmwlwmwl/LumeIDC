@@ -730,6 +730,7 @@ export interface AdminGateway {
   payment_mode?: string
   mobile_qrcode?: string
   app_id?: string
+  seller_id?: string
   mch_id?: string
   api_v3_key?: string
   cert_serial?: string

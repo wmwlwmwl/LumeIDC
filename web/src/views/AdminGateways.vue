@@ -80,6 +80,7 @@ const form = reactive<Record<string, any>>({
   payment_mode: 'redirect',
   mobile_qrcode: '0',
   app_id: '',
+  seller_id: '',
   mch_id: '',
   api_v3_key: '',
   cert_serial: '',
@@ -227,6 +228,7 @@ function resetForm() {
     payment_mode: 'redirect',
     mobile_qrcode: '0',
     app_id: '',
+    seller_id: '',
     mch_id: '',
     api_v3_key: '',
     cert_serial: '',
@@ -269,6 +271,7 @@ function openEdit(row: AdminGateway) {
     payment_mode: row.payment_mode || GATEWAY_DRIVERS[row.driver]?.paymentModeDefault || 'redirect',
     mobile_qrcode: row.mobile_qrcode || '0',
     app_id: row.app_id || '',
+    seller_id: row.seller_id || '',
     mch_id: row.mch_id || '',
     // APIv3 密钥属密钥类字段，后台不回传，编辑时始终留空（留空即沿用旧值）
     api_v3_key: '',
@@ -386,6 +389,7 @@ async function copyCallback() {
               <el-input v-if="isCustomChannel" v-model="form.channel" placeholder="请输入渠道代码，如 bank、jdpay" />
             </el-form-item>
             <el-form-item v-if="visibleFields.includes('app_id')" label="应用 ID（AppID）"><el-input v-model="form.app_id" placeholder="支付宝应用 ID / 微信 AppID" /></el-form-item>
+            <el-form-item v-if="visibleFields.includes('seller_id')" label="收款账号（PID，选填）"><el-input v-model="form.seller_id" placeholder="如 2088xxxxxxxxxxxx，填写后校验回调归属" /></el-form-item>
             <el-form-item v-if="visibleFields.includes('mch_id')" label="商户号"><el-input v-model="form.mch_id" placeholder="微信支付商户号" /></el-form-item>
             <el-form-item v-if="visibleFields.includes('cert_serial')" label="商户证书序列号"><el-input v-model="form.cert_serial" placeholder="商户 API 证书序列号" /></el-form-item>
           </div>

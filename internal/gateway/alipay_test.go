@@ -47,25 +47,31 @@ func TestAlipaySignatureRoundTrip(t *testing.T) {
 	}
 }
 
-// TestAlipayVerifyNotifyAppBinding 覆盖「通知必须属于本应用」：
+// TestAlipayVerifyNotifyMerchantBinding 覆盖「通知必须属于本商户」：
 // 同一支付宝账号下的多个应用可共用公钥，仅验签无法区分通知归属，
-// app_id 不一致必须拒绝；但不带 app_id 的老通知不能被误杀。
-func TestAlipayVerifyNotifyAppBinding(t *testing.T) {
+// app_id / seller_id 不一致必须拒绝；字段缺失的老通知不能被误杀。
+func TestAlipayVerifyNotifyMerchantBinding(t *testing.T) {
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := map[string]string{"app_id": "2021000000000001", "public_key": publicPEM(&key.PublicKey)}
-	// notify 按支付宝 rsaCheckV1 规则签名：签名内容剔除 sign 与 sign_type。
-	notify := func(appID string) NotifyRequest {
+	cfg := map[string]string{
+		"app_id": "2021000000000001", "seller_id": "2088000000000001",
+		"public_key": publicPEM(&key.PublicKey),
+	}
+	// notify 按支付宝 rsaCheckV1 规则签名：签名内容剔除 sign 与 sign_type；
+	// extra 里值为空的键不写入参数（模拟老版本通知不带该字段）。
+	notify := func(extra map[string]string) NotifyRequest {
 		params := map[string]string{
 			"out_trade_no": "INV20260826abcdef",
 			"trade_no":     "2026082612345678",
 			"trade_status": "TRADE_SUCCESS",
 			"total_amount": "12.50",
 		}
-		if appID != "" {
-			params["app_id"] = appID
+		for k, v := range extra {
+			if v != "" {
+				params[k] = v
+			}
 		}
 		signature, serr := signAlipay(mapToValues(params), key)
 		if serr != nil {
@@ -76,15 +82,34 @@ func TestAlipayVerifyNotifyAppBinding(t *testing.T) {
 		return NotifyRequest{Params: params}
 	}
 
-	result, err := (Alipay{}).VerifyNotify(notify(cfg["app_id"]), cfg)
-	if err != nil || !result.Successful {
-		t.Fatalf("本应用通知应受理: err=%v result=%+v", err, result)
+	cases := []struct {
+		name    string
+		appID   string
+		seller  string
+		wantErr bool
+	}{
+		{name: "本应用本收款账号", appID: cfg["app_id"], seller: cfg["seller_id"]},
+		{name: "仅 app_id 缺失不误杀", seller: cfg["seller_id"]},
+		{name: "仅 seller_id 缺失不误杀", appID: cfg["app_id"]},
+		{name: "两者都缺失不误杀"},
+		{name: "应用 ID 不匹配", appID: "9999999999999999", seller: cfg["seller_id"], wantErr: true},
+		{name: "收款账号不匹配", appID: cfg["app_id"], seller: "2088999999999999", wantErr: true},
 	}
-	if _, err := (Alipay{}).VerifyNotify(notify("9999999999999999"), cfg); err == nil {
-		t.Fatal("应用 ID 不匹配的通知必须被拒绝")
-	}
-	if _, err := (Alipay{}).VerifyNotify(notify(""), cfg); err != nil {
-		t.Fatalf("不带 app_id 的通知不应被拒绝: %v", err)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result, verr := (Alipay{}).VerifyNotify(notify(map[string]string{
+				"app_id": tc.appID, "seller_id": tc.seller,
+			}), cfg)
+			if tc.wantErr {
+				if verr == nil {
+					t.Fatalf("应被拒绝，实际受理: %+v", result)
+				}
+				return
+			}
+			if verr != nil || !result.Successful {
+				t.Fatalf("应受理: err=%v result=%+v", verr, result)
+			}
+		})
 	}
 }
 
