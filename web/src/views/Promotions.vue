@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { ArrowRight, Tickets } from '@element-plus/icons-vue'
 import PublicContainer from '@/components/public/PublicContainer.vue'
 import { http } from '@/http'
+import { formatDate } from '@/utils/format'
 
 defineOptions({ name: 'Promotions' })
 
@@ -34,16 +35,6 @@ const typeMap: Record<string, { label: string; cls: string }> = {
 
 function typeOf(t: string) {
   return typeMap[t] || { label: '活动', cls: 't-default' }
-}
-
-function pad(n: number) {
-  return String(n).padStart(2, '0')
-}
-
-function fmt(s: string) {
-  if (!s) return ''
-  const d = new Date(s)
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
 async function load() {
@@ -109,9 +100,9 @@ onMounted(load)
             <h2 class="promo-card__title">{{ p.name }}</h2>
             <p v-if="p.description" class="promo-card__desc">{{ p.description }}</p>
             <div class="promo-card__meta">
-              <time>{{ fmt(p.starts_at) }}</time>
+              <time>{{ formatDate(p.starts_at) }}</time>
               <span class="dash">至</span>
-              <time>{{ fmt(p.ends_at) }}</time>
+              <time>{{ formatDate(p.ends_at) }}</time>
             </div>
             <div class="promo-card__foot">
               <span class="promo-card__cta">

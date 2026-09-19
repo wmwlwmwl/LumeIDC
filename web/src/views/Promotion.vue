@@ -120,6 +120,7 @@
                 type="warning"
                 plain
                 class="flex-1"
+                :loading="couponClaiming"
                 :disabled="couponClaimed"
                 @click="claimCoupon(item)"
               >{{ couponClaimed ? '已领取' : '领取优惠券' }}</el-button>
@@ -167,6 +168,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Bell, Document, ArrowDown } from '@element-plus/icons-vue'
 import { http } from '../http'
+import { formatDate as fmtDateTime, parseDate } from '@/utils/format'
 
 interface PromoProduct {
   product_id: number
@@ -206,6 +208,7 @@ const products = ref<PromoProduct[]>([])
 const loading = ref(true)
 const rulesOpen = ref(false)
 const couponClaimed = ref(false)
+const couponClaiming = ref(false)
 
 const status = computed(() => promotion.value.status || 'upcoming')
 
@@ -218,9 +221,9 @@ function pad(n: number) {
 }
 
 function updateCountdown() {
-  const end = new Date(promotion.value.ends_at).getTime()
+  const end = parseDate(promotion.value.ends_at)
   const now = Date.now()
-  let diff = Math.max(0, end - now)
+  let diff = Math.max(0, Number.isNaN(end) ? 0 : end - now)
   countdown.value.days = Math.floor(diff / 86400000)
   diff %= 86400000
   countdown.value.hours = pad(Math.floor(diff / 3600000)) as any
@@ -231,9 +234,7 @@ function updateCountdown() {
 }
 
 function formatDate(s: string) {
-  if (!s) return ''
-  const d = new Date(s)
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+  return fmtDateTime(s)
 }
 
 function itemTags(item: PromoProduct) {
@@ -257,6 +258,8 @@ function goBuy(item: PromoProduct) {
 }
 
 async function claimCoupon(item: PromoProduct) {
+  if (couponClaiming.value || couponClaimed.value) return
+  couponClaiming.value = true
   try {
     const res = await http.post(`/promotion/${promotion.value.id}/claim`)
     if (res.ok) {
@@ -267,6 +270,8 @@ async function claimCoupon(item: PromoProduct) {
     }
   } catch (e) {
     ElMessage.error('领取失败，请先登录')
+  } finally {
+    couponClaiming.value = false
   }
 }
 
@@ -284,6 +289,8 @@ async function load() {
     } else {
       ElMessage.error(res.msg || '加载失败')
     }
+  } catch {
+    ElMessage.error('活动加载失败，请检查网络后重试')
   } finally {
     loading.value = false
   }

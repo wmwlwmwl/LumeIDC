@@ -86,7 +86,15 @@ async function submit() {
   }
   submitting.value = true
   try {
-    const res = (await http.post('/user/recharge', { amount: String(amount.value) })) as { ok: number; redirect?: string }
+    const res = (await http.post('/user/recharge', { amount: String(amount.value) })) as {
+      ok: number
+      redirect?: string
+      msg?: string
+    }
+    if (String(res.ok) !== '1') {
+      ElMessage.error(res.msg || '充值请求失败，请稍后重试')
+      return
+    }
     if (res.redirect) location.href = res.redirect
   } catch (err: unknown) {
     ElMessage.error((err as Error).message || '充值失败')

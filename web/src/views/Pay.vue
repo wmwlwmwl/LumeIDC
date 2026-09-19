@@ -19,6 +19,9 @@ let redirectTimer: ReturnType<typeof setTimeout> | null = null
 let generation = 0
 let disposed = false
 let polling = false
+let pollCount = 0
+const MAX_POLLS = 60
+let paused = false
 const gatewayList = computed(() => (Array.isArray(data.value?.gateways) ? data.value.gateways : []))
 
 // 组合支付：余额先抵扣，剩余本金走在线支付，手续费只按在线本金收取。
@@ -65,6 +68,12 @@ function clearRedirect() {
 
 function schedulePolling(id: number, version: number) {
   if (!isCurrent(id, version) || loading.value || busy.value || !data.value || data.value.paid || data.value.expired) return
+  if (paused) return
+  if (pollCount >= MAX_POLLS) {
+    stopPolling()
+    ElMessage.warning('支付状态查询超时，如已完成支付请刷新页面或前往账单列表查看')
+    return
+  }
   stopPolling()
   timer = setTimeout(() => {
     timer = null
@@ -78,6 +87,7 @@ async function load() {
   const version = ++generation
   stopPolling()
   clearRedirect()
+  pollCount = 0
   loading.value = true
   loadError.value = false
   data.value = null
@@ -105,6 +115,7 @@ async function load() {
 
 async function pollPaid(id: number, version: number) {
   if (!isCurrent(id, version)) return
+  pollCount++
   // 切换账单后仍等待旧状态请求结束，避免跨代次请求重叠。
   if (polling) {
     schedulePolling(id, version)
@@ -136,13 +147,32 @@ async function pollPaid(id: number, version: number) {
   }
 }
 
+function onVisibilityChange() {
+  if (document.hidden) {
+    paused = true
+    stopPolling()
+  } else {
+    paused = false
+    // 页面回来时立即触发一次轮询，不等 4s 间隔
+    if (isCurrent(invoiceId.value, generation) && !data.value?.paid && !data.value?.expired && !loading.value) {
+      void pollPaid(invoiceId.value, generation)
+    }
+  }
+}
+
+watch(() => route.params.id, () => { void load() }, { immediate: true, flush: 'sync' })
+
+onMounted(() => {
+  document.addEventListener('visibilitychange', onVisibilityChange)
+})
+
 onBeforeUnmount(() => {
   disposed = true
   generation++
   stopPolling()
   clearRedirect()
+  document.removeEventListener('visibilitychange', onVisibilityChange)
 })
-watch(() => route.params.id, () => { void load() }, { immediate: true, flush: 'sync' })
 
 async function chooseGateway() {
   if (disposed || loading.value || busy.value || !data.value || data.value.paid || data.value.expired) return

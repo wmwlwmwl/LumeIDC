@@ -16,15 +16,28 @@ export function formatMoney(value: string | number | null | undefined): string {
 }
 
 /**
+ * 时间归一化：把后端日期串转成浏览器可解析的毫秒时间戳。
+ * 同时兼容 PostgreSQL `YYYY-MM-DD HH:mm:ss`、ISO `T` 分隔、带毫秒/`Z` 结尾。
+ * iOS Safari 不能直接解析 `YYYY-MM-DD` 格式，统一替换为 `/` 分隔。
+ * 非法值返回 NaN（调用方自己判断）。
+ */
+export function parseDate(value: string | number | Date): number {
+  const normalized =
+    typeof value === 'string'
+      ? value.replace(/-/g, '/').replace('T', ' ').replace(/\.\d+Z?$/, '')
+      : value
+  return new Date(normalized).getTime()
+}
+
+/**
  * 时间：把后端字符串格式化为 `YYYY-MM-DD HH:mm`。
  * 非法/空值原样返回，避免显示 `Invalid Date`。
  */
 export function formatDate(value: string | number | Date | null | undefined): string {
   if (value === null || value === undefined || value === '') return ''
-  const normalized =
-    typeof value === 'string' ? value.replace(/-/g, '/').replace('T', ' ').replace(/\.\d+Z?$/, '') : value
-  const d = new Date(normalized)
-  if (Number.isNaN(d.getTime())) return String(value)
+  const ts = parseDate(value)
+  if (Number.isNaN(ts)) return String(value)
+  const d = new Date(ts)
   const pad = (x: number) => String(x).padStart(2, '0')
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
