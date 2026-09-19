@@ -267,6 +267,13 @@ func (Alipay) VerifyNotify(req NotifyRequest, cfg map[string]string) (NotifyResu
 	if err := verifyAlipay(params, signature, key); err != nil {
 		return NotifyResult{}, fmt.Errorf("支付宝回调签名校验失败")
 	}
+	// 验签通过后再确认「该通知属于本应用」：同一账号下的多个应用可共用支付宝公钥，
+	// 仅靠验签无法区分通知归属（同账号多应用场景下可被互相顶单）。
+	// 双方都带 app_id 且不一致才拒绝——老版本通知可能不带，不能因此误杀。
+	// ponytail: 通知不带 app_id 时该校验自动跳过，仍由公钥隔离兜底。
+	if appID := cfg["app_id"]; strings.TrimSpace(appID) != "" && params["app_id"] != "" && params["app_id"] != appID {
+		return NotifyResult{}, fmt.Errorf("支付宝回调应用 ID 不匹配")
+	}
 	if params["trade_status"] != "TRADE_SUCCESS" && params["trade_status"] != "TRADE_FINISHED" {
 		return NotifyResult{InvoiceNo: params["out_trade_no"], TradeNo: params["trade_no"]}, nil
 	}

@@ -228,9 +228,21 @@ func resolveEpayRelativeRef(apiBase, ref string) string {
 
 func (e Epay) VerifyNotify(req NotifyRequest, cfg map[string]string) (NotifyResult, error) {
 	params := req.Params
-	invoiceNo, tradeNo, ok := verifyEpaySign(params, cfg["key"])
+	key := cfg["key"]
+	if strings.TrimSpace(key) == "" {
+		// 空密钥下 md5(参数串 + "") 可被任意伪造，必须按失败关闭。
+		return NotifyResult{}, fmt.Errorf("易支付未配置商户密钥")
+	}
+	invoiceNo, tradeNo, ok := verifyEpaySign(params, key)
 	if !ok {
 		return NotifyResult{}, fmt.Errorf("易支付回调签名校验失败")
+	}
+	// 验签通过后再确认「该通知属于本商户」：同一密钥被多站点共用时，仅验签
+	// 无法区分通知归属。双方都带 pid 且不一致才拒绝——部分易支付分支的通知
+	// 不携带 pid，不能因此误杀，此时仍由密钥隔离兜底。
+	// ponytail: 上游不回传 pid 时该校验自动跳过，升级路径是要求上游回传 pid 后改为强制比对。
+	if pid := cfg["pid"]; strings.TrimSpace(pid) != "" && params["pid"] != "" && params["pid"] != pid {
+		return NotifyResult{}, fmt.Errorf("易支付回调商户号不匹配")
 	}
 	if params["trade_status"] != "TRADE_SUCCESS" && params["trade_status"] != "TRADE_FINISHED" {
 		return NotifyResult{InvoiceNo: invoiceNo, TradeNo: tradeNo}, nil

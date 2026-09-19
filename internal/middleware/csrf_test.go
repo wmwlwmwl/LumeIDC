@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -8,7 +9,8 @@ import (
 	"testing"
 )
 
-func TestCSRF(t *testing.T) {	var called int
+func TestCSRF(t *testing.T) {
+	var called int
 	h := CSRF(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		called++
 		w.WriteHeader(http.StatusNoContent)
@@ -49,6 +51,30 @@ func TestCSRF(t *testing.T) {	var called int
 				t.Fatalf("应跳转登录页，Location=%q", w.Header().Get("Location"))
 			}
 		})
+	}
+}
+
+// TestCSRFEnforcesBodyLimit 覆盖「非 multipart 的写请求同样有体积上限」：
+// 历史上只在 multipart 分支设限，JSON/表单请求体可被无界读取。
+func TestCSRFEnforcesBodyLimit(t *testing.T) {
+	var readErr error
+	h := CSRF(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, readErr = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	sess := &Session{CSRF: NewCSRFToken()}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/order", strings.NewReader(strings.Repeat("a", maxRequestBody+1)))
+	req = req.WithContext(WithSession(req.Context(), sess))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-CSRF-Token", sess.CSRFToken())
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("状态码=%d，期望 204", w.Code)
+	}
+	if readErr == nil {
+		t.Fatal("超出上限的请求体读取必须报错，否则上限未生效")
 	}
 }
 

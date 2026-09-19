@@ -47,6 +47,47 @@ func TestAlipaySignatureRoundTrip(t *testing.T) {
 	}
 }
 
+// TestAlipayVerifyNotifyAppBinding 覆盖「通知必须属于本应用」：
+// 同一支付宝账号下的多个应用可共用公钥，仅验签无法区分通知归属，
+// app_id 不一致必须拒绝；但不带 app_id 的老通知不能被误杀。
+func TestAlipayVerifyNotifyAppBinding(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := map[string]string{"app_id": "2021000000000001", "public_key": publicPEM(&key.PublicKey)}
+	// notify 按支付宝 rsaCheckV1 规则签名：签名内容剔除 sign 与 sign_type。
+	notify := func(appID string) NotifyRequest {
+		params := map[string]string{
+			"out_trade_no": "INV20260826abcdef",
+			"trade_no":     "2026082612345678",
+			"trade_status": "TRADE_SUCCESS",
+			"total_amount": "12.50",
+		}
+		if appID != "" {
+			params["app_id"] = appID
+		}
+		signature, serr := signAlipay(mapToValues(params), key)
+		if serr != nil {
+			t.Fatal(serr)
+		}
+		params["sign"] = signature
+		params["sign_type"] = "RSA2"
+		return NotifyRequest{Params: params}
+	}
+
+	result, err := (Alipay{}).VerifyNotify(notify(cfg["app_id"]), cfg)
+	if err != nil || !result.Successful {
+		t.Fatalf("本应用通知应受理: err=%v result=%+v", err, result)
+	}
+	if _, err := (Alipay{}).VerifyNotify(notify("9999999999999999"), cfg); err == nil {
+		t.Fatal("应用 ID 不匹配的通知必须被拒绝")
+	}
+	if _, err := (Alipay{}).VerifyNotify(notify(""), cfg); err != nil {
+		t.Fatalf("不带 app_id 的通知不应被拒绝: %v", err)
+	}
+}
+
 func publicPEM(key *rsa.PublicKey) string {
 	return string(pem.EncodeToMemory(&pem.Block{Type: "RSA PUBLIC KEY", Bytes: x509.MarshalPKCS1PublicKey(key)}))
 }
