@@ -2,14 +2,8 @@ package service
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"net/http"
-	"net/url"
-	"sort"
 	"strings"
 	"time"
 
@@ -82,9 +76,7 @@ func (p *ConfiguredSMSProvider) sendPurposeWithSettings(ctx context.Context, pho
 	return err
 }
 
-type smsUnknownError struct{}
-
-func (smsUnknownError) Error() string { return "短信发送结果未确认，请勿自动重发" }
+// smsUnknownError 类型与签名工具已迁 internal/smsdk（经 sms_alias.go 别名兼容）。
 
 var smsSettingKeys = []string{"sms_region", "sms_global_access_key", "sms_global_secret_key", "sms_global_sign_name", "sms_provider", "sms_username", "sms_api_key", "sms_user", "sms_token", "sms_secret_key", "sms_access_key", "sms_sign_name", "sms_endpoint", "sms_template_code", "sms_template_content"}
 
@@ -103,21 +95,7 @@ func (p *ConfiguredSMSProvider) loadSettings(ctx context.Context) (map[string]st
 	return values, nil
 }
 
-// SendPayload 仅普通短信，使用当前单组凭据；不复用验证码用途路由。
-func (p *ConfiguredSMSProvider) SendPayload(ctx context.Context, phone string, payload smsPayload) error {
-	settings, err := p.loadSettings(ctx)
-	if err != nil {
-		return err
-	}
-	if payload.Template.Kind != "notification" || payload.Preview.Provider == "aliyun" {
-		return errors.New("号码认证不支持业务通知")
-	}
-	if err := smsTemplateSendable(payload.Template); err != nil {
-		return err
-	}
-	settings["sms_sign_name"] = payload.SignName
-	return p.sendRendered(ctx, phone, payload.Preview, settings, false)
-}
+// SendPayload 死代码已删（无调用方）。sendRendered 供模板渲染后发送。
 func (p *ConfiguredSMSProvider) sendRendered(ctx context.Context, phone string, preview SMSPreview, settings map[string]string, otp bool) error {
 	_, err := p.sendRenderedResult(ctx, phone, preview, settings, otp)
 	return err
@@ -173,61 +151,4 @@ func SMSServiceConfigured(ctx context.Context, s *repo.Settings) bool {
 	return ok
 }
 
-func allowedSMSURL(raw, provider string) bool {
-	u, err := url.Parse(raw)
-	if err != nil || u.Scheme != "https" || u.User != nil || u.Hostname() == "" || u.Port() != "" || u.Fragment != "" || u.RawQuery != "" {
-		return false
-	}
-	host := strings.ToLower(u.Hostname())
-	switch provider {
-	case "aliyun":
-		return host == "dypnsapi.aliyuncs.com"
-	case "aliyun_sms":
-		return host == "dysmsapi.aliyuncs.com"
-	case "stay33":
-		return host == "idc.stay33.cn" || host == "api.freescdn.com"
-	default:
-		return false
-	}
-}
-
-func canonicalQuery(values map[string]string) string {
-	keys := make([]string, 0, len(values))
-	for k := range values {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	var b strings.Builder
-	for i, k := range keys {
-		if i > 0 {
-			b.WriteByte('&')
-		}
-		b.WriteString(percentEncode(k))
-		b.WriteByte('=')
-		b.WriteString(percentEncode(values[k]))
-	}
-	return b.String()
-}
-
-func percentEncode(v string) string {
-	return strings.ReplaceAll(strings.ReplaceAll(url.QueryEscape(v), "+", "%20"), "%7E", "~")
-}
-
-func hmacSHA256(key, value []byte) []byte {
-	m := hmac.New(sha256.New, key)
-	_, _ = m.Write(value)
-	return m.Sum(nil)
-}
-
-func sha256Hex(value []byte) string {
-	h := sha256.Sum256(value)
-	return hex.EncodeToString(h[:])
-}
-
-func randomHex(size int) string {
-	b := make([]byte, size)
-	if _, err := rand.Read(b); err != nil {
-		return ""
-	}
-	return hex.EncodeToString(b)
-}
+// allowedSMSURL 已迁 internal/smsdk.AllowedURL（适配器侧 SSRF 白名单）。

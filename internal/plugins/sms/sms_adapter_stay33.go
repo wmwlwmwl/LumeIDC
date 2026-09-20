@@ -1,6 +1,7 @@
-package service
+package sms
 
 import (
+	"lumeidc/internal/smsdk"
 	"context"
 	"encoding/json"
 	"errors"
@@ -111,6 +112,12 @@ func (p *stay33Adapter) TemplateDelete(ctx context.Context, id string, r SMSRang
 	return smsProviderAuditNotSupported("stay33"), errors.New("该服务商不支持远程模板操作，请在供应商控制台管理")
 }
 
+var descriptorStay33 = ProviderDescriptor{
+	Key: "stay33", Name: "Stay33",
+	ConfigFields: []string{"sms_username", "sms_secret_key", "sms_sign_name", "sms_endpoint"},
+	Capabilities: SMSProviderCapabilities{Ranges: []SMSRange{SMSRangeCN}, OTP: true, Notification: true},
+}
+
 func init() {
-	registerSMSProvider("stay33", newStay33Adapter)
+	smsdk.RegisterSMSProvider(descriptorStay33, newStay33Adapter)
 }

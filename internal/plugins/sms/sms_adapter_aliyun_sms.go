@@ -1,6 +1,7 @@
-package service
+package sms
 
 import (
+	"lumeidc/internal/smsdk"
 	"context"
 	"encoding/hex"
 	"encoding/json"
@@ -213,6 +214,12 @@ func hexEncode(b []byte) string {
 	return hex.EncodeToString(b)
 }
 
+var descriptorAliyunSMS = ProviderDescriptor{
+	Key: "aliyun_sms", Name: "阿里云短信",
+	ConfigFields: []string{"sms_access_key", "sms_secret_key", "sms_sign_name", "sms_endpoint"},
+	Capabilities: SMSProviderCapabilities{Ranges: []SMSRange{SMSRangeCN, SMSRangeGlobal}, OTP: true, Notification: true, TemplateCRUD: true, AuditSync: true},
+}
+
 func init() {
-	registerSMSProvider("aliyun_sms", newAliyunSMSAdapter)
+	smsdk.RegisterSMSProvider(descriptorAliyunSMS, newAliyunSMSAdapter)
 }

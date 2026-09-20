@@ -1,6 +1,7 @@
-package service
+package sms
 
 import (
+	"lumeidc/internal/smsdk"
 	"context"
 	"errors"
 	"net/http"
@@ -177,7 +178,19 @@ func (p *idcsmartAdapter) call(ctx context.Context, action, method string, form 
 	return res, nil
 }
 
+var descriptorIDCsmart = ProviderDescriptor{
+	Key: "idcsmart", Name: "智简魔方",
+	ConfigFields: []string{"sms_username", "sms_secret_key", "sms_sign_name"},
+	Capabilities: SMSProviderCapabilities{Ranges: []SMSRange{SMSRangeCN}, OTP: true, Notification: true, TemplateCRUD: true, AuditSync: true},
+}
+
+var descriptorIDCsmartPro = ProviderDescriptor{
+	Key: "idcsmartpro", Name: "智简魔方国内营销",
+	ConfigFields: []string{"sms_username", "sms_secret_key", "sms_sign_name"},
+	Capabilities: SMSProviderCapabilities{Ranges: []SMSRange{SMSRangeMarketing}, Notification: true, TemplateCRUD: true, AuditSync: true},
+}
+
 func init() {
-	registerSMSProvider("idcsmart", newIDCsmartAdapter)
-	registerSMSProvider("idcsmartpro", newIDCsmartProAdapter)
+	smsdk.RegisterSMSProvider(descriptorIDCsmart, newIDCsmartAdapter)
+	smsdk.RegisterSMSProvider(descriptorIDCsmartPro, newIDCsmartProAdapter)
 }

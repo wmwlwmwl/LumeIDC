@@ -1,6 +1,7 @@
-package service
+package sms
 
 import (
+	"lumeidc/internal/smsdk"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -175,6 +176,13 @@ func (p *aliyunAdapter) otpTemplateCode(purpose string) string {
 	return "100005"
 }
 
+// 描述符与实现同文件内聚（新增服务商照此声明 + 注册）。
+var descriptorAliyun = ProviderDescriptor{
+	Key: "aliyun", Name: "阿里云号码认证",
+	ConfigFields: []string{"sms_access_key", "sms_secret_key", "sms_sign_name"},
+	Capabilities: SMSProviderCapabilities{Ranges: []SMSRange{SMSRangeCN}, OTP: true},
+}
+
 func init() {
-	registerSMSProvider("aliyun", newAliyunAdapter)
+	smsdk.RegisterSMSProvider(descriptorAliyun, newAliyunAdapter)
 }

@@ -1,6 +1,7 @@
-package service
+package sms
 
 import (
+	"lumeidc/internal/smsdk"
 	"context"
 	"encoding/json"
 	"errors"
@@ -217,6 +218,12 @@ func (p *qcloudsmsAdapter) tencent(ctx context.Context, action string, params ma
 	return inner, nil
 }
 
+var descriptorQcloudSMS = ProviderDescriptor{
+	Key: "qcloudsms", Name: "腾讯云短信",
+	ConfigFields: []string{"sms_access_key", "sms_secret_key", "sms_username", "sms_sign_name", "sms_region"},
+	Capabilities: SMSProviderCapabilities{Ranges: []SMSRange{SMSRangeCN, SMSRangeGlobal, SMSRangeMarketing}, OTP: true, Notification: true, TemplateCRUD: true, AuditSync: true},
+}
+
 func init() {
-	registerSMSProvider("qcloudsms", newQcloudSMSAdapter)
+	smsdk.RegisterSMSProvider(descriptorQcloudSMS, newQcloudSMSAdapter)
 }

@@ -1,6 +1,7 @@
-package service
+package sms
 
 import (
+	"lumeidc/internal/smsdk"
 	"context"
 	"errors"
 	"net/http"
@@ -182,6 +183,12 @@ func (p *submailAdapter) call(ctx context.Context, action, method string, r SMSR
 	return res, nil
 }
 
+var descriptorSubmail = ProviderDescriptor{
+	Key: "submail", Name: "赛邮",
+	ConfigFields: []string{"sms_access_key", "sms_secret_key", "sms_sign_name", "sms_global_access_key", "sms_global_secret_key", "sms_global_sign_name"},
+	Capabilities: SMSProviderCapabilities{Ranges: []SMSRange{SMSRangeCN, SMSRangeGlobal}, OTP: true, Notification: true, TemplateCRUD: true, AuditSync: true},
+}
+
 func init() {
-	registerSMSProvider("submail", newSubmailAdapter)
+	smsdk.RegisterSMSProvider(descriptorSubmail, newSubmailAdapter)
 }

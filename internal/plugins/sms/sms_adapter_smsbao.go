@@ -1,6 +1,7 @@
-package service
+package sms
 
 import (
+	"lumeidc/internal/smsdk"
 	"context"
 	"errors"
 	"net/http"
@@ -83,6 +84,12 @@ func (p *smsbaoAdapter) TemplateDelete(ctx context.Context, id string, r SMSRang
 	return smsProviderAuditNotSupported("smsbao"), errors.New("该服务商不支持远程模板操作，请在供应商控制台管理")
 }
 
+var descriptorSmsbao = ProviderDescriptor{
+	Key: "smsbao", Name: "短信宝",
+	ConfigFields: []string{"sms_username", "sms_secret_key", "sms_sign_name"},
+	Capabilities: SMSProviderCapabilities{Ranges: []SMSRange{SMSRangeCN, SMSRangeGlobal}, OTP: true, Notification: true},
+}
+
 func init() {
-	registerSMSProvider("smsbao", newSMSBaoAdapter)
+	smsdk.RegisterSMSProvider(descriptorSmsbao, newSMSBaoAdapter)
 }
