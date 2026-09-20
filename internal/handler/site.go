@@ -40,12 +40,33 @@ func siteBaseURL(ctx context.Context, s *repo.Settings, r *http.Request) string 
 }
 
 // inferBaseFromRequest 从当前请求推断协议与主机（HTTPS 直连或反代标记）。
+// ponytail: site_url 未配置时只能信任请求主机，而 Host 由客户端控制——它可把支付回调/回跳
+// 地址指到任意域。此处只做语法收敛（拒绝空、带路径/凭据、含空白或控制字符的主机），
+// 返回空串表示"推断不出可用地址"；真要根治需强制后台配置 site_url（见调用方的兜底提示）。
 func inferBaseFromRequest(r *http.Request) string {
 	scheme := "http"
 	if r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
 		scheme = "https"
 	}
-	return scheme + "://" + r.Host
+	host := strings.TrimSpace(r.Host)
+	if !validHostHeader(host) {
+		return ""
+	}
+	return scheme + "://" + host
+}
+
+// validHostHeader 校验主机可安全拼进 URL：不含空白/控制字符，也不含会改变 URL 语义的
+// / \ ? # @（这些字符会让 "scheme://host" 之后的路径被劫持到别处）。
+func validHostHeader(host string) bool {
+	if host == "" || len(host) > 255 {
+		return false
+	}
+	for _, c := range host {
+		if c <= ' ' || c == 0x7f || c == '/' || c == '\\' || c == '?' || c == '#' || c == '@' {
+			return false
+		}
+	}
+	return true
 }
 
 // validSiteURL 校验站点地址：必须 http(s):// 开头且不含路径与查询。

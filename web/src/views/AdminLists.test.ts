@@ -5,6 +5,7 @@ import * as Vue from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as table from '../admin/useAdminTable'
 import * as labels from '../utils/admin-labels'
+import * as format from '../utils/format'
 import * as gatewayDrivers from '../admin/gateway-drivers'
 
 const messages = vi.hoisted(() => ({ error: vi.fn(), success: vi.fn(), warning: vi.fn() }))
@@ -14,9 +15,9 @@ const api: Record<string, ReturnType<typeof vi.fn>> = {}
 const post = vi.fn()
 const route = Vue.reactive({ params: { id: '1' }, query: {} as Record<string, string> })
 const cases = [
-  ['Orders', 'fetchOrders'], ['Users', 'fetchUsers'], ['Tickets', 'fetchAdminTickets'],
+  ['Orders', 'fetchOrders'], ['Users', 'fetchUsers'],
   ['Services', 'fetchAdminServices'], ['CancelRequests', 'fetchAdminCancelRequests'],
-  ['Announcements', 'fetchAdminAnnouncements'], ['Coupons', 'fetchAdminCoupons'],
+  ['Coupons', 'fetchAdminCoupons'],
   ['Gateways', 'fetchAdminGateways'], ['Products', 'fetchAdminProducts'],
   ['Servers', 'fetchAdminServers'], ['Types', 'fetchAdminTypes'],
   ['Verifications', 'fetchAdminVerifications'], ['Logs', 'fetchAdminLogs'],
@@ -55,6 +56,7 @@ const components = Object.fromEntries(cases.map(([name]) => {
     // 这里直接给真实注册表，避免用空桩再炸一次。
     '../admin/gateway-drivers': gatewayDrivers,
     '@/utils/clipboard': { copyText: vi.fn(async () => true) },
+    '@/utils/format': format,
   }
   const component = new Function('require', 'exports', `const useRouter = () => ({ push() {} });\n${compiled}\nreturn Component`)((id: string) => {
     if (id.endsWith('.vue')) return {}
@@ -144,7 +146,7 @@ function deferred() {
 function result(name: string, id: number) {
   const list = [{ id }]
   if (name === 'Catalog') return { rows: list, server: { name: `服务器${id}` }, types: [], error: '' }
-  return ['Orders', 'Users', 'Tickets', 'Services', 'CancelRequests'].includes(name)
+  return ['Orders', 'Users', 'Services', 'CancelRequests'].includes(name)
     ? { list, total: id, profit: String(id), products: list, pending: id } : list
 }
 async function flush() {
@@ -155,8 +157,6 @@ beforeEach(() => {
   vi.useFakeTimers()
   vi.resetAllMocks()
   for (const [name, fetcher] of cases) api[fetcher] = vi.fn().mockResolvedValue(result(name, 0))
-  api.fetchAdminTicketStats = vi.fn().mockResolvedValue({ pending: 0 })
-  api.fetchTicketAssignees = vi.fn().mockResolvedValue([])
   api.fetchServiceRecovery = vi.fn().mockImplementation(async (id: number) => recovery(id))
   api.confirmServiceRecovery = vi.fn().mockResolvedValue(undefined)
   post.mockResolvedValue({ ok: 1 })
@@ -512,34 +512,21 @@ describe('对账恢复请求隔离', () => {
 })
 
 describe('搜索、分页和后台刷新', () => {
-  it.each(['Orders', 'Users', 'Tickets'])('%s 搜索/分页/排序均发出新查询而不被加载锁丢弃', async (name) => {
+  it.each(['Orders', 'Users'])('%s 搜索/分页/排序均发出新查询而不被加载锁丢弃', async (name) => {
     const fetcher = cases.find(([key]) => key === name)![1]
     const pending = deferred()
     api[fetcher].mockReturnValueOnce(pending.promise)
     const state = mount(name)
     state.searchForm.q = '新关键词'
     state.handleSearch()
-    if (name === 'Tickets') state.handlePageChange(2)
-    else state.handleCurrentChange(2)
+    state.handleCurrentChange(2)
     state.handleSortChange({ prop: 'id', order: 'ascending' })
     await flush()
     expect(api[fetcher]).toHaveBeenCalledTimes(4)
-    if (name === 'Tickets') expect(api[fetcher]).toHaveBeenLastCalledWith(expect.objectContaining({ q: '新关键词', page: 1, sort: 'id', order: 'asc' }))
-    else expect(api[fetcher]).toHaveBeenLastCalledWith('新关键词', 1, 'id', 'asc')
+    expect(api[fetcher]).toHaveBeenLastCalledWith('新关键词', 1, 'id', 'asc')
     pending.resolve(result(name, 9))
     await flush()
     expect(state.list).toEqual([{ id: 0 }])
-  })
-
-  it('工单统计慢响应也必须服从列表代次', async () => {
-    const oldStats = deferred()
-    api.fetchAdminTicketStats.mockReturnValueOnce(oldStats.promise).mockResolvedValueOnce({ pending: 2 })
-    const state = mount('Tickets')
-    await flush()
-    await state.load()
-    oldStats.resolve({ pending: 1 })
-    await flush()
-    expect(state.stats).toEqual({ pending: 2 })
   })
 
   it('服务慢轮询不重叠，但新搜索立即执行，旧轮询不能覆盖', async () => {

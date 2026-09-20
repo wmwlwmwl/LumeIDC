@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"lumeidc/internal/money"
+	"lumeidc/internal/plugin"
 	"lumeidc/internal/repo"
 )
 
@@ -210,12 +211,19 @@ func (o *Orders) CreateOrder(ctx context.Context, userID, productID, pricesetID 
 	var couponDiscount string
 	if couponCode != "" && o.Coupons != nil {
 		cid, discount, cerr := o.Coupons.Validate(ctx, tx, couponCode, userID, finalAmount)
-		if cerr != nil {
+		switch {
+		case cerr == nil:
+			couponID = cid
+			couponDiscount = discount
+			finalAmount = subtractAmount(finalAmount, discount)
+		case promoType == "coupon_giveaway" && couponUnavailable(cerr):
+			// 活动发放的专属券不可用（未领取/已用完/已过期/未达门槛）时按原价继续下单：
+			// 否则挂了 coupon_giveaway 的商品对该用户永久无法下单（同 P1-3 新客活动的形态）。
+			// 只对"券不可用"这一业务结论降级；查库失败等真实故障必须原样上报，不能静默按原价成交。
+			log.Printf("[order] 用户 %d 活动发放的优惠码 %s 不可用，改按原价下单: %v", userID, couponCode, cerr)
+		default:
 			return 0, 0, "", cerr
 		}
-		couponID = cid
-		couponDiscount = discount
-		finalAmount = subtractAmount(finalAmount, discount)
 	}
 	// 0 元订单：仅当产品该周期真实起步价（基础价+最低配置价，DisplayPrice）也为 0 时才是“纯免费产品”，
 	// 放行并交给下单处自动核销开通；否则 0 元说明计价配置被绕过（未提交必填/计价的 CPU、内存等）
@@ -277,7 +285,23 @@ func (o *Orders) CreateOrder(ctx context.Context, userID, productID, pricesetID 
 			log.Printf("订单提交通知入队失败，订单编号=%d: %v", orderID, err)
 		}
 	}
+	emitOrderCreated(ctx, orderID, userID, productID, finalAmount, "new")
 	return orderID, invoiceID, finalAmount, nil
+}
+
+// emitOrderCreated 订单创建事件（事务提交后调用；金额字符串转数值，解析失败按 0）。
+func emitOrderCreated(ctx context.Context, orderID, userID, productID int64, amountStr, kind string) {
+	amt, _ := strconv.ParseFloat(amountStr, 64)
+	plugin.Emit(ctx, plugin.EventOrderCreated, plugin.OrderCreatedPayload{
+		OrderID: orderID, UserID: userID, ProductID: productID, Amount: amt, Kind: kind,
+	})
+}
+
+// couponUnavailable 判定优惠码校验失败是否属于「券本身不可用」这一类业务结论
+// （可以降级为按原价下单），而不是查库失败等真实故障（必须原样上报）。
+func couponUnavailable(err error) bool {
+	return errors.Is(err, repo.ErrCouponInvalid) || errors.Is(err, repo.ErrCouponExhausted) ||
+		errors.Is(err, repo.ErrCouponUsed) || errors.Is(err, repo.ErrCouponMin)
 }
 
 // CreateRechargeInvoice 创建用户余额充值账单；充值账单不绑定产品订单。
@@ -560,6 +584,7 @@ func (o *Orders) CreateRenewOrder(ctx context.Context, userID, serviceID int64, 
 	if err := tx.Commit(); err != nil {
 		return 0, 0, "", err
 	}
+	emitOrderCreated(ctx, orderID, userID, productID, amountRaw, "renew")
 	return orderID, invoiceID, amountRaw, nil
 }
 
@@ -810,5 +835,6 @@ func (o *Orders) CreateUpgradeOrder(ctx context.Context, userID, serviceID, targ
 	if err := tx.Commit(); err != nil {
 		return 0, 0, "", 0, err
 	}
+	emitOrderCreated(ctx, orderID, userID, targetProductID, orderAmount, "upgrade")
 	return orderID, invoiceID, orderAmount, diff, nil
 }

@@ -451,21 +451,22 @@ export interface TicketItem {
   updated_at: string
 }
 export async function fetchTickets(params: { q?: string; status?: string; priority?: string; category?: string; page?: number; limit?: number } = {}): Promise<{ list: TicketItem[]; total: number; page: number; limit: number }> {
-  const res = await http.get<{ list?: TicketItem[]; total?: number; page?: number; limit?: number }>('/tickets', params)
+  // 工单 API 由 tickets 插件提供（/plugin/tickets/...）
+  const res = await http.get<{ list?: TicketItem[]; total?: number; page?: number; limit?: number }>('/plugin/tickets/list', params)
   return { list: res.list || [], total: res.total || 0, page: res.page || 1, limit: res.limit || 10 }
 }
 export async function createTicket(body: { subject: string; body: string; priority: string; category: string; service_id?: number }): Promise<void> {
-  await http.post('/tickets', body)
+  await http.post('/plugin/tickets/create', body)
 }
 export interface TicketMessage { id: number; admin_id: number; content: string; created_at: string }
 export interface TicketAttachment { id: number; message_id: number; name: string; mime: string; size: number; url: string }
 export async function fetchTicketDetail(id: number): Promise<{ ticket: TicketItem; messages: TicketMessage[]; attachments: TicketAttachment[] }> {
-  return (await http.get(`/tickets/${id}`)) as unknown as { ticket: TicketItem; messages: TicketMessage[]; attachments: TicketAttachment[] }
+  return (await http.get(`/plugin/tickets/${id}`)) as unknown as { ticket: TicketItem; messages: TicketMessage[]; attachments: TicketAttachment[] }
 }
-export async function replyTicket(id: number, content: string, file?: File): Promise<void> { if (!file) { await http.post(`/tickets/${id}/reply`, { content }); return }; const form = new FormData(); form.append('content', content); form.append('file', file); await http.post(`/tickets/${id}/reply`, form) }
-export async function uploadTicketAttachment(id: number, file: File): Promise<void> { const form = new FormData(); form.append('file', file); await http.post(`/tickets/${id}/attachments`, form) }
-export async function closeTicket(id: number, reason: string): Promise<void> { await http.post(`/tickets/${id}/close`, { reason }) }
-export async function reopenTicket(id: number): Promise<void> { await http.post(`/tickets/${id}/reopen`, {}) }
+export async function replyTicket(id: number, content: string, file?: File): Promise<void> { if (!file) { await http.post(`/plugin/tickets/${id}/reply`, { content }); return }; const form = new FormData(); form.append('content', content); form.append('file', file); await http.post(`/plugin/tickets/${id}/reply`, form) }
+export async function uploadTicketAttachment(id: number, file: File): Promise<void> { const form = new FormData(); form.append('file', file); await http.post(`/plugin/tickets/${id}/attachments`, form) }
+export async function closeTicket(id: number, reason: string): Promise<void> { await http.post(`/plugin/tickets/${id}/close`, { reason }) }
+export async function reopenTicket(id: number): Promise<void> { await http.post(`/plugin/tickets/${id}/reopen`, {}) }
 export async function fetchServiceInvoices(id: number | string): Promise<ServiceInvoice[]> {
   const res = await http.get<{ ok: number; list: ServiceInvoice[] }>(`/services/${id}/invoices`)
   return (res.list || []) as unknown as ServiceInvoice[]

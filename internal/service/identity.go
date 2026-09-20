@@ -18,8 +18,10 @@ import (
 	"unicode"
 
 	"lumeidc/internal/crypto"
+	"lumeidc/internal/plugin"
 	"lumeidc/internal/repo"
 	"lumeidc/internal/storage"
+	"lumeidc/internal/vsdk"
 )
 
 var ErrIdentityRequired = errors.New("请先完成实名认证后再购买或续费")
@@ -274,6 +276,7 @@ func (s *Identity) SubmitForm(ctx context.Context, userID int64, form RealNameFo
 		s.Notifier.NotifyTemplate(ctx, userID, "identity_submitted", "实名申请已提交", "你的实名资料已提交，等待管理员人工审核。")
 	}
 	s.notifyAdminManualSubmitted(ctx, userID, submissionID)
+	plugin.Emit(ctx, plugin.EventIdentitySubmitted, plugin.UserPayload{UserID: userID})
 	return nil
 }
 
@@ -362,16 +365,8 @@ func (s *Identity) StartProvider(ctx context.Context, userID int64, providerKey 
 	if started.ProviderRef == "" {
 		return 0, "", errors.New("实名插件未返回任务编号")
 	}
-	if started.URL != "" {
-		u, err := url.Parse(started.URL)
-		if err != nil || u.Scheme != "https" || u.User != nil || u.Hostname() == "" || strings.ContainsAny(started.URL, "\r\n") {
-			return 0, "", errors.New("实名插件返回地址不安全")
-		}
-		host := strings.ToLower(u.Hostname())
-		allowed := map[string]string{"baidu_face": "brain.baidu.com", "leaf_face": "face.ly-y.cn", "smapi": "smapi.x1m1.cn", "stay33": "idc.stay33.cn"}[providerKey]
-		if allowed != "" && host != allowed {
-			return 0, "", errors.New("实名插件返回地址不受支持")
-		}
+	if err := checkPluginReturnURL(providerKey, started.URL); err != nil {
+		return 0, "", err
 	}
 	nameCipher, err := s.PII.Encrypt(name)
 	if err != nil {
@@ -390,6 +385,23 @@ func (s *Identity) StartProvider(ctx context.Context, userID int64, providerKey 
 	// 不通知管理员：自动实名由第三方插件自行判定，核验成功与否管理员都无事可做，
 	// 提交阶段发信只会产生噪音（见 notifyAdminManualSubmitted 注释）。
 	return createdID, started.URL, nil
+}
+
+// checkPluginReturnURL 校验实名插件返回的认证页地址：https + 无用户态 + host 命中渠道
+// 描述符声明的白名单（vsdk.Descriptor.ReturnHost）。未声明 ReturnHost 的渠道一律拒绝（fail-closed）。
+func checkPluginReturnURL(providerKey, rawURL string) error {
+	if rawURL == "" {
+		return nil
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Scheme != "https" || u.User != nil || u.Hostname() == "" || strings.ContainsAny(rawURL, "\r\n") {
+		return errors.New("实名插件返回地址不安全")
+	}
+	d, ok := vsdk.DescriptorFor(providerKey)
+	if !ok || d.ReturnHost == "" || !strings.EqualFold(u.Hostname(), d.ReturnHost) {
+		return errors.New("实名插件返回地址不受支持")
+	}
+	return nil
 }
 
 func (s *Identity) PollProvider(ctx context.Context, userID int64, submissionID int64) error {
@@ -442,6 +454,9 @@ func (s *Identity) Review(ctx context.Context, id, adminID int64, approve bool, 
 		} else {
 			s.Notifier.NotifyTemplate(ctx, v.UserID, "identity_rejected", "实名审核未通过", "你的实名资料未通过人工审核，请登录账户查看原因并重新提交。")
 		}
+	}
+	if err == nil {
+		plugin.Emit(ctx, plugin.EventIdentityReviewed, plugin.IdentityReviewedPayload{UserID: v.UserID, Approved: approve})
 	}
 	return nil
 }

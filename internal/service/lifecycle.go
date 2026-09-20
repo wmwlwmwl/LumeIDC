@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"lumeidc/internal/plugin"
 	"lumeidc/internal/repo"
 	"lumeidc/internal/server"
 )
@@ -33,6 +35,8 @@ type Lifecycle struct {
 type serviceRef struct {
 	ID               int64
 	Status           int16
+	UserID           int64
+	ProductID        int64
 	ServerID         sql.NullInt64
 	UpstreamPID      int64
 	UpstreamProvider string
@@ -44,14 +48,14 @@ type serviceRef struct {
 func (lc *Lifecycle) loadService(ctx context.Context, serviceID int64) (*serviceRef, error) {
 	var s serviceRef
 	err := lc.db.QueryRowContext(ctx,
-		`SELECT sv.id,sv.status,coalesce(sv.server_id,p.server_id),
+		`SELECT sv.id,sv.status,sv.user_id,sv.product_id,coalesce(sv.server_id,p.server_id),
 		        coalesce(nullif(sv.upstream_pid,0),p.upstream_pid),
 		        coalesce(nullif(sv.upstream_provider,''),srv.provider,''),
 		        sv.upstream_host_id,coalesce(p.upstream_cycle,'')
 		 FROM services sv JOIN products p ON p.id=sv.product_id
 		 LEFT JOIN servers srv ON srv.id=coalesce(sv.server_id,p.server_id)
 		 WHERE sv.id=$1`,
-		serviceID).Scan(&s.ID, &s.Status, &s.ServerID, &s.UpstreamPID, &s.UpstreamProvider,
+		serviceID).Scan(&s.ID, &s.Status, &s.UserID, &s.ProductID, &s.ServerID, &s.UpstreamPID, &s.UpstreamProvider,
 		&s.UpstreamHost, &s.UpstreamCycle)
 	if err != nil {
 		return nil, err
@@ -75,12 +79,14 @@ func resolveProvider(ctx context.Context, providers *server.Registry, servers *r
 func (lc *Lifecycle) providerFor(ctx context.Context, s *serviceRef) (server.Provider, server.Config, error) {
 	// 同 console.resolve：hostID>0 即有上游；upstream_pid=0 为合法弹性模式（EasyPanel）。
 	if !s.ServerID.Valid || s.UpstreamHost == 0 {
-		return nil, server.Config{}, errNoUpstream
+		return nil, server.Config{}, ErrNoUpstream
 	}
 	return resolveProvider(ctx, lc.Providers, lc.Servers, s.UpstreamProvider, s.ServerID.Int64)
 }
 
-var errNoUpstream = lifecycleErr("该服务未绑定上游")
+// ErrNoUpstream 该服务未绑定上游（本地服务）。属业务性拒绝：文案中性、
+// 可直接展示给用户，与上游故障区分（见 handler.consoleErrMsg）。
+var ErrNoUpstream = lifecycleErr("该服务未绑定上游")
 
 type lifecycleErr string
 
@@ -117,7 +123,7 @@ func (lc *Lifecycle) Renew(ctx context.Context, serviceID int64, cycle string, o
 		return err
 	}
 	prov, cfg, err := lc.providerFor(ctx, s)
-	if err == errNoUpstream {
+	if err == ErrNoUpstream {
 		return nil // 本地服务，无需上游操作
 	}
 	if err != nil {
@@ -162,6 +168,8 @@ func (lc *Lifecycle) Renew(ctx context.Context, serviceID int64, cycle string, o
 		return &server.ManualReviewError{Msg: fmt.Sprintf("上游续费已返回成功，但保存终态检查点失败，请人工核对: %v", err)}
 	}
 	lc.clearRenewPending(ctx, serviceID)
+	// 仅首次成功发出（checkpoint 已存在时提前返回，不会重复触发）
+	plugin.Emit(ctx, plugin.EventServiceRenewed, plugin.ServicePayload{ServiceID: s.ID, UserID: s.UserID, ProductID: s.ProductID})
 	return nil
 }
 
@@ -295,7 +303,7 @@ func (lc *Lifecycle) transition(ctx context.Context, s *serviceRef, from, to int
 	defer lc.releaseExecutionLock()
 
 	prov, cfg, err := lc.providerFor(ctx, s)
-	if err == errNoUpstream {
+	if err == ErrNoUpstream {
 		res, err := lc.db.ExecContext(ctx,
 			`UPDATE services SET status=$1 WHERE id=$2 AND status`+cmp+`$3`, to, s.ID, from)
 		if err != nil {
@@ -380,10 +388,14 @@ func (lc *Lifecycle) Suspend(ctx context.Context, serviceID int64) error {
 	if s.Status != 1 {
 		return fmt.Errorf("服务当前状态不可停机")
 	}
-	return lc.transition(ctx, s, 1, 2, "=", "suspending", "上游停机失败",
+	err = lc.transition(ctx, s, 1, 2, "=", "suspending", "上游停机失败",
 		func(ctx context.Context, p server.Provider, cfg server.Config, host int64) error {
 			return p.Suspend(ctx, cfg, host)
 		})
+	if err == nil {
+		plugin.Emit(ctx, plugin.EventServiceSuspended, plugin.ServicePayload{ServiceID: s.ID, UserID: s.UserID, ProductID: s.ProductID})
+	}
+	return err
 }
 
 // Unsuspend 解除停机。
@@ -395,10 +407,14 @@ func (lc *Lifecycle) Unsuspend(ctx context.Context, serviceID int64) error {
 	if s.Status != 2 {
 		return fmt.Errorf("服务当前状态不可解除停机")
 	}
-	return lc.transition(ctx, s, 2, 1, "=", "unsuspending", "上游解除停机失败",
+	err = lc.transition(ctx, s, 2, 1, "=", "unsuspending", "上游解除停机失败",
 		func(ctx context.Context, p server.Provider, cfg server.Config, host int64) error {
 			return p.Unsuspend(ctx, cfg, host)
 		})
+	if err == nil {
+		plugin.Emit(ctx, plugin.EventServiceUnsuspended, plugin.ServicePayload{ServiceID: s.ID, UserID: s.UserID, ProductID: s.ProductID})
+	}
+	return err
 }
 
 // Terminate 删除：本地终止 + 上游销毁。
@@ -422,6 +438,7 @@ func (lc *Lifecycle) Terminate(ctx context.Context, serviceID int64) error {
 			`UPDATE services SET provision_error='' WHERE id=$1 AND status=3`, serviceID); e != nil {
 			log.Printf("[lifecycle] service %d 删除后清空失败原因失败: %v", serviceID, e)
 		}
+		plugin.Emit(ctx, plugin.EventServiceTerminated, plugin.ServicePayload{ServiceID: s.ID, UserID: s.UserID, ProductID: s.ProductID})
 	}
 	return err
 }
@@ -846,7 +863,14 @@ func (lc *Lifecycle) SyncUpstreamStatus(ctx context.Context) {
 		return
 	}
 	defer func() {
-		_, _ = conn.ExecContext(context.Background(), `SELECT pg_advisory_unlock(hashtext($1))`, leaseKey)
+		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		// 解锁失败必须弃用连接。上面注释担心的「锁泄漏后 try_lock 永远失败、同步静默停摆」
+		// 正是解锁报错却把仍持有锁的连接归还连接池导致的；ErrBadConn 让 database/sql
+		// 真正关掉会话，由 PostgreSQL 释放锁，下轮同步即可照常运行。
+		if _, err := conn.ExecContext(cleanup, `SELECT pg_advisory_unlock(hashtext($1))`, leaseKey); err != nil {
+			_ = conn.Raw(func(any) error { return driver.ErrBadConn })
+		}
 		_ = conn.Close()
 	}()
 
@@ -969,7 +993,7 @@ func (lc *Lifecycle) Upgrade(ctx context.Context, serviceID int64, cycle string,
 		return fmt.Errorf("升级订单缺少目标产品")
 	}
 	prov, cfg, err := lc.providerFor(ctx, s)
-	if err == errNoUpstream {
+	if err == ErrNoUpstream {
 		// 防御性兜底（升级订单必绑定服务器）：仅本地换产品
 		return lc.localUpgradeApply(ctx, serviceID, targetProductID, cycle, snapshot)
 	}
@@ -1143,14 +1167,19 @@ func (lc *Lifecycle) rollbackUpgrade(ctx context.Context, userID int64, diffAmou
 		return
 	}
 	// admin_id=0 表示系统自动回滚。注意 note 文案被履约对账当作回滚标记用，不能改。
-	if _, err := tx.ExecContext(ctx,
+	var refundID int64
+	if err := tx.QueryRowContext(ctx,
 		`INSERT INTO refunds(user_id,order_id,invoice_id,amount,method,reason,admin_id,status)
-		 SELECT $1,$2,(SELECT id FROM invoices WHERE order_id=$2 LIMIT 1),$3,'balance',$4,0,'done'`,
-		userID, orderID, amountStr, note); err != nil {
+		 SELECT $1,$2,(SELECT id FROM invoices WHERE order_id=$2 LIMIT 1),$3,'balance',$4,0,'done'
+		 RETURNING id`,
+		userID, orderID, amountStr, note).Scan(&refundID); err != nil {
 		log.Printf("[lifecycle] 升级回滚退款记录写入失败（订单 %d）: %v", orderID, err)
 		return
 	}
 	if err := tx.Commit(); err != nil {
 		log.Printf("[lifecycle] 升级回滚提交失败（订单 %d）: %v", orderID, err)
+		return
 	}
+	amt, _ := strconv.ParseFloat(amountStr, 64)
+	plugin.Emit(ctx, plugin.EventRefundCreated, plugin.RefundPayload{RefundID: refundID, OrderID: orderID, UserID: userID, Amount: amt, Reason: note})
 }

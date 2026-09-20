@@ -12,6 +12,7 @@ import (
 
 	"lumeidc/internal/crypto"
 	"lumeidc/internal/money"
+	"lumeidc/internal/plugin"
 	"lumeidc/internal/repo"
 	"lumeidc/internal/server"
 )
@@ -255,6 +256,8 @@ func (p *Payment) MarkPaidByBalance(ctx context.Context, invoiceNo string, userI
 	if err := tx.Commit(); err != nil {
 		return err
 	}
+	amt, _ := strconv.ParseFloat(amountStr, 64)
+	plugin.Emit(ctx, plugin.EventOrderPaid, plugin.OrderPaidPayload{OrderID: orderID, InvoiceID: invID, InvoiceNo: invoiceNo, UserID: userID, Amount: amt})
 	if p.TriggerFulfillment != nil {
 		p.TriggerFulfillment()
 	}
@@ -670,6 +673,7 @@ func (p *Payment) MarkPaid(ctx context.Context, invoiceNo, tradeNo, gatewayCode 
 	if err := tx.Commit(); err != nil {
 		return err
 	}
+	plugin.Emit(ctx, plugin.EventOrderPaid, plugin.OrderPaidPayload{OrderID: orderID, InvoiceID: invID, InvoiceNo: invoiceNo, UserID: userID, Amount: paidAmountFloat})
 	if p.TriggerFulfillment != nil {
 		p.TriggerFulfillment()
 	}
@@ -1004,9 +1008,10 @@ func (p *Payment) provision(ctx context.Context, serviceID, _ int64, cycle strin
 	var serverID sql.NullInt64
 	var providerCode string
 	var upstreamPID int64
+	var userID, productID int64
 	if err := p.db.QueryRowContext(ctx,
-		`SELECT server_id,coalesce(upstream_provider,''),upstream_pid FROM services WHERE id=$1`, serviceID).
-		Scan(&serverID, &providerCode, &upstreamPID); err != nil {
+		`SELECT server_id,coalesce(upstream_provider,''),upstream_pid,user_id,product_id FROM services WHERE id=$1`, serviceID).
+		Scan(&serverID, &providerCode, &upstreamPID, &userID, &productID); err != nil {
 		return p.failProvision(ctx, serviceID, err)
 	}
 	// 本地服务判定：未绑定服务器；或绑定了服务器但无上游产品 ID 且该供应商不支持弹性模式
@@ -1025,6 +1030,7 @@ func (p *Payment) provision(ctx context.Context, serviceID, _ int64, cycle strin
 		if _, err := p.db.ExecContext(ctx, `UPDATE services SET status=1,provision_error='' WHERE id=$1 AND status=0`, serviceID); err != nil {
 			return err
 		}
+		plugin.Emit(ctx, plugin.EventServiceCreated, plugin.ServicePayload{ServiceID: serviceID, UserID: userID, ProductID: productID})
 		return nil
 	}
 	prov, err := p.Providers.Get(providerCode)
@@ -1061,6 +1067,7 @@ func (p *Payment) provision(ctx context.Context, serviceID, _ int64, cycle strin
 			`UPDATE services SET upstream_host_id=$2, status=1, provision_error='' WHERE id=$1 AND status=0`, serviceID, res.UpstreamHostID); err != nil {
 			return err
 		}
+		plugin.Emit(ctx, plugin.EventServiceCreated, plugin.ServicePayload{ServiceID: serviceID, UserID: userID, ProductID: productID})
 	}
 	// 供应商回传了实例密码（如 EasyPanel）：加密落库供详情页展示与面板直登。
 	if res.Password != "" && p.Crypt != nil {
@@ -1289,11 +1296,18 @@ func (p *Payment) Refund(ctx context.Context, adminID, orderID int64, amount, re
 			return err
 		}
 	}
-	if _, err := tx.ExecContext(ctx,
+	var refundID int64
+	if err := tx.QueryRowContext(ctx,
 		`INSERT INTO refunds(user_id,order_id,invoice_id,amount,method,reason,admin_id,status)
-		 SELECT $1,$2,(SELECT id FROM invoices WHERE order_id=$2 LIMIT 1),$3,$4,$5,$6,'done'`,
-		userID, orderID, amount, method, reason, adminID); err != nil {
+		 SELECT $1,$2,(SELECT id FROM invoices WHERE order_id=$2 LIMIT 1),$3,$4,$5,$6,'done'
+		 RETURNING id`,
+		userID, orderID, amount, method, reason, adminID).Scan(&refundID); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	amt, _ := strconv.ParseFloat(amount, 64)
+	plugin.Emit(ctx, plugin.EventRefundCreated, plugin.RefundPayload{RefundID: refundID, OrderID: orderID, UserID: userID, Amount: amt, Reason: reason})
+	return nil
 }

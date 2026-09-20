@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"lumeidc/internal/plugin"
 	"lumeidc/internal/repo"
 )
 
@@ -190,6 +191,15 @@ func (n *Notifier) notify(ctx context.Context, userID int64, title, body, code s
 	if n == nil || n.db == nil {
 		return fmt.Errorf("通知服务不可用")
 	}
+	// 插件过滤器（notify.message）：可改写标题/正文/模板变量（如追加签名、敏感词处理）；
+	// 过滤器禁用/出错时保留原文。
+	msg := &plugin.NotificationMessage{UserID: userID, Code: code, Title: title, Body: body, Values: values}
+	if out, ok := plugin.ApplyFilters(ctx, plugin.FilterNotifyMessage, msg).(*plugin.NotificationMessage); ok && out != nil {
+		title, body = out.Title, out.Body
+		if out.Values != nil {
+			values = out.Values
+		}
+	}
 	defer func() {
 		if err != nil {
 			log.Printf("通知保存失败，用户编号=%d，请重试: %v", userID, err)
@@ -266,22 +276,7 @@ func (n *Notifier) notify(ctx context.Context, userID int64, title, body, code s
 	return nil
 }
 
-// TicketNotify renders the configurable ticket message template before delivery.
-func (n *Notifier) TicketNotify(ctx context.Context, userID int64, event, subject string) {
-	if n == nil || n.Settings == nil {
-		return
-	}
-	title, _ := n.Settings.Get(ctx, "ticket_notify_"+event+"_title")
-	body, _ := n.Settings.Get(ctx, "ticket_notify_"+event+"_body")
-	if strings.TrimSpace(title) == "" {
-		title = "工单通知"
-	}
-	if strings.TrimSpace(body) == "" {
-		body = "你的工单「{{subject}}」有新的处理动态。"
-	}
-	body = strings.ReplaceAll(body, "{{subject}}", subject)
-	n.NotifyTemplate(ctx, userID, "ticket_"+event, title, body, map[string]string{"subject": subject})
-}
+// 工单通知（TicketNotify）已随工单功能迁入 tickets 插件（internal/plugins/tickets/cron.go）。
 
 func notificationCategory(title string) string {
 	switch {
@@ -514,6 +509,16 @@ func (n *Notifier) SendMail(ctx context.Context, to, subject, body string) error
 }
 
 func (n *Notifier) sendMailFormat(ctx context.Context, to, subject, body, format string) error {
+	// 邮件渠道分发：settings.mail_channel 选择出站渠道（空/smtp = 内置 SMTP 多账号）。
+	// 插件渠道失败原样返回错误，由 mail_outbox 退避重试；渠道插件被移除时回退 SMTP 兜底。
+	if n != nil && n.Settings != nil {
+		if channel, err := n.Settings.Get(ctx, "mail_channel"); err == nil && channel != "" && channel != "smtp" {
+			if s, ok := mailSenderFor(channel); ok {
+				return s.Send(ctx, to, subject, body, format)
+			}
+			log.Printf("邮件渠道 %s 未注册（插件可能已移除），回退 SMTP", channel)
+		}
+	}
 	ctx, done, err := n.beginMail(ctx, mailSendTimeout)
 	if err != nil {
 		return err

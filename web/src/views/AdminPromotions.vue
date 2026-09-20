@@ -120,8 +120,14 @@ const columns = ref<ColumnOption[]>([
 async function load() {
   loading.value = true
   try {
-    const res = await http.get<{ ok: number; list?: AdminPromotion[] }>('/promotions')
-    list.value = (res.list || []) as AdminPromotion[]
+    const res = await http.get<{ ok: number; msg?: string; list?: AdminPromotion[] }>('/promotions')
+    if (String(res.ok) === '1') {
+      list.value = (res.list || []) as AdminPromotion[]
+    } else {
+      ElMessage.error(res.msg || '活动列表加载失败')
+    }
+  } catch (err: unknown) {
+    ElMessage.error((err as Error).message || '活动列表加载失败')
   } finally {
     loading.value = false
   }
@@ -129,16 +135,37 @@ async function load() {
 
 async function toggle(row: AdminPromotion, v: boolean | string | number) {
   const enabled = !!v
-  await http.post(`/promotions/${row.id}/toggle`, { enabled: enabled ? '1' : '0' })
+  const prev = row.enabled
   row.enabled = enabled
-  ElMessage.success(enabled ? '已启用' : '已停用')
+  try {
+    const res = await http.post<{ ok: number; msg?: string }>(`/promotions/${row.id}/toggle`, {
+      enabled: enabled ? '1' : '0',
+    })
+    if (String(res.ok) !== '1') {
+      row.enabled = prev
+      ElMessage.error(res.msg || '更新失败')
+      return
+    }
+    ElMessage.success(enabled ? '已启用' : '已停用')
+  } catch (err: unknown) {
+    row.enabled = prev
+    ElMessage.error((err as Error).message || '更新失败')
+  }
 }
 
 async function remove(row: AdminPromotion) {
   if (!confirm(`确认删除活动「${row.name}」？`)) return
-  await http.post(`/promotions/${row.id}/delete`)
-  ElMessage.success('已删除')
-  load()
+  try {
+    const res = await http.post<{ ok: number; msg?: string }>(`/promotions/${row.id}/delete`)
+    if (String(res.ok) !== '1') {
+      ElMessage.error(res.msg || '删除失败')
+      return
+    }
+    ElMessage.success('已删除')
+    load()
+  } catch (err: unknown) {
+    ElMessage.error((err as Error).message || '删除失败')
+  }
 }
 
 onMounted(load)

@@ -80,13 +80,24 @@ function handleLogPage(p: number) {
 }
 
 async function submit() {
+  // 按钮 loading 只拦点击，表单 @submit.prevent 仍可被 Enter 反复触发，
+  // 不拦会下出两笔充值单。
+  if (submitting.value) return
   if (!amount.value || amount.value <= 0) {
     ElMessage.warning('请输入充值金额')
     return
   }
   submitting.value = true
   try {
-    const res = (await http.post('/user/recharge', { amount: String(amount.value) })) as { ok: number; redirect?: string }
+    const res = (await http.post('/user/recharge', { amount: String(amount.value) })) as {
+      ok: number
+      redirect?: string
+      msg?: string
+    }
+    if (String(res.ok) !== '1') {
+      ElMessage.error(res.msg || '充值请求失败，请稍后重试')
+      return
+    }
     if (res.redirect) location.href = res.redirect
   } catch (err: unknown) {
     ElMessage.error((err as Error).message || '充值失败')

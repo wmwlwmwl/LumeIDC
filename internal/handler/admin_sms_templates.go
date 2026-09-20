@@ -7,6 +7,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"sort"
 	"strings"
 	"unicode/utf8"
 
@@ -201,10 +202,10 @@ func (a *Admin) adminSMSProviders(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	list := []service.ProviderDescriptor{}
-	for _, key := range []string{"aliyun", "aliyun_sms", "qcloudsms", "submail", "smsbao", "idcsmart", "idcsmartpro", "stay33"} {
-		d, _ := service.SMSProviderDescriptorFor(key)
+	for _, d := range service.SMSProviderRegistry() {
 		list = append(list, d)
 	}
+	sort.Slice(list, func(i, j int) bool { return list[i].Key < list[j].Key })
 	writeJSON(w, map[string]any{"ok": 1, "list": list})
 }
 func (a *Admin) adminSMSTemplateRemote(w http.ResponseWriter, r *http.Request) {

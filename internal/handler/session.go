@@ -19,6 +19,8 @@ func (h *Session) Register(mux *http.ServeMux) {
 }
 
 func (h *Session) get(w http.ResponseWriter, r *http.Request) {
+	// 响应含 CSRF 令牌、邮箱/手机号与余额，禁止任何中间层缓存（同项目其他敏感 GET 同款）。
+	w.Header().Set("Cache-Control", "no-store")
 	csrf := csrfOf(h.PageStore, w, r) // 无会话时启动匿名会话并 Set-Cookie
 	si := h.currentSiteInfo()
 

@@ -719,7 +719,13 @@ func (h *VerificationHandler) startPlugin(w http.ResponseWriter, r *http.Request
 		return r.PostFormValue(k)
 	}
 	provider := strings.TrimSpace(fv("provider"))
-	callback := siteBaseURL(r.Context(), h.Settings, r) + "/user/verification" // 站点地址优先，否则按请求推断
+	base := siteBaseURL(r.Context(), h.Settings, r) // 站点地址优先，否则按请求推断
+	if base == "" {
+		// 回调地址拼不出来就不能发起实名：供应商回不到本站，用户的认证结果永远拿不到。
+		http.Error(w, "站点地址未配置，请联系管理员", http.StatusBadGateway)
+		return
+	}
+	callback := base + "/user/verification"
 	id, urlValue, err := h.Identity.StartProvider(r.Context(), userID, provider, service.RealNameForm{LegalName: fv("legal_name"), IdentityNumber: fv("identity_number")}, callback)
 	if err != nil {
 		http.Error(w, "启动实名认证失败", http.StatusBadGateway)

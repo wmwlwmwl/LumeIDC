@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onBeforeUnmount, watch } from 'vue'
+import { ref, computed, onBeforeUnmount, onMounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Check, Wallet, CreditCard, Warning } from '@element-plus/icons-vue'
@@ -19,6 +19,18 @@ let redirectTimer: ReturnType<typeof setTimeout> | null = null
 let generation = 0
 let disposed = false
 let polling = false
+let pollCount = 0
+let paused = false
+// 轮询节奏：先密后疏。支付多在一两分钟内完成，之后拉长间隔——
+// 既不会像「到点就停」那样漏掉迟到的支付（钱付了页面仍会自动跳转），
+// 也不让长期打开且可见的页面一直按 4s 打后端。
+const POLL_FAST_UNTIL = 30 // 前 30 次（约 2 分钟）：4s
+const POLL_MID_UNTIL = 60  // 其后 30 次：15s
+function pollDelay(attempts: number): number {
+  if (attempts < POLL_FAST_UNTIL) return 4000
+  if (attempts < POLL_MID_UNTIL) return 15000
+  return 30000
+}
 const gatewayList = computed(() => (Array.isArray(data.value?.gateways) ? data.value.gateways : []))
 
 // 组合支付：余额先抵扣，剩余本金走在线支付，手续费只按在线本金收取。
@@ -65,11 +77,13 @@ function clearRedirect() {
 
 function schedulePolling(id: number, version: number) {
   if (!isCurrent(id, version) || loading.value || busy.value || !data.value || data.value.paid || data.value.expired) return
+  // 页签隐藏时不打后端；回到前台由 visibilitychange 立即补一次。
+  if (paused) return
   stopPolling()
   timer = setTimeout(() => {
     timer = null
     void pollPaid(id, version)
-  }, 4000)
+  }, pollDelay(pollCount))
 }
 
 async function load() {
@@ -78,6 +92,7 @@ async function load() {
   const version = ++generation
   stopPolling()
   clearRedirect()
+  pollCount = 0
   loading.value = true
   loadError.value = false
   data.value = null
@@ -105,6 +120,7 @@ async function load() {
 
 async function pollPaid(id: number, version: number) {
   if (!isCurrent(id, version)) return
+  pollCount++
   // 切换账单后仍等待旧状态请求结束，避免跨代次请求重叠。
   if (polling) {
     schedulePolling(id, version)
@@ -136,13 +152,32 @@ async function pollPaid(id: number, version: number) {
   }
 }
 
+function onVisibilityChange() {
+  if (document.hidden) {
+    paused = true
+    stopPolling()
+  } else {
+    paused = false
+    // 页面回来时立即触发一次轮询，不等 4s 间隔
+    if (isCurrent(invoiceId.value, generation) && !data.value?.paid && !data.value?.expired && !loading.value) {
+      void pollPaid(invoiceId.value, generation)
+    }
+  }
+}
+
+watch(() => route.params.id, () => { void load() }, { immediate: true, flush: 'sync' })
+
+onMounted(() => {
+  document.addEventListener('visibilitychange', onVisibilityChange)
+})
+
 onBeforeUnmount(() => {
   disposed = true
   generation++
   stopPolling()
   clearRedirect()
+  document.removeEventListener('visibilitychange', onVisibilityChange)
 })
-watch(() => route.params.id, () => { void load() }, { immediate: true, flush: 'sync' })
 
 async function chooseGateway() {
   if (disposed || loading.value || busy.value || !data.value || data.value.paid || data.value.expired) return

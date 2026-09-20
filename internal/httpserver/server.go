@@ -22,10 +22,10 @@ import (
 	"lumeidc/internal/gateway"
 	"lumeidc/internal/handler"
 	"lumeidc/internal/middleware"
+	"lumeidc/internal/plugin"
+	_ "lumeidc/internal/plugins/all" // 扩展聚合：业务插件 + 内置供应商（init 自注册）
 	"lumeidc/internal/repo"
 	"lumeidc/internal/server"
-	"lumeidc/internal/server/easypanel"
-	"lumeidc/internal/server/zjmf"
 	"lumeidc/internal/service"
 	"lumeidc/internal/storage"
 	"lumeidc/internal/update"
@@ -135,6 +135,17 @@ func Build(cfg *config.Config, version string) (*App, error) {
 	if err := db.Migrate(context.Background(), database, db.Migrations()); err != nil {
 		return nil, err
 	}
+	// 插件启用态入库（plugins 表由核心迁移 079 建立；读不到时静默全部启用）
+	_ = plugin.InitEnabledStore(database)
+	// 插件迁移：先于 Init 建表（version 键以 plugin/{name}/ 前缀隔离核心序列）
+	for _, pl := range plugin.All() {
+		if m, ok := pl.(plugin.Migrator); ok {
+			if err := db.MigratePrefixed(context.Background(), database, m.Migrations(), "plugin/"+pl.Info().Name); err != nil {
+				database.Close()
+				return nil, fmt.Errorf("插件 %s 迁移失败: %w", pl.Info().Name, err)
+			}
+		}
+	}
 	store, err := middleware.NewStore(cfg)
 	if err != nil {
 		return nil, err
@@ -142,10 +153,8 @@ func Build(cfg *config.Config, version string) (*App, error) {
 	// ---- 渲染依赖（会话双 Store + 站点品牌/余额），由各 handler 匿名内嵌 ----
 	deps := &handler.Deps{PageStore: store, AdminStore: store}
 
-	// 供应商注册表：集中分发。新上游在此注册（详见 docs/provider.md）。
-	providers := server.NewRegistry()
-	providers.Register(zjmf.Provider{})
-	providers.Register(easypanel.Provider{})
+	// 供应商注册表：各供应商包 init() 自注册（新增见 server/all/all.go 与 docs/provider.md）。
+	providers := server.DefaultRegistry
 	// 实例密码加密器（services.password_crypt），密钥与 session 同源
 	cryptor, cerr := crypto.New(cfg.SecretKey)
 	if cerr != nil {
@@ -213,6 +222,14 @@ func Build(cfg *config.Config, version string) (*App, error) {
 
 	// 通知/实名服务：Notifier 先建，供身份/验证码/Auth 共享。
 	notifier := service.NewNotifier(database, settingsRepo)
+	// 插件初始化（事件订阅在此生效；Init 失败即启动失败——编译期插件的问题应启动期暴露）
+	pluginHost := &plugin.Host{DB: database, Settings: settingsRepo, Notify: notifier, PrivateRoot: cfg.PrivateDataDir}
+	for _, pl := range plugin.All() {
+		if err := pl.Init(pluginHost.ForPlugin(pl.Info().Name)); err != nil {
+			database.Close()
+			return nil, fmt.Errorf("插件 %s 初始化失败: %w", pl.Info().Name, err)
+		}
+	}
 	identity := service.NewIdentity(identityStore, users, piiCryptor, identityFiles,
 		notifier, identityKey, notifier, settingsRepo, cfg.BaseURL,
 		service.NewConfiguredVerificationProvider(settingsRepo, ""))
@@ -228,20 +245,10 @@ func Build(cfg *config.Config, version string) (*App, error) {
 	lifecycle := service.NewLifecycle(database, serversRepo, products, providers, provisions, jobs)
 	paymentSvc := service.NewPayment(database, lifecycle, serversRepo, products, provisions, jobs, balanceRepo, providers, periodGrants, notifier, cryptor)
 	paymentSvc.Promotion = promotionSvc
-	gateways := map[string]gateway.Gateway{
-		"epay":   gateway.Epay{},
-		"alipay": gateway.Alipay{},
-		"wxpay":  gateway.Wxpay{},
-		"mock":   gateway.Mock{},
-	}
-	// 自动发现支持订单查询的网关（易支付等），用于异步通知丢失时补单。
-	// 新增网关只要实现 gateway.OrderQuerier，无需改动定时任务或组合根。
-	orderQueriers := map[string]gateway.OrderQuerier{}
-	for driver, impl := range gateways {
-		if querier, ok := impl.(gateway.OrderQuerier); ok {
-			orderQueriers[driver] = querier
-		}
-	}
+	// 支付网关：各驱动包 init() 自注册（新增见 gateway/registry.go）。
+	gateways := gateway.All()
+	// 支持订单查询的网关（异步通知丢失时补单）。
+	orderQueriers := gateway.OrderQueriers()
 	challenges := &service.AuthChallengeService{Store: authChallenges, SMS: identity.OTP, EmailCodeSend: notifier.SendEmailCode, SiteName: notifier.SiteName, Key: []byte(cfg.SecretKey)}
 	auth := &handler.Auth{
 		Users:        users,
@@ -269,7 +276,6 @@ func Build(cfg *config.Config, version string) (*App, error) {
 		PrivateFiles:  identityFiles,
 		Admins:        admins,
 		Lockout:       loginAttempts,
-		Announcements: announcements,
 		LocalCaptcha:  localCaptcha,
 		Coupons:       coupons,
 		Refunds:       refunds,
@@ -333,6 +339,47 @@ func Build(cfg *config.Config, version string) (*App, error) {
 			Deps:        deps,
 		},
 	)
+	// 插件路由：每个插件一个子 mux（相对路径注册），框架统一挂到
+	// /admin/plugin/{name}/ 与 /plugin/{name}/ 前缀并包启用态闸门（禁用即 404）；
+	// 与核心同一 mux，自动获得 session/CSRF/后台路径中间件。
+	for _, pl := range plugin.All() {
+		name := pl.Info().Name
+		var adminSub, clientSub *http.ServeMux
+		if _, ok := pl.(plugin.ConfigSchemaProvider); ok {
+			adminSub = http.NewServeMux()
+			// 配置 schema 统一读写 API（插件零 handler 获得配置页）
+			cfgH := &handler.AdminPluginConfig{Settings: settingsRepo, Name: name, Schema: pl.(plugin.ConfigSchemaProvider).ConfigSchema()}
+			adminSub.HandleFunc("GET /config", cfgH.Get)
+			adminSub.HandleFunc("POST /config", cfgH.Save)
+		}
+		if rr, ok := pl.(plugin.AdminRouteRegistrar); ok {
+			if adminSub == nil {
+				adminSub = http.NewServeMux()
+			}
+			rr.RegisterAdminRoutes(adminSub)
+		}
+		if rr, ok := pl.(plugin.ClientRouteRegistrar); ok {
+			clientSub = http.NewServeMux()
+			rr.RegisterClientRoutes(clientSub)
+		}
+		if adminSub != nil {
+			prefix := "/admin/plugin/" + name
+			// 必须带方法注册：无方法的全路子树与 SPA 兜底 "GET /{path...}"
+			// 构成"路径宽方法窄 vs 路径窄方法宽"的重叠，ServeMux 会 panic。
+			gated := plugin.Gate(name, http.StripPrefix(prefix, adminSub))
+			for _, method := range []string{http.MethodGet, http.MethodPost} {
+				mux.Handle(method+" "+prefix+"/", gated)
+			}
+		}
+		if clientSub != nil {
+			prefix := "/plugin/" + name
+			gated := plugin.Gate(name, http.StripPrefix(prefix, clientSub))
+			for _, method := range []string{http.MethodGet, http.MethodPost} {
+				mux.Handle(method+" "+prefix+"/", gated)
+			}
+		}
+	}
+	(&handler.AdminPlugins{}).Register(mux)
 	registerHealthRoutes(mux, database)
 	// Vite SPA 静态资源与文档兜底（GET 未命中任意 SSR/API 路由时）。
 	// "GET /{path...}" 比 "/" 更精确，GET 未知路径交给 SPA；其余方法仍走渲染 404。
@@ -346,6 +393,8 @@ func Build(cfg *config.Config, version string) (*App, error) {
 	root := handler.SPAGate(mux)
 	h := store.Middleware(middleware.CSRF(root))
 	h = middleware.AdminPath(h, adminPathCfg)
+	// 最外层兜 panic：任意中间件或 handler 崩溃都要变成结构化 500，而不是断连。
+	h = middleware.Recover(h)
 	addr := defaultListen
 	if a := os.Getenv("LISTEN"); a != "" {
 		addr = a // 环境变量覆盖配置，便于本地多实例测试
@@ -365,10 +414,10 @@ func Build(cfg *config.Config, version string) (*App, error) {
 		Server: &http.Server{
 			Addr:              addr,
 			Handler:           h,
-			ReadHeaderTimeout: 10 * time.Second,
-			ReadTimeout:       30 * time.Second,
-			WriteTimeout:      60 * time.Second,
-			IdleTimeout:       120 * time.Second,
+			ReadHeaderTimeout: 10 * time.Second,  // 防慢头攻击：读完全部请求头的超时
+			WriteTimeout:      0,                 // WebSocket 隧道不能被响应写入超时断开
+			ReadTimeout:       0,                 // 同上，读请求体也不设上限
+			IdleTimeout:       120 * time.Second, // Keep-Alive 空闲超时
 		},
 		DB:       database,
 		Notifier: notifier,

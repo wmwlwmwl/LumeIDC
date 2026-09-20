@@ -10,6 +10,11 @@ import (
 	"strings"
 )
 
+// maxRequestBody 单个写请求的请求体上限。multipart 上传需要在解析前设限，
+// JSON/表单体同样可能被无界读取，这里一次收敛，避免逐个 handler 补漏
+// （历史上只有部分 handler 自设了 MaxBytesReader，其余为遗漏点）。
+const maxRequestBody = 12 << 20
+
 // CSRF protects state-changing requests via double-submit token bound to session.
 func CSRF(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -31,10 +36,9 @@ func CSRF(next http.Handler) http.Handler {
 			RedirectToLogin(w, r, "会话已过期，请重新登录")
 			return
 		}
-		// 在读取 multipart 表单前限制请求体，避免 CSRF 校验触发解析时接收超大上传。
-		if strings.HasPrefix(strings.ToLower(r.Header.Get("Content-Type")), "multipart/") {
-			r.Body = http.MaxBytesReader(w, r.Body, 12<<20)
-		}
+		// 在读取请求体前限制大小，避免 CSRF 校验触发解析时接收超大请求；
+		// 需要更小上限的 handler 会在其后自行再包一层 MaxBytesReader。
+		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBody)
 		tok := r.Header.Get("X-CSRF-Token")
 		if tok == "" {
 			tok = r.PostFormValue("_csrf")

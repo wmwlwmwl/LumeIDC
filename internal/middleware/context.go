@@ -30,7 +30,9 @@ func RequireUserOrRedirect(w http.ResponseWriter, r *http.Request) (int64, bool)
 	}
 	s := FromSession(r.Context())
 	if s == nil || s.IsAdmin || s.UserID == 0 {
-		http.Redirect(w, r, "/login?next="+r.URL.RequestURI(), http.StatusSeeOther)
+		// next 必须转义：RequestURI 自带查询串，直接拼会把 "&" 带进 next，
+		// 登录页解析后被截断或注入多余参数（RequireUser 已是转义写法）。
+		http.Redirect(w, r, "/login?next="+url.QueryEscape(r.URL.RequestURI()), http.StatusSeeOther)
 		return 0, false
 	}
 	return s.UserID, true

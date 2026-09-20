@@ -296,6 +296,35 @@ tail -f /www/wwwroot/lumeidc/logs/lumeidc.log
 发送域名：$host
 ```
 
+**⚠️ 必须启用 WebSocket 支持**（VNC 控制台需要）：
+
+点击「配置文件」，在 `location / {` 内的 `proxy_pass` 之后**追加**以下三行：
+
+```nginx
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_read_timeout 60s;
+```
+
+完整示例：
+
+```nginx
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        proxy_read_timeout 60s;
+    }
+```
+
 保存并重载 Nginx。
 
 ### 方案 B：手动添加 Nginx 配置

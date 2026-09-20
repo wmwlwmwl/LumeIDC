@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ref, computed, type Component } from 'vue'
+import { ref, computed, onMounted, type Component } from 'vue'
 import { useRoute } from 'vue-router'
-import { Grid, Monitor, Document, Wallet, Bell, User, Lock, ArrowRight, ChatDotRound, Ticket } from '@element-plus/icons-vue'
+import { Grid, Monitor, Document, Wallet, Bell, User, Lock, ArrowRight, Ticket, MagicStick } from '@element-plus/icons-vue'
 import { useSession } from '../http/session'
+import { http } from '../http/index'
 import { formatMoney } from '@/utils/format'
 import PublicContainer from '@/components/public/PublicContainer.vue'
 
@@ -33,13 +34,31 @@ const accountLinks: MenuLink[] = [
   { to: '/user/recharge', label: '账户充值', paths: ['/user/recharge'], icon: Wallet },
   { to: '/user/promotion-coupons', label: '活动优惠券', paths: ['/user/promotion-coupons'], icon: Ticket },
   { to: '/notifications', label: '消息中心', paths: ['/notifications'], icon: Bell },
-  { to: '/tickets', label: '工单支持', paths: ['/tickets'], icon: ChatDotRound },
+  // 「工单支持」由 tickets 插件经 /plugins/client 菜单贡献（见下方 pluginLinks）。
 ]
 const settingLinks: MenuLink[] = [
   { to: '/user/verification', label: '实名认证', paths: ['/user/verification'], icon: User },
   { to: '/user/profile', label: '资料与手机号', paths: ['/user/profile'], icon: User },
   { to: '/user/password', label: '安全设置', paths: ['/user/password'], icon: Lock },
 ]
+
+// 插件菜单（启用且声明前台页的插件；GET /plugins/client，失败静默不显示）
+const pluginLinks = ref<MenuLink[]>([])
+onMounted(async () => {
+  try {
+    const res = await http.get<{ ok: number; plugins?: { name: string; title: string; to?: string }[] }>(
+      '/plugins/client',
+    )
+    pluginLinks.value = (res.plugins || []).map((p) => ({
+      to: p.to || `/plugin/${p.name}`,
+      label: p.title,
+      paths: [p.to || `/plugin/${p.name}`],
+      icon: MagicStick,
+    }))
+  } catch {
+    pluginLinks.value = []
+  }
+})
 </script>
 
 <template>
@@ -90,6 +109,21 @@ const settingLinks: MenuLink[] = [
           >
             <el-icon><component :is="l.icon" /></el-icon><span>{{ l.label }}</span>
           </RouterLink>
+
+          <template v-if="pluginLinks.length">
+            <div class="account-menu-label">插件</div>
+            <RouterLink
+              v-for="l in pluginLinks"
+              :key="l.to"
+              :to="l.to"
+              class="account-menu-item"
+              :class="{ 'is-active': isActive(l) }"
+              :aria-current="isActive(l) ? 'page' : undefined"
+              @click="menuOpen = false"
+            >
+              <el-icon><component :is="l.icon" /></el-icon><span>{{ l.label }}</span>
+            </RouterLink>
+          </template>
 
           <div class="account-menu-label">账户设置</div>
           <RouterLink

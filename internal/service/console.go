@@ -3,7 +3,7 @@ package service
 import (
 	"context"
 	"database/sql"
-	"fmt"
+	"errors"
 	"log"
 	"net/url"
 	"sync"
@@ -13,6 +13,11 @@ import (
 	"lumeidc/internal/repo"
 	"lumeidc/internal/server"
 )
+
+// ErrServiceUnavailable 服务不存在、不属于当前用户或状态不可操作。
+// 属「业务性拒绝」：文案中性、可直接展示给用户；上游故障（含内网地址、
+// 已签名 URL）必须与之区分，由 handler 统一收敛，见 handler.consoleErrMsg。
+var ErrServiceUnavailable = errors.New("服务不存在或不可操作")
 
 // Console 用户侧实例控制台操作（含归属校验）。
 type Console struct {
@@ -24,7 +29,7 @@ type Console struct {
 }
 
 // resolveBase 校验归属并返回 provider+cfg+hostID（不做能力断言）。
-// 无上游绑定返回 errNoUpstream。
+// 无上游绑定返回 ErrNoUpstream。
 func (c *Console) resolveBase(ctx context.Context, userID, serviceID int64) (server.Provider, server.Config, int64, error) {
 	var serverID sql.NullInt64
 	var hostID int64
@@ -37,12 +42,12 @@ func (c *Console) resolveBase(ctx context.Context, userID, serviceID int64) (ser
 		 WHERE sv.id=$1 AND sv.user_id=$2 AND sv.status IN (1,2)`,
 		serviceID, userID).Scan(&hostID, &serverID, &providerCode)
 	if err != nil {
-		return nil, server.Config{}, 0, fmt.Errorf("服务不存在或不可操作")
+		return nil, server.Config{}, 0, ErrServiceUnavailable
 	}
 	// 有上游的判定：绑定了服务器且已开通（hostID>0）。upstream_pid=0 是合法的弹性模式
 	//（如 EasyPanel 详细参数直传），不能仅凭 pid=0 判为本地服务；本地服务 hostID 恒为 0。
 	if !serverID.Valid || hostID == 0 {
-		return nil, server.Config{}, 0, errNoUpstream
+		return nil, server.Config{}, 0, ErrNoUpstream
 	}
 	prov, cfg, err := resolveProvider(ctx, c.Providers, c.Servers, providerCode, serverID.Int64)
 	if err != nil {

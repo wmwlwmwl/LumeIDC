@@ -47,6 +47,74 @@ func TestAlipaySignatureRoundTrip(t *testing.T) {
 	}
 }
 
+// TestAlipayVerifyNotifyMerchantBinding 覆盖「通知必须来自本应用」：
+// app_id 不一致必须拒绝；字段缺失的老通知不能被误杀。
+// 不校验 seller_id——公钥按 APPID 签发、验签已绑定归属，而它是「只用于校验
+// 不参与下单」的可选字段，填错会让下单照常成功、回调被静默拒掉。
+func TestAlipayVerifyNotifyMerchantBinding(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := map[string]string{
+		"app_id":     "2021000000000001",
+		"public_key": publicPEM(&key.PublicKey),
+		// 老部署的 config 里可能残留 seller_id（曾短暂支持过）：必须被忽略，
+		// 否则历史配置配错过的站点会重新开始静默拒收回调。
+		"seller_id": "2088000000000001",
+	}
+	// notify 按支付宝 rsaCheckV1 规则签名：签名内容剔除 sign 与 sign_type；
+	// extra 里值为空的键不写入参数（模拟老版本通知不带该字段）。
+	notify := func(extra map[string]string) NotifyRequest {
+		params := map[string]string{
+			"out_trade_no": "INV20260826abcdef",
+			"trade_no":     "2026082612345678",
+			"trade_status": "TRADE_SUCCESS",
+			"total_amount": "12.50",
+		}
+		for k, v := range extra {
+			if v != "" {
+				params[k] = v
+			}
+		}
+		signature, serr := signAlipay(mapToValues(params), key)
+		if serr != nil {
+			t.Fatal(serr)
+		}
+		params["sign"] = signature
+		params["sign_type"] = "RSA2"
+		return NotifyRequest{Params: params}
+	}
+
+	cases := []struct {
+		name    string
+		appID   string
+		wantErr bool
+	}{
+		{name: "本应用", appID: cfg["app_id"]},
+		{name: "app_id 缺失不误杀"},
+		{name: "应用 ID 不匹配", appID: "9999999999999999", wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result, verr := (Alipay{}).VerifyNotify(notify(map[string]string{
+				"app_id": tc.appID,
+				// 通知里带别的收款账号也不该影响结果（不再比对 seller_id）。
+				"seller_id": "2088999999999999",
+			}), cfg)
+			if tc.wantErr {
+				if verr == nil {
+					t.Fatalf("应被拒绝，实际受理: %+v", result)
+				}
+				return
+			}
+			if verr != nil || !result.Successful {
+				t.Fatalf("应受理: err=%v result=%+v", verr, result)
+			}
+		})
+	}
+}
+
 func publicPEM(key *rsa.PublicKey) string {
 	return string(pem.EncodeToMemory(&pem.Block{Type: "RSA PUBLIC KEY", Bytes: x509.MarshalPKCS1PublicKey(key)}))
 }

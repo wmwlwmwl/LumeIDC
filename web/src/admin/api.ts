@@ -31,16 +31,17 @@ export async function fetchDashboard(): Promise<AdminDashboard> {
 
 export interface AdminTicket { id: number; user_id: number; email: string; subject: string; category: string; priority: string; status: string; service_name: string; service_hostname: string; assignee_id?: number; assignee_name?: string; created_at: string; updated_at: string }
 export interface AdminTicketMessage { id: number; user_id: number; admin_id: number; content: string; internal?: boolean; created_at: string }
-export async function fetchAdminTickets(params: { q?: string; status?: string; priority?: string; category?: string; assignee_id?: number; service_id?: number; queue?: string; page?: number; limit?: number; sort?: string; order?: string } = {}): Promise<{ list: AdminTicket[]; total: number; page: number; limit: number }> { const res = await http.get<{ list?: AdminTicket[]; total?: number; page?: number; limit?: number }>('/tickets', params); return { list: res.list || [], total: res.total || 0, page: res.page || 1, limit: res.limit || 25 } }
-export async function fetchAdminTicketStats(): Promise<Record<string, number>> { const res = await http.get<{ stats?: Record<string, number> }>('/tickets/stats'); return res.stats || {} }
-export interface AdminTicketAttachment { id: number; message_id: number; name: string; mime: string; size: number; url: string }
-export async function fetchAdminTicket(id: number): Promise<{ ticket: AdminTicket & { body: string }; messages: AdminTicketMessage[]; attachments: AdminTicketAttachment[] }> { return (await http.get(`/tickets/${id}`)) as unknown as { ticket: AdminTicket & { body: string }; messages: AdminTicketMessage[]; attachments: AdminTicketAttachment[] } }
-export async function replyAdminTicket(id: number, content: string, file?: File): Promise<void> { if (!file) { await http.post(`/tickets/${id}/reply`, { content }); return }; const form = new FormData(); form.append('content', content); form.append('file', file); await http.post(`/tickets/${id}/reply`, form) }
-export async function updateAdminTicketStatus(id: number, status: string): Promise<void> { await http.post(`/tickets/${id}/status`, { status }) }
-export async function assignAdminTicket(id: number, admin_id: number): Promise<void> { await http.post(`/tickets/${id}/assign`, { admin_id }) }
-export async function addAdminTicketNote(id: number, content: string): Promise<void> { await http.post(`/tickets/${id}/internal-note`, { content }) }
-export async function uploadAdminTicketAttachment(id: number, file: File): Promise<void> { const form = new FormData(); form.append('file', file); await http.post(`/tickets/${id}/attachments`, form) }
-export async function fetchTicketAssignees(): Promise<{ id: number; name: string }[]> { const res = await http.get<{ list?: { id: number; name: string }[] }>('/ticket-assignees'); return res.list || [] }
+// 工单管理 API 由 tickets 插件提供（/admin/plugin/tickets/...）
+export async function fetchAdminTickets(params: { q?: string; status?: string; priority?: string; category?: string; assignee_id?: number; service_id?: number; queue?: string; page?: number; limit?: number; sort?: string; order?: string } = {}): Promise<{ list: AdminTicket[]; total: number; page: number; limit: number }> { const res = await http.get<{ list?: AdminTicket[]; total?: number; page?: number; limit?: number }>('/plugin/tickets/list', params); return { list: res.list || [], total: res.total || 0, page: res.page || 1, limit: res.limit || 25 } }
+export async function fetchAdminTicketStats(): Promise<Record<string, number>> { const res = await http.get<{ stats?: Record<string, number> }>('/plugin/tickets/stats'); return res.stats || {} }
+export interface AdminTicketAttachment { id: number; message_id: number; name: string; mime: string; size: number; url?: string }
+export async function fetchAdminTicket(id: number): Promise<{ ticket: AdminTicket & { body: string }; messages: AdminTicketMessage[]; attachments: AdminTicketAttachment[] }> { return (await http.get(`/plugin/tickets/${id}`)) as unknown as { ticket: AdminTicket & { body: string }; messages: AdminTicketMessage[]; attachments: AdminTicketAttachment[] } }
+export async function replyAdminTicket(id: number, content: string, file?: File): Promise<void> { if (!file) { await http.post(`/plugin/tickets/${id}/reply`, { content }); return }; const form = new FormData(); form.append('content', content); form.append('file', file); await http.post(`/plugin/tickets/${id}/reply`, form) }
+export async function updateAdminTicketStatus(id: number, status: string): Promise<void> { await http.post(`/plugin/tickets/${id}/status`, { status }) }
+export async function assignAdminTicket(id: number, admin_id: number): Promise<void> { await http.post(`/plugin/tickets/${id}/assign`, { admin_id }) }
+export async function addAdminTicketNote(id: number, content: string): Promise<void> { await http.post(`/plugin/tickets/${id}/internal-note`, { content }) }
+export async function uploadAdminTicketAttachment(id: number, file: File): Promise<void> { const form = new FormData(); form.append('file', file); await http.post(`/plugin/tickets/${id}/attachments`, form) }
+export async function fetchTicketAssignees(): Promise<{ id: number; name: string }[]> { const res = await http.get<{ list?: { id: number; name: string }[] }>('/plugin/tickets/assignees'); return res.list || [] }
 
 export async function adminLogin(body: Record<string, string>): Promise<void> {
   await http.post<{ ok: number }>('/login', body, { silent401: true })
@@ -513,7 +514,7 @@ export interface AdminAnnouncement {
   created_at: string
 }
 export async function fetchAdminAnnouncements(): Promise<AdminAnnouncement[]> {
-  const res = await http.get<{ ok: number; list?: AdminAnnouncement[] }>('/announcements')
+  const res = await http.get<{ ok: number; list?: AdminAnnouncement[] }>('/plugin/announcement/list')
   return (res.list || []) as unknown as AdminAnnouncement[]
 }
 
@@ -527,7 +528,7 @@ export async function saveAnnouncement(body: {
   hidden: boolean
   pinned: boolean
 }): Promise<void> {
-  await http.post('/announcements/save', {
+  await http.post('/plugin/announcement/save', {
     id: body.id ?? '',
     title: body.title,
     category: body.category ?? '',
@@ -539,7 +540,7 @@ export async function saveAnnouncement(body: {
   })
 }
 export async function deleteAnnouncement(id: number): Promise<void> {
-  await http.post(`/announcements/${id}/delete`, {})
+  await http.post(`/plugin/announcement/${id}/delete`, {})
 }
 
 export interface AdminCoupon {

@@ -49,6 +49,9 @@ const (
 )
 
 func (Alipay) Driver() string { return "alipay" }
+
+// init 自注册到网关注册表（新增网关照此一行接入，组合根无需改动）。
+func init() { Register(Alipay{}) }
 func (Alipay) Name() string   { return "支付宝" }
 
 // CheckoutPath 声明支付宝可使用本站的本地二维码结算页（当面付模式）。
@@ -267,6 +270,16 @@ func (Alipay) VerifyNotify(req NotifyRequest, cfg map[string]string) (NotifyResu
 	if err := verifyAlipay(params, signature, key); err != nil {
 		return NotifyResult{}, fmt.Errorf("支付宝回调签名校验失败")
 	}
+	// 验签通过后再确认「该通知属于本应用」：通知须由配置里那个 APPID 发出。
+	// 双方都带 app_id 且不一致才拒绝——老版本通知可能不带，不能因此误杀。
+	// ponytail: 通知不带 app_id 时该校验自动跳过，仍由公钥隔离兜底。
+	if appID := cfg["app_id"]; strings.TrimSpace(appID) != "" && params["app_id"] != "" && params["app_id"] != appID {
+		return NotifyResult{}, fmt.Errorf("支付宝回调应用 ID 不匹配")
+	}
+	// 不再比对 seller_id：支付宝公钥本就按 APPID 配置（加签用应用私钥、验签用配对公钥），
+	// 验签已把归属钉死。而 seller_id 是「只用于校验、不参与下单」的可选字段，填错时
+	// 下单照常成功、只有回调被拒 → 直接变成「用户付了钱账单不核销」。
+	// 判据：只对同时参与下单的字段（app_id/pid/mch_id）做归属比对——配错会在下单时自曝。
 	if params["trade_status"] != "TRADE_SUCCESS" && params["trade_status"] != "TRADE_FINISHED" {
 		return NotifyResult{InvoiceNo: params["out_trade_no"], TradeNo: params["trade_no"]}, nil
 	}

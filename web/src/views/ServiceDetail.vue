@@ -93,7 +93,7 @@ async function load() {
     if (
       !autoRefreshed &&
       !data.value.host &&
-      (data.value.svc.provider === 'zjmf' || data.value.svc.provider === 'easypanel')
+      !!SERVICE_PANELS[data.value.svc.provider]
     ) {
       autoRefreshed = true
       void autoRefreshHost()

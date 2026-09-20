@@ -1,7 +1,9 @@
 package gateway
 
 import (
+	"context"
 	"net/url"
+	"strings"
 	"testing"
 )
 
@@ -47,5 +49,88 @@ func TestVerifyNotify(t *testing.T) {
 	params["money"] = "0.01" // 篡改金额
 	if _, _, ok := verifyEpaySign(params, key); ok {
 		t.Fatal("篡改后签名应校验失败")
+	}
+}
+
+// TestEpayQueryOrderErrorHidesKey 覆盖「查单报错不得带商户密钥」：
+// 易支付按上游协议把 key 放在查询串，而 *url.Error 会打印完整 URL，
+// 直接 %w 上抛会把密钥写进服务端日志与管理员告警邮件。
+func TestEpayQueryOrderErrorHidesKey(t *testing.T) {
+	const key = "should-never-appear-in-errors"
+	// 127.0.0.1:1 必然拒绝连接，走到传输错误分支。
+	_, err := (Epay{}).QueryOrder(context.Background(), QueryOrderRequest{
+		InvoiceNo: "INV20260826abcdef",
+		Config:    map[string]string{"api_url": "http://127.0.0.1:1", "pid": "1001", "key": key},
+	})
+	if err == nil {
+		t.Fatal("连接失败应返回错误")
+	}
+	if strings.Contains(err.Error(), key) {
+		t.Fatalf("查单报错泄露商户密钥: %v", err)
+	}
+}
+
+// signedEpayNotify 构造一条已签名的易支付异步通知（sign/sign_type 不参与签名计算）。
+func signedEpayNotify(key string, params map[string]string) map[string]string {
+	out := make(map[string]string, len(params)+2)
+	for k, v := range params {
+		out[k] = v
+	}
+	out["sign"] = md5Sign(mapToValues(out), key)
+	out["sign_type"] = "MD5"
+	return out
+}
+
+// TestEpayVerifyNotifyMerchantBinding 覆盖「通知必须属于本商户」：
+// 仅验签无法区分通知归属（同密钥被多站点共用时），pid 不一致必须拒绝；
+// 但不带 pid 的上游分支不能被误杀。
+func TestEpayVerifyNotifyMerchantBinding(t *testing.T) {
+	key := "testkey123"
+	base := map[string]string{
+		"pid":          "1001",
+		"out_trade_no": "INV20260826abcdef",
+		"trade_no":     "2026082612345678",
+		"trade_status": "TRADE_SUCCESS",
+		"money":        "12.50",
+	}
+	cfg := map[string]string{"key": key, "pid": "1001"}
+
+	if _, err := (Epay{}).VerifyNotify(NotifyRequest{Params: signedEpayNotify(key, base)}, cfg); err != nil {
+		t.Fatalf("本商户通知应受理: %v", err)
+	}
+
+	foreign := make(map[string]string, len(base))
+	for k, v := range base {
+		foreign[k] = v
+	}
+	foreign["pid"] = "2002"
+	if _, err := (Epay{}).VerifyNotify(NotifyRequest{Params: signedEpayNotify(key, foreign)}, cfg); err == nil {
+		t.Fatal("商户号不匹配的通知必须被拒绝")
+	}
+
+	noPid := make(map[string]string, len(base))
+	for k, v := range base {
+		if k != "pid" {
+			noPid[k] = v
+		}
+	}
+	if _, err := (Epay{}).VerifyNotify(NotifyRequest{Params: signedEpayNotify(key, noPid)}, cfg); err != nil {
+		t.Fatalf("不带 pid 的通知不应被拒绝: %v", err)
+	}
+}
+
+// TestEpayVerifyNotifyRejectsEmptyKey 覆盖未配置密钥的易支付网关：
+// 空密钥下攻击者能按同一规则自行算出签名，必须在验签前按失败关闭。
+func TestEpayVerifyNotifyRejectsEmptyKey(t *testing.T) {
+	params := map[string]string{
+		"out_trade_no": "INV20260826abcdef",
+		"trade_no":     "2026082612345678",
+		"trade_status": "TRADE_SUCCESS",
+		"money":        "12.50",
+	}
+	for _, cfg := range []map[string]string{nil, {}, {"key": ""}, {"key": "  "}} {
+		if _, err := (Epay{}).VerifyNotify(NotifyRequest{Params: signedEpayNotify("", params)}, cfg); err == nil {
+			t.Fatalf("空密钥的回调必须被拒绝，cfg=%v", cfg)
+		}
 	}
 }

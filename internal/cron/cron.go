@@ -13,6 +13,7 @@ import (
 
 	"lumeidc/internal/gateway"
 	"lumeidc/internal/money"
+	"lumeidc/internal/plugin"
 	"lumeidc/internal/repo"
 	"lumeidc/internal/server"
 	"lumeidc/internal/service"
@@ -70,6 +71,46 @@ func (j *Jobs) lifecycleDays(ctx context.Context) (suspend, terminate, warn int)
 	return
 }
 
+// 定时任务的告警标识。仅用于「同一任务每天最多一封告警邮件」的去重键，
+// 与日志文案解耦，改名不影响告警语义。
+const (
+	taskExpireInvoices     = "expire_invoices"
+	taskRunExpired         = "expired_services"
+	taskReleaseStock       = "release_expired_stock"
+	taskReconcilePayments  = "reconcile_pending_payments"
+	taskNotifyExpiringSoon = "notify_expiring_soon"
+	taskNotifyEndingPromos = "notify_ending_promotions"
+	taskSyncPrices         = "sync_prices"
+)
+
+// alertTaskFailure 定时任务级失败时给管理员发告警邮件。
+//
+// 这些任务没有任何用户可见入口：失败只写一行日志就等于静默停摆——到期停机/删除、
+// 异步通知丢失后的补单、账单过期退款、活动名额与优惠码释放全靠它们，管理员往往
+// 要等到用户投诉才发现。去重键含当天日期：同一任务每天最多一封，既不刷屏，
+// 也不会在修好之后再次故障时彻底哑掉（永久去重键会永久闭嘴）。
+func (j *Jobs) alertTaskFailure(ctx context.Context, task, what string, err error) {
+	if j.Notifier == nil || err == nil {
+		return
+	}
+	key := "cron:" + task + ":" + time.Now().Format("2006-01-02")
+	body := "定时任务「" + what + "」执行失败，相关功能可能已经停摆。\n" +
+		"失败原因：" + err.Error() + "\n" +
+		"发生时间：" + time.Now().Format("2006-01-02 15:04:05") + "\n" +
+		"处理建议：按同一时间点在服务端日志中检索 [cron] 定位原因；修复后下一轮会自动恢复，" +
+		"失败期间跳过的处理会由后续轮次补做。"
+	if aerr := j.Notifier.NotifyAdminOnce(ctx, key, "cron", what+"失败", body); aerr != nil {
+		log.Printf("[cron] 管理员告警发送失败（%s）: %v", task, aerr)
+	}
+}
+
+// failTask 记录任务级失败并发告警。日志与告警成对出现，避免后人只补一半：
+// 只在日志里留一行，等于把「整类业务静默停摆」藏起来。
+func (j *Jobs) failTask(ctx context.Context, task, what string, err error) {
+	log.Printf("[cron] %s失败: %v", what, err)
+	j.alertTaskFailure(ctx, task, what, err)
+}
+
 func (j *Jobs) Start() *cron.Cron {
 	c := cron.New(cron.WithChain(
 		cron.SkipIfStillRunning(cron.DefaultLogger),
@@ -106,8 +147,29 @@ func (j *Jobs) Start() *cron.Cron {
 	})
 	// 定时同步上游产品价格与库存（每 6 小时）
 	c.AddFunc("@every 6h", func() { j.syncPrices(context.Background()) })
-	c.AddFunc("@every 1h", func() { j.notifyStaleTickets(context.Background()) })
 	c.AddFunc("@every 1h", func() { j.notifyEndingPromotions(context.Background()) })
+	// 插件定时任务（CronContributor 能力）：插件禁用时跳过；失败与核心任务同待遇告警。
+	for _, pl := range plugin.All() {
+		cc, ok := pl.(plugin.CronContributor)
+		if !ok {
+			continue
+		}
+		pluginName := pl.Info().Name
+		for _, job := range cc.CronJobs() {
+			job := job // 闭包捕获
+			if _, err := c.AddFunc(job.Spec, func() {
+				if !plugin.Enabled(pluginName) {
+					return
+				}
+				ctx := context.Background()
+				if err := job.Run(ctx); err != nil {
+					j.failTask(ctx, "plugin:"+pluginName+":"+job.Name, job.What, err)
+				}
+			}); err != nil {
+				log.Printf("[cron] 插件 %s 任务 %s 注册失败（表达式 %q 无效）: %v", pluginName, job.Name, job.Spec, err)
+			}
+		}
+	}
 	c.Start()
 	return c
 }
@@ -126,7 +188,7 @@ func (j *Jobs) notifyEndingPromotions(ctx context.Context) {
 		LEFT JOIN promotion_ending_notifications n ON n.promotion_id=pr.id AND n.user_id=participants.user_id
 		WHERE pr.ends_at > now() AND pr.ends_at <= now() + interval '24 hours' AND n.promotion_id IS NULL`)
 	if err != nil {
-		log.Printf("[cron] 查询即将结束活动提醒失败: %v", err)
+		j.failTask(ctx, taskNotifyEndingPromos, "查询即将结束活动提醒", err)
 		return
 	}
 	type item struct {
@@ -139,14 +201,14 @@ func (j *Jobs) notifyEndingPromotions(ctx context.Context) {
 		var it item
 		if err := rows.Scan(&it.promotionID, &it.name, &it.endsAt, &it.userID); err != nil {
 			rows.Close()
-			log.Printf("[cron] 读取即将结束活动提醒失败: %v", err)
+			j.failTask(ctx, taskNotifyEndingPromos, "读取即将结束活动提醒", err)
 			return
 		}
 		items = append(items, it)
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
-		log.Printf("[cron] 遍历即将结束活动提醒失败: %v", err)
+		j.failTask(ctx, taskNotifyEndingPromos, "遍历即将结束活动提醒", err)
 		return
 	}
 	rows.Close()
@@ -157,56 +219,7 @@ func (j *Jobs) notifyEndingPromotions(ctx context.Context) {
 			continue
 		}
 		if _, err := j.DB.ExecContext(ctx, `INSERT INTO promotion_ending_notifications(promotion_id,user_id) VALUES($1,$2) ON CONFLICT DO NOTHING`, it.promotionID, it.userID); err != nil {
-			log.Printf("[cron] 写入活动即将结束提醒标记失败: %v", err)
-		}
-	}
-}
-
-func (j *Jobs) notifyStaleTickets(ctx context.Context) {
-	if j.DB == nil || j.Notifier == nil {
-		return
-	}
-	rows, err := j.DB.QueryContext(ctx, `SELECT id,user_id,subject FROM tickets WHERE status<>'closed' AND updated_at < now()-interval '24 hours' AND (timeout_notified_at IS NULL OR timeout_notified_at < now()-interval '24 hours')`)
-	if err != nil {
-		log.Printf("[cron] 查询超时工单失败: %v", err)
-		return
-	}
-	type ticket struct {
-		id, userID int64
-		subject    string
-	}
-	var tickets []ticket
-	for rows.Next() {
-		var it ticket
-		if err := rows.Scan(&it.id, &it.userID, &it.subject); err != nil {
-			rows.Close()
-			log.Print("读取超时工单失败，稍后重试")
-			return
-		}
-		tickets = append(tickets, it)
-	}
-	rows.Close()
-	if rows.Err() != nil {
-		log.Print("遍历超时工单失败，稍后重试")
-		return
-	}
-	// 查询连接先释放，再保存通知，避免小连接池被占满时等待自身。
-	title, _ := j.Notifier.Settings.Get(ctx, "ticket_notify_timeout_title")
-	if strings.TrimSpace(title) == "" {
-		title = "工单处理提醒"
-	}
-	var notifiedIDs []int64
-	for _, it := range tickets {
-		body := "你的工单「" + it.subject + "」仍在处理中，客服会尽快跟进。"
-		if err := j.Notifier.NotifyTemplate(ctx, it.userID, "ticket_timeout", title, body, map[string]string{"subject": it.subject}); err != nil {
-			continue
-		}
-		notifiedIDs = append(notifiedIDs, it.id)
-	}
-	// 仅标记已可靠入队的通知；提交后标记前崩溃可能重复提醒，但不会吞通知。
-	if len(notifiedIDs) > 0 {
-		if _, err := j.DB.ExecContext(ctx, `UPDATE tickets SET timeout_notified_at=now() WHERE id = ANY($1)`, notifiedIDs); err != nil {
-			log.Printf("[cron] 批量更新工单提醒标记失败: %v", err)
+			j.failTask(ctx, taskNotifyEndingPromos, "写入活动即将结束提醒标记", err)
 		}
 	}
 }
@@ -220,7 +233,7 @@ func (j *Jobs) reconcilePendingPayments(ctx context.Context) {
 	}
 	attempts, err := j.Gateways.PendingPaymentAttempts(ctx)
 	if err != nil {
-		log.Printf("[cron] 查询待补单记录失败: %v", err)
+		j.failTask(ctx, taskReconcilePayments, "查询待补单记录", err)
 		return
 	}
 	for _, attempt := range attempts {
@@ -259,7 +272,7 @@ func (j *Jobs) expireInvoices(ctx context.Context) {
 	}
 	tx, err := j.DB.BeginTx(ctx, nil)
 	if err != nil {
-		log.Printf("[cron] 开启过期账单事务失败: %v", err)
+		j.failTask(ctx, taskExpireInvoices, "开启过期账单事务", err)
 		return
 	}
 	defer tx.Rollback()
@@ -268,7 +281,7 @@ func (j *Jobs) expireInvoices(ctx context.Context) {
 		`SELECT id,user_id,no,coalesce(credit,0)::text FROM invoices
 		 WHERE status=0 AND due_at IS NOT NULL AND due_at <= now() AND credit > 0 FOR UPDATE`)
 	if err != nil {
-		log.Printf("[cron] 查询待过期账单抵扣失败: %v", err)
+		j.failTask(ctx, taskExpireInvoices, "查询待过期账单抵扣", err)
 		return
 	}
 	type creditRefund struct {
@@ -280,14 +293,14 @@ func (j *Jobs) expireInvoices(ctx context.Context) {
 		var r creditRefund
 		if err := rows.Scan(&r.id, &r.userID, &r.no, &r.credit); err != nil {
 			rows.Close()
-			log.Printf("[cron] 读取待过期账单抵扣失败: %v", err)
+			j.failTask(ctx, taskExpireInvoices, "读取待过期账单抵扣", err)
 			return
 		}
 		refunds = append(refunds, r)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		log.Printf("[cron] 遍历待过期账单抵扣失败: %v", err)
+		j.failTask(ctx, taskExpireInvoices, "遍历待过期账单抵扣", err)
 		return
 	}
 	// 归还失败的行本轮不置过期，留待下一轮重试：单条坏数据不能卡死整批账单。
@@ -320,54 +333,59 @@ func (j *Jobs) expireInvoices(ctx context.Context) {
 		    AND NOT (id = ANY(COALESCE($1::bigint[], '{}'::bigint[])))
 		 RETURNING id,order_id`, pending)
 	if err != nil {
-		log.Printf("[cron] 处理过期账单失败: %v", err)
+		j.failTask(ctx, taskExpireInvoices, "处理过期账单", err)
 		return
 	}
 	var orderIDs []int64
+	var invIDs []int64
 	var n int
 	for expired.Next() {
 		var id int64
 		var orderID sql.NullInt64
 		if err := expired.Scan(&id, &orderID); err != nil {
 			expired.Close()
-			log.Printf("[cron] 读取过期账单失败: %v", err)
+			j.failTask(ctx, taskExpireInvoices, "读取过期账单", err)
 			return
 		}
 		n++
+		invIDs = append(invIDs, id)
 		if orderID.Valid {
 			orderIDs = append(orderIDs, orderID.Int64)
 		}
 	}
 	expired.Close()
 	if err := expired.Err(); err != nil {
-		log.Printf("[cron] 遍历过期账单失败: %v", err)
+		j.failTask(ctx, taskExpireInvoices, "遍历过期账单", err)
 		return
 	}
 	if len(orderIDs) > 0 {
 		// 释放限量抢购活动名额（账单过期未支付的订单）
 		if err := repo.NewPromotions(j.DB).ReleaseQuotaByOrders(ctx, tx, orderIDs); err != nil {
-			log.Printf("[cron] 释放活动名额失败: %v", err)
+			j.failTask(ctx, taskExpireInvoices, "释放活动名额", err)
 			return
 		}
 		// 释放优惠码占用：下单即核销的券在这里退还，用户可再次使用
 		if j.Coupons != nil {
 			if err := j.Coupons.ReleaseByOrders(ctx, tx, orderIDs); err != nil {
-				log.Printf("[cron] 释放优惠码占用失败: %v", err)
+				j.failTask(ctx, taskExpireInvoices, "释放优惠码占用", err)
 				return
 			}
 		}
 	}
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE payment_attempts SET status=2 WHERE status=0 AND invoice_id IN (SELECT id FROM invoices WHERE status=3)`); err != nil {
-		log.Printf("[cron] 关闭过期支付尝试失败: %v", err)
+		j.failTask(ctx, taskExpireInvoices, "关闭过期支付尝试", err)
 		return
 	}
 	if err := tx.Commit(); err != nil {
-		log.Printf("[cron] 提交过期账单事务失败: %v", err)
+		j.failTask(ctx, taskExpireInvoices, "提交过期账单事务", err)
 		return
 	}
 	if n > 0 || len(refunds) > 0 {
 		log.Printf("[cron] 已将 %d 条账单标记为过期，退回 %d 笔抵扣", n, len(refunds))
+	}
+	if n > 0 {
+		plugin.Emit(ctx, plugin.EventInvoiceExpired, plugin.InvoiceExpiredPayload{InvoiceIDs: invIDs, Count: n})
 	}
 }
 
@@ -380,7 +398,7 @@ func (j *Jobs) runExpired(ctx context.Context, query, opName string, op func(con
 	}
 	rows, err := j.DB.QueryContext(ctx, query, args...)
 	if err != nil {
-		log.Printf("[cron] 查询待%s服务失败: %v", opName, err)
+		j.failTask(ctx, taskRunExpired+":"+opName, "查询待"+opName+"服务", err)
 		return
 	}
 	var ids []int64
@@ -393,7 +411,7 @@ func (j *Jobs) runExpired(ctx context.Context, query, opName string, op func(con
 		ids = append(ids, id)
 	}
 	if err := rows.Err(); err != nil {
-		log.Printf("[cron] 遍历到期服务失败: %v", err)
+		j.failTask(ctx, taskRunExpired+":"+opName, "遍历到期服务", err)
 	}
 	rows.Close()
 	for _, id := range ids {
@@ -418,7 +436,7 @@ func (j *Jobs) notifyExpiringSoon(ctx context.Context) {
 		 WHERE sv.status=1 AND sv.expire_warn_sent=false
 		   AND sv.expires_at BETWEEN now() AND now() + make_interval(days => $1)`, warn)
 	if err != nil {
-		log.Printf("[cron] 查询即将到期服务失败: %v", err)
+		j.failTask(ctx, taskNotifyExpiringSoon, "查询即将到期服务", err)
 		return
 	}
 	type item struct {
@@ -448,7 +466,8 @@ func (j *Jobs) notifyExpiringSoon(ctx context.Context) {
 	if len(warnedIDs) > 0 {
 		if _, err := j.DB.ExecContext(ctx,
 			`UPDATE services SET expire_warn_sent=true WHERE id = ANY($1)`, warnedIDs); err != nil {
-			log.Printf("[cron] 批量更新到期提醒标记失败: %v", err)
+			// 标记写不上，下一轮会把同一批用户再提醒一次，管理员应当知道。
+			j.failTask(ctx, taskNotifyExpiringSoon, "批量更新到期提醒标记", err)
 		}
 	}
 }
@@ -459,7 +478,7 @@ func (j *Jobs) releaseExpiredStock(ctx context.Context) {
 		`UPDATE stock_reservations SET status='released'
 		 WHERE status='reserved' AND expires_at < now()`)
 	if err != nil {
-		log.Printf("[cron] 释放过期库存预留失败: %v", err)
+		j.failTask(ctx, taskReleaseStock, "释放过期库存预留", err)
 		return
 	}
 	if n, _ := res.RowsAffected(); n > 0 {
@@ -493,6 +512,8 @@ func (j *Jobs) syncPrices(ctx context.Context) {
 	bound, err := j.Products.ListBound(ctx)
 	if err != nil {
 		log.Printf("[sync] 查询已绑定产品失败: %v", err)
+		// 保留原 [sync] 日志前缀（有人按它做检索），只额外补管理员告警。
+		j.alertTaskFailure(ctx, taskSyncPrices, "查询已绑定产品", err)
 		return
 	}
 	if len(bound) == 0 {

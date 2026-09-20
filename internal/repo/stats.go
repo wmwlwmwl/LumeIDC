@@ -40,13 +40,17 @@ type TrendPoint struct {
 }
 
 // Trends 最近 days 天的注册/已支付订单/收入趋势（含无数据的天，补 0）。
+// 两个聚合 CTE 必须自带同样的日期下界：否则每次刷新都对 users/orders 全表聚合，
+// 数据一多仪表盘就随历史量线性变慢（generate_series 只补空白，不缩小聚合范围）。
 func (st *Stats) Trends(ctx context.Context, days int) ([]TrendPoint, error) {
 	rows, err := st.db.QueryContext(ctx, `
 		WITH d AS (
 			SELECT generate_series((current_date - ($1::int - 1))::date, current_date, interval '1 day')::date AS day
 		),
-		u AS (SELECT created_at::date AS day, count(*) AS cnt FROM users GROUP BY 1),
-		o AS (SELECT created_at::date AS day, count(*) AS cnt, coalesce(sum(amount), 0) AS sum FROM orders WHERE status=1 GROUP BY 1)
+		u AS (SELECT created_at::date AS day, count(*) AS cnt FROM users
+			WHERE created_at >= (current_date - ($1::int - 1))::date GROUP BY 1),
+		o AS (SELECT created_at::date AS day, count(*) AS cnt, coalesce(sum(amount), 0) AS sum FROM orders
+			WHERE status=1 AND created_at >= (current_date - ($1::int - 1))::date GROUP BY 1)
 		SELECT to_char(d.day, 'MM-DD'), coalesce(u.cnt, 0), coalesce(o.cnt, 0), coalesce(o.sum, 0)::float8
 		FROM d LEFT JOIN u ON u.day = d.day LEFT JOIN o ON o.day = d.day
 		ORDER BY d.day`, days)

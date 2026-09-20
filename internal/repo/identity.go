@@ -106,9 +106,6 @@ func (s *IdentityStore) CreatePhoneChallenge(ctx context.Context, userID int64, 
 	if purpose == "change" && (!current.Valid || current.String == "") {
 		return 0, errors.New("账户尚未绑定手机号")
 	}
-	if purpose == "login" && (!current.Valid || current.String != phone) {
-		return 0, errors.New("手机号不可用")
-	}
 	var used bool
 	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM users WHERE phone_e164=$1 AND id<>$2)`, phone, userID).Scan(&used); err != nil {
 		return 0, err
@@ -202,46 +199,6 @@ func (s *IdentityStore) ConsumePhoneChallenge(ctx context.Context, userID int64,
 		return "", err
 	}
 	return phone, nil
-}
-
-func (s *IdentityStore) ConsumeLoginPhoneChallenge(ctx context.Context, userID int64, codeHMAC string, now time.Time) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	var id int64
-	var saved string
-	var expires time.Time
-	var attempts int
-	if err := tx.QueryRowContext(ctx, `SELECT id,code_hmac,expires_at,attempts FROM phone_verification_challenges WHERE user_id=$1 AND purpose='login' AND consumed_at IS NULL AND invalidated_at IS NULL ORDER BY id DESC LIMIT 1 FOR UPDATE`, userID).Scan(&id, &saved, &expires, &attempts); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return ErrChallengeInvalid
-		}
-		return err
-	}
-	if attempts >= 5 || !expires.After(now) {
-		_, _ = tx.ExecContext(ctx, `UPDATE phone_verification_challenges SET invalidated_at=$2 WHERE id=$1`, id, now)
-		if err := tx.Commit(); err != nil {
-			return err
-		}
-		return ErrChallengeInvalid
-	}
-	if !hmac.Equal([]byte(saved), []byte(codeHMAC)) {
-		if attempts+1 >= 5 {
-			_, _ = tx.ExecContext(ctx, `UPDATE phone_verification_challenges SET attempts=attempts+1,invalidated_at=$2 WHERE id=$1`, id, now)
-		} else {
-			_, _ = tx.ExecContext(ctx, `UPDATE phone_verification_challenges SET attempts=attempts+1 WHERE id=$1`, id)
-		}
-		if err := tx.Commit(); err != nil {
-			return err
-		}
-		return ErrChallengeCode
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE phone_verification_challenges SET consumed_at=$2 WHERE id=$1`, id, now); err != nil {
-		return err
-	}
-	return tx.Commit()
 }
 
 func (s *IdentityStore) PhoneTaken(ctx context.Context, phone string, excludeID int64) (bool, error) {
@@ -339,7 +296,9 @@ func (s *IdentityStore) CreateSubmission(ctx context.Context, userID int64, lega
 		return 0, err
 	}
 	var duplicate bool
-	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM manual_identity_submissions WHERE identity_number_hmac=$1 AND status IN ('pending','approved'))`, identityHMAC).Scan(&duplicate); err != nil {
+	// 证件占用跨人工/自动两通道检查（排除本人：自身的 pending/approved 已由前置状态检查拦截，
+	// 本人 rejected 后重提不应被自己的旧记录误伤）。
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM manual_identity_submissions WHERE identity_number_hmac=$1 AND user_id<>$2 AND status IN ('pending','approved')) OR EXISTS(SELECT 1 FROM automatic_identity_attempts WHERE identity_number_hmac=$1 AND user_id<>$2 AND status IN ('initiated','pending','approved'))`, identityHMAC, userID).Scan(&duplicate); err != nil {
 		return 0, err
 	}
 	if duplicate {
@@ -384,6 +343,17 @@ func (s *IdentityStore) CreatePluginSubmission(ctx context.Context, userID int64
 	}
 	if approved {
 		return 0, ErrVerificationDone
+	}
+	// 证件占用跨人工/自动两通道检查（与 CreateSubmission 同规则；排除本人）。
+	// ponytail: 应用层检查存在 TOCTOU 并发窗口（两账号同证件同时提交可双过）；
+	// automatic 表无法照搬 manual 的部分唯一索引兜底——存量脏数据会让迁移失败。
+	// 窗口极小且后果可人工处置；若后续需要严格保证，先清洗存量再加部分唯一索引。
+	var duplicate bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM manual_identity_submissions WHERE identity_number_hmac=$1 AND user_id<>$2 AND status IN ('pending','approved')) OR EXISTS(SELECT 1 FROM automatic_identity_attempts WHERE identity_number_hmac=$1 AND user_id<>$2 AND status IN ('initiated','pending','approved'))`, identityHMAC, userID).Scan(&duplicate); err != nil {
+		return 0, err
+	}
+	if duplicate {
+		return 0, errors.New("该证件已被其他账号使用")
 	}
 	var id int64
 	if err := tx.QueryRowContext(ctx, `INSERT INTO automatic_identity_attempts(user_id,provider_key,provider_ref,provider_url,status,legal_name_ciphertext,identity_number_ciphertext,identity_number_hmac,submitted_at,created_at,updated_at) VALUES($1,$2,$3,$4,'pending',$5,$6,$7,$8,$8,$8) RETURNING id`, userID, source, providerRef, providerURL, legalName, identityCipher, identityHMAC, now).Scan(&id); err != nil {

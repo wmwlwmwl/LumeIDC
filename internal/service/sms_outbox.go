@@ -213,18 +213,31 @@ func (n *Notifier) StartSMS() {
 				if ctx.Err() != nil {
 					return
 				}
-				j, err := n.claimSMS(ctx)
-				if err == nil {
-					sendCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
-					result := n.deliverSMS(sendCtx, j)
-					cancel()
-					if n.finishSMS(context.Background(), j, result) != nil {
-						log.Print("短信结果写回失败，租约到期后标记未知，不会自动重发")
+				// ponytail: 单轮处理带 recover——适配器 panic 记日志后继续轮询；
+				// StartSMS 只跑一次，worker 退出即队列永久停摆，故必须就地恢复。
+				again := func() bool {
+					defer func() {
+						if r := recover(); r != nil {
+							log.Printf("短信发送单轮异常（已恢复，继续轮询）：%v", r)
+						}
+					}()
+					j, err := n.claimSMS(ctx)
+					if err == nil {
+						sendCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+						result := n.deliverSMS(sendCtx, j)
+						cancel()
+						if n.finishSMS(context.Background(), j, result) != nil {
+							log.Print("短信结果写回失败，租约到期后标记未知，不会自动重发")
+						}
+						return true
 					}
+					if !errors.Is(err, sql.ErrNoRows) && ctx.Err() == nil {
+						log.Print("读取待发短信失败，稍后重新检查队列")
+					}
+					return false
+				}()
+				if again {
 					continue
-				}
-				if !errors.Is(err, sql.ErrNoRows) && ctx.Err() == nil {
-					log.Print("读取待发短信失败，稍后重新检查队列")
 				}
 				select {
 				case <-ctx.Done():

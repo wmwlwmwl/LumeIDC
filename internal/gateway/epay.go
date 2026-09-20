@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/md5"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -43,6 +44,9 @@ type epayOrder struct {
 }
 
 func (Epay) Driver() string { return "epay" }
+
+// init 自注册到网关注册表（新增网关照此一行接入，组合根无需改动）。
+func init() { Register(Epay{}) }
 func (Epay) Name() string   { return "易支付" }
 
 // CheckoutPath 声明易支付可使用本地二维码结算页。
@@ -57,6 +61,23 @@ func (Epay) ValidateConfig(cfg map[string]string) error {
 		return fmt.Errorf("易支付必须填写 API 地址、商户 PID、支付渠道和商户密钥")
 	}
 	return nil
+}
+
+// sanitizeURLError 去掉传输错误里 URL 的查询串。
+//
+// 易支付查单按上游协议把商户密钥放在查询串（无法改），而 *url.Error 会打印完整 URL，
+// 直接 %w 上抛会把密钥写进服务端日志与管理员告警邮件。保留 scheme://host/path 便于排查，
+// 只丢弃查询串。
+func sanitizeURLError(err error) error {
+	var uerr *url.Error
+	if !errors.As(err, &uerr) {
+		return err
+	}
+	if u, perr := url.Parse(uerr.URL); perr == nil && u.RawQuery != "" {
+		u.RawQuery = ""
+		uerr.URL = u.String()
+	}
+	return uerr
 }
 
 // QueryOrder queries an order without changing local state. The caller must
@@ -79,7 +100,7 @@ func (Epay) QueryOrder(ctx context.Context, req QueryOrderRequest) (QueryOrderRe
 	}
 	resp, err := epayHTTPClient.Do(httpReq)
 	if err != nil {
-		return QueryOrderResult{}, fmt.Errorf("请求易支付订单查询失败: %w", err)
+		return QueryOrderResult{}, fmt.Errorf("请求易支付订单查询失败: %w", sanitizeURLError(err))
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
@@ -228,9 +249,21 @@ func resolveEpayRelativeRef(apiBase, ref string) string {
 
 func (e Epay) VerifyNotify(req NotifyRequest, cfg map[string]string) (NotifyResult, error) {
 	params := req.Params
-	invoiceNo, tradeNo, ok := verifyEpaySign(params, cfg["key"])
+	key := cfg["key"]
+	if strings.TrimSpace(key) == "" {
+		// 空密钥下 md5(参数串 + "") 可被任意伪造，必须按失败关闭。
+		return NotifyResult{}, fmt.Errorf("易支付未配置商户密钥")
+	}
+	invoiceNo, tradeNo, ok := verifyEpaySign(params, key)
 	if !ok {
 		return NotifyResult{}, fmt.Errorf("易支付回调签名校验失败")
+	}
+	// 验签通过后再确认「该通知属于本商户」：同一密钥被多站点共用时，仅验签
+	// 无法区分通知归属。双方都带 pid 且不一致才拒绝——部分易支付分支的通知
+	// 不携带 pid，不能因此误杀，此时仍由密钥隔离兜底。
+	// ponytail: 上游不回传 pid 时该校验自动跳过，升级路径是要求上游回传 pid 后改为强制比对。
+	if pid := cfg["pid"]; strings.TrimSpace(pid) != "" && params["pid"] != "" && params["pid"] != pid {
+		return NotifyResult{}, fmt.Errorf("易支付回调商户号不匹配")
 	}
 	if params["trade_status"] != "TRADE_SUCCESS" && params["trade_status"] != "TRADE_FINISHED" {
 		return NotifyResult{InvoiceNo: invoiceNo, TradeNo: tradeNo}, nil

@@ -8,12 +8,12 @@ import '../style.css'
 
 import AdminRoot from './AdminRoot.vue'
 import AdminApp from './AdminApp.vue'
-import { adminPageRoutes, adminMenu } from './menu'
+import { adminPageRoutes, adminMenu, mergePluginMenus, type PluginMenuInfo } from './menu'
 import { store } from '@/store'
 import { setupGlobDirectives } from '@/directives'
 import language from '@/locales'
 import { loadSession, installSessionRefresh, useSession, setAdminApp, clearCurrentUser } from '@/http/session'
-import { setOnUnauthorized, setApiBase } from '@/http/index'
+import { setOnUnauthorized, setApiBase, http } from '@/http/index'
 import { setAppRouter } from '@/router/registry'
 import { useMenuStore } from '@/store/modules/menu'
 import { useWorktabStore } from '@/store/modules/worktab'
@@ -125,8 +125,18 @@ async function bootstrap() {
   // Art 主题初始化（主色/圆角/明暗/盒模型）已移至 AdminRoot 的 onBeforeMount，
   // 与 Art 的 App.vue 保持一致。
 
-  // 前端模式：后台菜单由本地配置注入 Art 侧栏。
-  useMenuStore().setMenuList(adminMenu)
+  // 前端模式：后台菜单由本地配置注入 Art 侧栏；再合并后端插件清单
+  // （失败静默降级为核心菜单，插件页路由仍可用）。
+  let menu = adminMenu
+  if (session.adminUser) {
+    try {
+      const res = await http.get<{ ok: number; plugins?: PluginMenuInfo[] }>('/plugins')
+      if (res.ok && res.plugins) menu = mergePluginMenus(adminMenu, res.plugins)
+    } catch {
+      // 插件清单不可用不阻塞后台
+    }
+  }
+  useMenuStore().setMenuList(menu)
 
   await router.isReady()
   app.mount('#admin-app')

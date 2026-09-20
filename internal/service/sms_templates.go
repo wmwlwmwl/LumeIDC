@@ -9,8 +9,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
-	"unicode/utf8"
 )
 
 type SMSTemplate struct {
@@ -91,11 +89,9 @@ func smsScene(code string) (SMSScene, error) {
 	}
 	return SMSScene{}, errors.New("短信场景不存在")
 }
-func smsTextValid(s string, limit int) bool {
-	return utf8.ValidString(s) && utf8.RuneCountInString(s) <= limit && strings.IndexFunc(s, func(r rune) bool { return unicode.IsControl(r) || unicode.Is(unicode.Cf, r) }) < 0
-}
 
-var smsIdentifier = regexp.MustCompile(`^[A-Za-z0-9_]{1,64}$`)
+// smsTextValid / smsIdentifier 已迁 internal/smsdk（经 sms_alias.go 转发）。
+
 var smsPlaceholder = regexp.MustCompile(`\{\{([A-Za-z0-9_]+)\}\}|@var\(([A-Za-z0-9_]+)\)|\$\{([A-Za-z0-9_]+)\}|\{([A-Za-z0-9_]+)\}`)
 
 func renderSMSTemplate(t SMSTemplate, scene SMSScene, values map[string]string) (SMSPreview, error) {

@@ -68,7 +68,13 @@ async function parseResponse(res: Response): Promise<ApiResult> {
   try {
     return JSON.parse(text) as ApiResult
   } catch {
-    return { ok: false, msg: text }
+    // 非 JSON 多为反向代理/网关的 HTML 错误页（或 502/504 页面）：整页 HTML
+    // 直接当错误文案弹出既看不懂也刷屏，只留控制台供排查，展示走中性中文。
+    console.warn('[http] 响应非 JSON:', res.url, text.slice(0, 500))
+    return {
+      ok: false,
+      msg: res.ok ? '服务返回了非预期的响应内容，请稍后重试' : `请求失败（HTTP ${res.status}）`,
+    }
   }
 }
 

@@ -3,6 +3,7 @@ package handler
 import (
 	"crypto/tls"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -14,6 +15,30 @@ import (
 
 	"lumeidc/internal/middleware"
 )
+
+// effectiveHost 解析请求的真实外部主机名。反代场景下 Nginx 可能没正确设置
+// Host header（如宝塔一键反代），此时回退从 X-Forwarded-Host/X-Original-Host
+// 取外部域名，确保 CheckOrigin 的同源校验不被反代破坏。
+// ponytail: 只对可信反代生效；反代由管理员控制，风险可接受
+func effectiveHost(r *http.Request) string {
+	h := r.Host
+	hostOnly, _, _ := net.SplitHostPort(h)
+	if hostOnly == "" {
+		hostOnly = h
+	}
+	// 直连外部域名：直接用 req.Host
+	if hostOnly != "127.0.0.1" && hostOnly != "localhost" && hostOnly != "0.0.0.0" && hostOnly != "::1" {
+		return h
+	}
+	// 反代场景：回退到反代头
+	if fh := r.Header.Get("X-Forwarded-Host"); fh != "" {
+		return fh
+	}
+	if oh := r.Header.Get("X-Original-Host"); oh != "" {
+		return oh
+	}
+	return h
+}
 
 // ---------- VNC 隧道（隐藏上游域名） ----------
 //
@@ -31,7 +56,7 @@ func (h *Pages) serviceVncPass(w http.ResponseWriter, r *http.Request) {
 	id, _ := strconv.ParseInt(r.PathValue("serviceID"), 10, 64)
 	info, err := h.Console.VNCInfo(r.Context(), userID, id)
 	if err != nil {
-		jsonFail(w, err.Error())
+		jsonFail(w, consoleErrMsg(err))
 		return
 	}
 	jsonOK(w, "password", info.Password)
@@ -55,6 +80,7 @@ func (h *Pages) vncWebSocket(w http.ResponseWriter, r *http.Request) {
 	// 透传浏览器请求的子协议（noVNC 要求 binary；上游不认子协议，拨上游时不带）
 	up := websocket.Upgrader{
 		// CSWSH 防护：仅允许同源（Origin 主机 == 请求 Host）建立隧道，阻断跨站脚本驱动 VNC。
+		// 反代场景下 effectiveHost() 会从反代头推断真实外部域名，避免宝塔/Nginx 漏配 Host header 导致误拒。
 		CheckOrigin: func(req *http.Request) bool {
 			origin := req.Header.Get("Origin")
 			if origin == "" {
@@ -64,7 +90,7 @@ func (h *Pages) vncWebSocket(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				return false
 			}
-			return strings.EqualFold(ou.Host, req.Host)
+			return strings.EqualFold(ou.Host, effectiveHost(req))
 		},
 		Subprotocols: websocket.Subprotocols(r),
 	}

@@ -17,8 +17,9 @@ const router = createRouter({
     { path: '/promotion/:id(\\d+)', name: 'promotion', component: () => import('../views/Promotion.vue'), meta: { title: '活动' } },
     { path: '/buy/:id(\\d+)', name: 'buy', component: () => import('../views/Buy.vue'), meta: { title: '购买' } },
     { path: '/pay/:id(\\d+)', name: 'pay', component: () => import('../views/Pay.vue'), meta: { title: '支付' } },
-    { path: '/notices', name: 'notices', component: () => import('../views/Notices.vue'), meta: { title: '公告' } },
-    { path: '/notices/:id(\\d+)', name: 'notice-detail', component: () => import('../views/NoticeDetail.vue'), meta: { title: '公告详情' } },
+    // 公告中心页面由 announcement 插件提供（web/src/plugins/announcement/）
+    { path: '/notices', name: 'notices', component: () => import('@/plugins/announcement/Notices.vue'), meta: { title: '公告' } },
+    { path: '/notices/:id(\\d+)', name: 'notice-detail', component: () => import('@/plugins/announcement/NoticeDetail.vue'), meta: { title: '公告详情' } },
     { path: '/login', name: 'login', component: () => import('../views/Login.vue'), meta: { guest: true, authLayout: true, title: '登录' } },
     { path: '/register', name: 'register', component: () => import('../views/Register.vue'), meta: { guest: true, authLayout: true, title: '注册' } },
     { path: '/forgot', name: 'forgot', component: () => import('../views/Forgot.vue'), meta: { guest: true, authLayout: true, title: '找回密码' } },
@@ -73,12 +74,22 @@ const router = createRouter({
       children: [{ path: '', name: 'notifications', component: () => import('../views/Notifications.vue'), meta: { title: '消息中心' } }],
     },
     {
+      // 工单页面由 tickets 插件提供（web/src/plugins/tickets/）
       path: '/tickets',
       component: () => import('../views/UserShell.vue'),
       meta: { auth: true },
       children: [
-        { path: '', name: 'tickets', component: () => import('../views/Tickets.vue'), meta: { title: '工单支持' } },
-        { path: ':id(\\d+)', name: 'ticket-detail', component: () => import('../views/TicketDetail.vue'), meta: { title: '工单详情' } },
+        { path: '', name: 'tickets', component: () => import('@/plugins/tickets/Tickets.vue'), meta: { title: '工单支持' } },
+        { path: ':id(\\d+)', name: 'ticket-detail', component: () => import('@/plugins/tickets/TicketDetail.vue'), meta: { title: '工单详情' } },
+      ],
+    },
+    {
+      // 前台插件页槽位：ClientShell 按 :name 从 web/src/plugins/registry.ts 的 clientRegistry 渲染。
+      path: '/plugin',
+      component: () => import('../views/UserShell.vue'),
+      meta: { auth: true },
+      children: [
+        { path: ':name', name: 'client-plugin', component: () => import('@/plugins/ClientShell.vue'), meta: { title: '插件' } },
       ],
     },
     {

@@ -44,12 +44,12 @@ export interface NoticeListResult {
 export async function fetchNotices(
   params: { category?: string; keyword?: string; page?: number; limit?: number } = {},
 ): Promise<NoticeListResult> {
-  const res = await http.get<NoticeListResult>('/announcements', params)
+  const res = await http.get<NoticeListResult>('/plugin/announcement/list', params)
   return res as unknown as NoticeListResult
 }
 
 export async function fetchNotice(id: number | string): Promise<Announcement | null> {
-  const res = await http.get<{ item?: Announcement }>(`/announcements/${id}`)
+  const res = await http.get<{ item?: Announcement }>(`/plugin/announcement/detail/${id}`)
   return (res.item || null) as unknown as Announcement | null
 }
 

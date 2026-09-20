@@ -223,9 +223,9 @@
     if (item.link) router.push(item.link)
   }
 
-  // 查看全部：按当前标签跳到对应后台页面。
+  // 查看全部：按当前标签跳到对应后台页面（公告/工单已迁入插件，走 /plugin/{name} 槽位）。
   // 索引 2（待办）走二级标签选中组的列表页——待办横跨多个模块，没有统一的「全部」页。
-  const VIEW_ALL_LINKS = ['/announcements', '/tickets', '']
+  const VIEW_ALL_LINKS = ['/plugin/announcement', '/plugin/tickets', '']
 
   const handleViewAll = () => {
     const link =

@@ -13,6 +13,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	// 适配器已迁 plugins/sms（接口类扩展轨道），测试须显式聚合注册。
+	_ "lumeidc/internal/plugins/sms"
 )
 
 // 真实 HTTP 服务接收请求，传输层只替换拨号目的地；生产请求仍必须使用供应商固定域名。
