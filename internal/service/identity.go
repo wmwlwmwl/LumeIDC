@@ -21,6 +21,7 @@ import (
 	"lumeidc/internal/plugin"
 	"lumeidc/internal/repo"
 	"lumeidc/internal/storage"
+	"lumeidc/internal/vsdk"
 )
 
 var ErrIdentityRequired = errors.New("请先完成实名认证后再购买或续费")
@@ -364,16 +365,8 @@ func (s *Identity) StartProvider(ctx context.Context, userID int64, providerKey 
 	if started.ProviderRef == "" {
 		return 0, "", errors.New("实名插件未返回任务编号")
 	}
-	if started.URL != "" {
-		u, err := url.Parse(started.URL)
-		if err != nil || u.Scheme != "https" || u.User != nil || u.Hostname() == "" || strings.ContainsAny(started.URL, "\r\n") {
-			return 0, "", errors.New("实名插件返回地址不安全")
-		}
-		host := strings.ToLower(u.Hostname())
-		allowed := map[string]string{"baidu_face": "brain.baidu.com", "leaf_face": "face.ly-y.cn", "smapi": "smapi.x1m1.cn", "stay33": "idc.stay33.cn"}[providerKey]
-		if allowed != "" && host != allowed {
-			return 0, "", errors.New("实名插件返回地址不受支持")
-		}
+	if err := checkPluginReturnURL(providerKey, started.URL); err != nil {
+		return 0, "", err
 	}
 	nameCipher, err := s.PII.Encrypt(name)
 	if err != nil {
@@ -392,6 +385,23 @@ func (s *Identity) StartProvider(ctx context.Context, userID int64, providerKey 
 	// 不通知管理员：自动实名由第三方插件自行判定，核验成功与否管理员都无事可做，
 	// 提交阶段发信只会产生噪音（见 notifyAdminManualSubmitted 注释）。
 	return createdID, started.URL, nil
+}
+
+// checkPluginReturnURL 校验实名插件返回的认证页地址：https + 无用户态 + host 命中渠道
+// 描述符声明的白名单（vsdk.Descriptor.ReturnHost）。未声明 ReturnHost 的渠道一律拒绝（fail-closed）。
+func checkPluginReturnURL(providerKey, rawURL string) error {
+	if rawURL == "" {
+		return nil
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Scheme != "https" || u.User != nil || u.Hostname() == "" || strings.ContainsAny(rawURL, "\r\n") {
+		return errors.New("实名插件返回地址不安全")
+	}
+	d, ok := vsdk.DescriptorFor(providerKey)
+	if !ok || d.ReturnHost == "" || !strings.EqualFold(u.Hostname(), d.ReturnHost) {
+		return errors.New("实名插件返回地址不受支持")
+	}
+	return nil
 }
 
 func (s *Identity) PollProvider(ctx context.Context, userID int64, submissionID int64) error {

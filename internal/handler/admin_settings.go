@@ -7,12 +7,14 @@ import (
 	"net/http"
 	"net/mail"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"lumeidc/internal/middleware"
 	"lumeidc/internal/service"
+	"lumeidc/internal/vsdk"
 )
 
 // maxAdminNotifyEmails 管理员告警邮箱上限：告警是运维通知，收件人过多说明填错了。
@@ -25,7 +27,7 @@ func (a *Admin) adminSettings(w http.ResponseWriter, r *http.Request) {
 	s := a.Settings
 	// 一次取回全部键：原实现逐键 Get，设置页每次打开 60+ 条 SQL。
 	// GetMany 只返回库中存在的键，缺失键取空串——与原 Get 失败回退行为一致。
-	vals, err := s.GetMany(r.Context(),
+	settingKeys := []string{
 		"manual_identity_requires_verified_phone",
 		"smtp_host", "smtp_port", "smtp_user", "smtp_from",
 		"sms_region", "sms_global_access_key", "sms_global_sign_name", "sms_routes",
@@ -33,10 +35,6 @@ func (a *Admin) adminSettings(w http.ResponseWriter, r *http.Request) {
 		"sms_sign_name", "sms_template_code", "sms_template_content",
 		"captcha_provider", "captcha_geetest_id", "captcha_vaptcha_vid", "captcha_corptcha_site_key",
 		"verification_provider", "verification_endpoint",
-		"verification_baidu_api_key", "verification_baidu_plan_id",
-		"verification_leaf_app_id", "verification_leaf_api_base",
-		"verification_smapi_api_url", "verification_smapi_product_code", "verification_smapi_app_key",
-		"verification_stay33_api_url", "verification_stay33_api_key", "verification_stay33_biz_code",
 		"manual_identity_enabled",
 		"registration_email_enabled", "registration_phone_enabled",
 		"registration_email_verification_required", "registration_phone_verification_required",
@@ -58,7 +56,16 @@ func (a *Admin) adminSettings(w http.ResponseWriter, r *http.Request) {
 		mailAccountsKey, mailCooldownKey,
 		// 管理员告警收件邮箱（实名提交 / 开通续费升降配失败）
 		mailAdminNotifyKey,
-	)
+	}
+	// 实名服务商配置字段键由注册表枚举（新增服务商零改动；Secret 字段不读取不回传）。
+	for _, d := range vsdk.Registry() {
+		for _, f := range d.Fields {
+			if !f.Secret {
+				settingKeys = append(settingKeys, f.Key)
+			}
+		}
+	}
+	vals, err := s.GetMany(r.Context(), settingKeys...)
 	if err != nil {
 		log.Printf("[settings] 读取设置失败: %v", err)
 	}
@@ -95,16 +102,6 @@ func (a *Admin) adminSettings(w http.ResponseWriter, r *http.Request) {
 		"verification_provider":                    get("verification_provider"),
 		"verification_endpoint":                    get("verification_endpoint"),
 		"verification_token":                       "",
-		"verification_baidu_api_key":               get("verification_baidu_api_key"),
-		"verification_baidu_plan_id":               get("verification_baidu_plan_id"),
-		"verification_leaf_app_id":                 get("verification_leaf_app_id"),
-		"verification_leaf_api_base":               get("verification_leaf_api_base"),
-		"verification_smapi_api_url":               get("verification_smapi_api_url"),
-		"verification_smapi_product_code":          get("verification_smapi_product_code"),
-		"verification_smapi_app_key":               get("verification_smapi_app_key"),
-		"verification_stay33_api_url":              get("verification_stay33_api_url"),
-		"verification_stay33_api_key":              get("verification_stay33_api_key"),
-		"verification_stay33_biz_code":             get("verification_stay33_biz_code"),
 		"manual_identity_requires_verified_phone":  manualRequiresPhone,
 		"manual_identity_enabled":                  get("manual_identity_enabled"),
 		"registration_email_enabled":               get("registration_email_enabled"),
@@ -136,6 +133,16 @@ func (a *Admin) adminSettings(w http.ResponseWriter, r *http.Request) {
 		"service_suspend_after_days":   fallbackStr(get("service_suspend_after_days"), "0"),
 		"service_terminate_after_days": fallbackStr(get("service_terminate_after_days"), "3"),
 		"service_expire_warn_days":     fallbackStr(get("service_expire_warn_days"), "3"),
+	}
+	// 实名服务商字段：普通键回传已存值，Secret 键恒回传空串（不回传明文，与 sms_secret_key 同策略）。
+	for _, d := range vsdk.Registry() {
+		for _, f := range d.Fields {
+			if f.Secret {
+				cfg[f.Key] = ""
+			} else {
+				cfg[f.Key] = get(f.Key)
+			}
+		}
 	}
 	if a.Notifier != nil {
 		if routes, routeErr := a.Notifier.PublicSMSRoutes(r.Context()); routeErr == nil {
@@ -390,39 +397,42 @@ func (c *settingsSaveCtx) saveExternalCaptcha() bool {
 }
 
 // saveAutomaticIdentity 校验并保存自动实名插件设置；返回 false 表示校验失败且已写响应。
+// 服务商清单与字段由 vsdk 注册表驱动：普通字段直存，Secret 字段留空保留旧值。
 func (c *settingsSaveCtx) saveAutomaticIdentity() bool {
 	provider := strings.ToLower(strings.TrimSpace(c.fv("verification_provider")))
-	if provider != "" && provider != "baidu_face" && provider != "leaf_face" && provider != "smapi" && provider != "stay33" {
+	d, registered := vsdk.DescriptorFor(provider)
+	if provider != "" && !registered {
 		c.fail("自动实名 provider 无效")
 		return false
 	}
 	c.set("verification_provider", provider)
-	saveSecret := func(key string) {
-		if value := strings.TrimSpace(c.fv(key)); value != "" {
-			c.set(key, value)
+	if registered {
+		for _, f := range d.Fields {
+			v := strings.TrimSpace(c.fv(f.Key))
+			if f.Secret {
+				if v != "" {
+					c.set(f.Key, v)
+				}
+				continue
+			}
+			c.set(f.Key, v)
 		}
 	}
-	switch provider {
-	case "baidu_face":
-		c.set("verification_baidu_api_key", strings.TrimSpace(c.fv("verification_baidu_api_key")))
-		c.set("verification_baidu_plan_id", strings.TrimSpace(c.fv("verification_baidu_plan_id")))
-		saveSecret("verification_baidu_secret_key")
-	case "leaf_face":
-		c.set("verification_leaf_app_id", strings.TrimSpace(c.fv("verification_leaf_app_id")))
-		c.set("verification_leaf_api_base", strings.TrimSpace(c.fv("verification_leaf_api_base")))
-		saveSecret("verification_leaf_app_secret")
-	case "smapi":
-		c.set("verification_smapi_app_key", strings.TrimSpace(c.fv("verification_smapi_app_key")))
-		c.set("verification_smapi_api_url", strings.TrimSpace(c.fv("verification_smapi_api_url")))
-		c.set("verification_smapi_product_code", strings.TrimSpace(c.fv("verification_smapi_product_code")))
-		saveSecret("verification_smapi_secret_key")
-	case "stay33":
-		c.set("verification_stay33_api_key", strings.TrimSpace(c.fv("verification_stay33_api_key")))
-		c.set("verification_stay33_api_url", strings.TrimSpace(c.fv("verification_stay33_api_url")))
-		c.set("verification_stay33_biz_code", strings.TrimSpace(c.fv("verification_stay33_biz_code")))
-		saveSecret("verification_stay33_secret_key")
-	}
 	return true
+}
+
+// adminVerificationProviders GET /admin/verification-providers — 实名服务商清单（注册表驱动，设置页动态渲染用）。
+func (a *Admin) adminVerificationProviders(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	if !a.require(w, r) {
+		return
+	}
+	list := make([]vsdk.Descriptor, 0, 8)
+	for _, d := range vsdk.Registry() {
+		list = append(list, d)
+	}
+	sort.Slice(list, func(i, j int) bool { return list[i].Key < list[j].Key })
+	writeJSON(w, map[string]any{"ok": 1, "list": list})
 }
 
 // saveMailAccounts 校验并保存 SMTP 多账号列表与冷却配置（含旧版单组字段迁移）；

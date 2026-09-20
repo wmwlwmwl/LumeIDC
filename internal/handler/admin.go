@@ -21,19 +21,19 @@ import (
 )
 
 type Admin struct {
-	DB            *sql.DB
-	PrivateFiles  *storage.PrivateFiles
-	Admins        *repo.Admins
-	Lockout       *repo.LoginAttempts
-	LocalCaptcha  *captcha.Service
-	Coupons       *repo.Coupons
-	Refunds       *repo.Refunds
-	AdminLog      *repo.AdminLog
-	Stats         *repo.Stats
-	Promotions    *repo.Promotions
-	Notifier      *service.Notifier
-	emailTestMu   sync.Mutex
-	Updater       *update.Client // 系统在线更新（nil 时页面提示未启用）
+	DB           *sql.DB
+	PrivateFiles *storage.PrivateFiles
+	Admins       *repo.Admins
+	Lockout      *repo.LoginAttempts
+	LocalCaptcha *captcha.Service
+	Coupons      *repo.Coupons
+	Refunds      *repo.Refunds
+	AdminLog     *repo.AdminLog
+	Stats        *repo.Stats
+	Promotions   *repo.Promotions
+	Notifier     *service.Notifier
+	emailTestMu  sync.Mutex
+	Updater      *update.Client // 系统在线更新（nil 时页面提示未启用）
 	// ListenSwitcher 热切换监听端口（后台站点设置调用；nil 时仅保存不切换）。
 	ListenSwitcher func(addr string) error
 	// DefaultListen config.yaml 的 listen；后台端口留空时回退到该值。
@@ -72,6 +72,7 @@ func (a *Admin) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /admin/email-templates/preview", a.adminEmailTemplatePreview)
 	mux.HandleFunc("POST /admin/email-templates/test", a.adminEmailTemplateTest)
 	mux.HandleFunc("GET /admin/sms-providers", a.adminSMSProviders)
+	mux.HandleFunc("GET /admin/verification-providers", a.adminVerificationProviders)
 	mux.HandleFunc("POST /admin/sms-templates/remote", a.adminSMSTemplateRemote)
 	mux.HandleFunc("GET /admin/sms-templates", a.adminSMSTemplates)
 	mux.HandleFunc("POST /admin/sms-templates/save", a.adminSMSTemplateSave)

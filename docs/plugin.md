@@ -219,3 +219,64 @@ func (p *Plugin) CronJobs() []plugin.CronJob {
 | `announcement` | 迁移建表、前后台 API、核心聚合点联动（启用态控制首页新闻区显隐） |
 | `tickets` | 复杂业务搬迁：前后台全套页面、cron 任务、通知模板触发、附件存储、自定义事件 |
 | `dailyreport` | 最薄插件：纯配置 + cron + 管理员通知，零建表零前端 |
+
+## 十二、接口类扩展：新增短信渠道
+
+短信渠道与上游供应商同属**接口类扩展**（非业务插件：不出现在插件管理页、无启停态），
+走 `internal/smsdk` 注册表自注册。新增一家短信商只需三步，核心零改动：
+
+1. 在 `internal/plugins/sms/` 新建 `sms_adapter_xxx.go`（package `sms`），实现
+   `smsdk.Provider` 接口（`SendSMS`，按需实现 `TemplateCreate/Query/Delete` 等）
+2. 同文件内联描述符并在 `init()` 注册（重复 key 会 panic，启动期暴露冲突）：
+
+```go
+var descriptorXxx = smsdk.ProviderDescriptor{
+	Key:          "xxx",
+	Name:         "某某短信",
+	ConfigFields: []string{"sms_access_key", "sms_secret_key"},
+	Capabilities: smsdk.ProviderCapabilities{ /* 范围/审核能力声明 */ },
+}
+
+func init() { smsdk.RegisterSMSProvider(descriptorXxx, newXxxAdapter) }
+```
+
+3. 完成。`internal/plugins/all/all.go` 已聚合本包，后台「短信服务商」下拉、
+   配置表单、可用性校验自动出现新渠道（均由注册表驱动，无需改 handler/前端）。
+
+常用工具（smsdk 包）：`DoRequest`（HTTP 传输层，含 nil client 兜底/禁重定向/1MB 限制）、
+`DecodeResponse`（JSON 解析保精度）、`Rejected`（供应商明确拒绝统一结果）、
+`CanonicalQuery/TC3Signature/MD5Hex` 等签名函数、`PhoneForRange`（国内/国际号码规范化）。
+
+参考实现：`sms_adapter_smsbao.go`（最简 GET 协议）、`sms_adapter_qcloudsms.go`（TC3 签名完整示例）。
+
+## 十三、接口类扩展：新增实名渠道
+
+实名渠道同属**接口类扩展**，走 `internal/vsdk` 注册表自注册。新增一家实名商同样三步，
+核心与前端零改动：
+
+1. 在 `internal/plugins/verify/` 新建 `verification_adapter_xxx.go`（package `verify`），实现
+   `vsdk.Provider` 接口（`Key/Start/Poll`）
+2. 同文件内联描述符并在 `init()` 注册。与短信不同：实名每家配置键完全不同，
+   描述符需带字段 label 与 Secret 标注（Secret 字段设置页不回传、保存时留空保留旧值）：
+
+```go
+var descriptorXxx = vsdk.Descriptor{
+	Key:  "xxx",
+	Name: "某某实名",
+	Fields: []vsdk.ConfigField{
+		{Key: "verification_xxx_api_key", Label: "API Key"},
+		{Key: "verification_xxx_secret_key", Label: "Secret Key", Secret: true},
+	},
+}
+
+func init() { vsdk.Register(descriptorXxx, newXxxAdapter) }
+```
+
+3. 完成。后台「实名认证」设置页的服务商下拉、字段表单、保存校验全部经
+   `GET /admin/verification-providers` + 注册表驱动自动生效。
+
+适配器宿主 `vsdk.Host` 提供：`Get`（读设置）、`Endpoint`（地址 https + host 白名单校验）、
+`RequestJSON/RequestForm`（HTTP 传输，nil client 兜底）；工具 `StatusFromMap`（各家状态归一化）、
+`ResponseOK`、`StringValue/FirstString`、`SHA256Hex/RandomHex`。
+
+参考实现：`verification_adapter_smapi.go`（最简）、`verification_adapter_leaf_face.go`（HMAC 签名完整示例）。

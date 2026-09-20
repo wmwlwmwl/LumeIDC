@@ -1,62 +1,44 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
+import { ElMessage } from 'element-plus'
+import { http, type ApiResult } from '../http/index'
 import { useAdminSettings } from '../admin/useSettings'
 
 const { loading, saving, cfg, load, save, flags } = useAdminSettings()
 
-// 自动实名供应商字段（按选择显隐）
-const idFields: Record<string, { key: string; label: string }[]> = {
-  baidu_face: [
-    { key: 'verification_baidu_api_key', label: '百度 API Key' },
-    { key: 'verification_baidu_plan_id', label: '百度方案 ID' },
-  ],
-  leaf_face: [
-    { key: 'verification_leaf_app_id', label: '叶子 App ID' },
-    { key: 'verification_leaf_api_base', label: '接口地址' },
-  ],
-  smapi: [
-    { key: 'verification_smapi_app_key', label: 'App Key' },
-    { key: 'verification_smapi_api_url', label: '接口地址' },
-    { key: 'verification_smapi_product_code', label: '产品编码' },
-  ],
-  stay33: [
-    { key: 'verification_stay33_api_key', label: 'API Key' },
-    { key: 'verification_stay33_api_url', label: '接口地址' },
-    { key: 'verification_stay33_biz_code', label: '业务编码' },
-  ],
-}
-const idSecrets: Record<string, { key: string; label: string }> = {
-  baidu_face: { key: 'verification_baidu_secret_key', label: '百度 Secret Key' },
-  leaf_face: { key: 'verification_leaf_app_secret', label: '叶子 App Secret' },
-  smapi: { key: 'verification_smapi_secret_key', label: 'Secret Key' },
-  stay33: { key: 'verification_stay33_secret_key', label: 'Secret Key' },
-}
+// 自动实名服务商由后端注册表驱动（GET /admin/verification-providers）：新增服务商零前端改动。
+interface VerificationField { key: string; label: string; secret?: boolean }
+interface VerificationProvider { key: string; name: string; fields: VerificationField[] }
+
+const providers = ref<VerificationProvider[]>([])
 const idProvider = computed(() => cfg['verification_provider'] || '')
+const providerFields = computed(() => providers.value.find(p => p.key === idProvider.value)?.fields || [])
+
+async function loadProviders() {
+  try {
+    const res = await http.get<ApiResult & { list: VerificationProvider[] }>('/verification-providers')
+    if (res.ok) providers.value = res.list || []
+  } catch {
+    // 列表失败仅影响切换服务商，既有配置仍可展示与保存
+  }
+}
 
 function saveManual() {
   save('manual_identity', flags(['manual_identity_enabled', 'manual_identity_requires_verified_phone']))
 }
 function saveAutomatic() {
-  save('automatic_identity', {
-    verification_provider: cfg['verification_provider'] || '',
-    verification_baidu_api_key: cfg['verification_baidu_api_key'] || '',
-    verification_baidu_plan_id: cfg['verification_baidu_plan_id'] || '',
-    verification_baidu_secret_key: cfg['verification_baidu_secret_key'] || '',
-    verification_leaf_app_id: cfg['verification_leaf_app_id'] || '',
-    verification_leaf_api_base: cfg['verification_leaf_api_base'] || '',
-    verification_leaf_app_secret: cfg['verification_leaf_app_secret'] || '',
-    verification_smapi_app_key: cfg['verification_smapi_app_key'] || '',
-    verification_smapi_api_url: cfg['verification_smapi_api_url'] || '',
-    verification_smapi_product_code: cfg['verification_smapi_product_code'] || '',
-    verification_smapi_secret_key: cfg['verification_smapi_secret_key'] || '',
-    verification_stay33_api_key: cfg['verification_stay33_api_key'] || '',
-    verification_stay33_api_url: cfg['verification_stay33_api_url'] || '',
-    verification_stay33_biz_code: cfg['verification_stay33_biz_code'] || '',
-    verification_stay33_secret_key: cfg['verification_stay33_secret_key'] || '',
-  })
+  // 已选服务商但字段清单未拉到时拒绝保存：避免空字段覆盖已存配置
+  if (idProvider.value && providerFields.value.length === 0) {
+    ElMessage.warning('服务商清单未加载完成，请稍后重试')
+    return
+  }
+  const body: Record<string, string> = { verification_provider: cfg['verification_provider'] || '' }
+  for (const f of providerFields.value) body[f.key] = cfg[f.key] || ''
+  save('automatic_identity', body)
 }
 
 load()
+loadProviders()
 </script>
 
 <template>
@@ -84,19 +66,14 @@ load()
       <div class="admin-form-grid">
         <el-form-item label="服务商">
           <el-select v-model="cfg['verification_provider']" clearable class="w-full">
-            <el-option label="百度人脸" value="baidu_face" />
-            <el-option label="叶子人脸" value="leaf_face" />
-            <el-option label="SMAPI" value="smapi" />
-            <el-option label="Stay33" value="stay33" />
+            <el-option v-for="p in providers" :key="p.key" :label="p.name" :value="p.key" />
           </el-select>
         </el-form-item>
       </div>
       <div v-if="idProvider" class="admin-form-grid">
-        <el-form-item v-for="f in idFields[idProvider] || []" :key="f.key" :label="f.label">
-          <el-input v-model="cfg[f.key]" />
-        </el-form-item>
-        <el-form-item v-if="idSecrets[idProvider]" :label="idSecrets[idProvider].label + '（留空保持不变）'">
-          <el-input v-model="cfg[idSecrets[idProvider].key]" type="password" show-password />
+        <el-form-item v-for="f in providerFields" :key="f.key" :label="f.secret ? f.label + '（留空保持不变）' : f.label">
+          <el-input v-if="f.secret" v-model="cfg[f.key]" type="password" show-password />
+          <el-input v-else v-model="cfg[f.key]" />
         </el-form-item>
       </div>
       <div class="admin-section__actions">
