@@ -407,10 +407,14 @@ func (lc *Lifecycle) Unsuspend(ctx context.Context, serviceID int64) error {
 	if s.Status != 2 {
 		return fmt.Errorf("服务当前状态不可解除停机")
 	}
-	return lc.transition(ctx, s, 2, 1, "=", "unsuspending", "上游解除停机失败",
+	err = lc.transition(ctx, s, 2, 1, "=", "unsuspending", "上游解除停机失败",
 		func(ctx context.Context, p server.Provider, cfg server.Config, host int64) error {
 			return p.Unsuspend(ctx, cfg, host)
 		})
+	if err == nil {
+		plugin.Emit(ctx, plugin.EventServiceUnsuspended, plugin.ServicePayload{ServiceID: s.ID, UserID: s.UserID, ProductID: s.ProductID})
+	}
+	return err
 }
 
 // Terminate 删除：本地终止 + 上游销毁。
@@ -1163,14 +1167,19 @@ func (lc *Lifecycle) rollbackUpgrade(ctx context.Context, userID int64, diffAmou
 		return
 	}
 	// admin_id=0 表示系统自动回滚。注意 note 文案被履约对账当作回滚标记用，不能改。
-	if _, err := tx.ExecContext(ctx,
+	var refundID int64
+	if err := tx.QueryRowContext(ctx,
 		`INSERT INTO refunds(user_id,order_id,invoice_id,amount,method,reason,admin_id,status)
-		 SELECT $1,$2,(SELECT id FROM invoices WHERE order_id=$2 LIMIT 1),$3,'balance',$4,0,'done'`,
-		userID, orderID, amountStr, note); err != nil {
+		 SELECT $1,$2,(SELECT id FROM invoices WHERE order_id=$2 LIMIT 1),$3,'balance',$4,0,'done'
+		 RETURNING id`,
+		userID, orderID, amountStr, note).Scan(&refundID); err != nil {
 		log.Printf("[lifecycle] 升级回滚退款记录写入失败（订单 %d）: %v", orderID, err)
 		return
 	}
 	if err := tx.Commit(); err != nil {
 		log.Printf("[lifecycle] 升级回滚提交失败（订单 %d）: %v", orderID, err)
+		return
 	}
+	amt, _ := strconv.ParseFloat(amountStr, 64)
+	plugin.Emit(ctx, plugin.EventRefundCreated, plugin.RefundPayload{RefundID: refundID, OrderID: orderID, UserID: userID, Amount: amt, Reason: note})
 }

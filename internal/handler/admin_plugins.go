@@ -7,6 +7,7 @@ import (
 
 	"lumeidc/internal/middleware"
 	"lumeidc/internal/plugin"
+	"lumeidc/internal/service"
 )
 
 // AdminPlugins 插件管理：清单 / 启停切换 / 后台首页挂件收集。
@@ -22,14 +23,19 @@ type pluginListItem struct {
 	HasConfig    bool   `json:"hasConfig"`
 	MenuTitle    string `json:"menuTitle,omitempty"`
 	MenuIcon     string `json:"menuIcon,omitempty"`
+	MenuParent   string `json:"menuParent,omitempty"`
 }
 
 func (h *AdminPlugins) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /admin/plugins", h.List)
 	mux.HandleFunc("POST /admin/plugins/{name}/toggle", h.Toggle)
 	mux.HandleFunc("GET /admin/widgets", h.Widgets)
+	// 邮件出站渠道清单（内置 smtp + 插件注册的 MailSender）。
+	mux.HandleFunc("GET /admin/mail-senders", h.MailSenders)
 	// 前台用户侧：启用且有前台页的插件菜单（登录用户可见）。
 	mux.HandleFunc("GET /plugins/client", h.ClientList)
+	// 前台内容注入（公开：统计代码等在登录页也需生效）。
+	mux.HandleFunc("GET /plugins/injections", h.Injections)
 }
 
 // List 全量插件清单（含禁用——管理页需要看到全部；菜单合并由前端按 enabled 过滤）。
@@ -53,6 +59,7 @@ func (h *AdminPlugins) List(w http.ResponseWriter, r *http.Request) {
 			item.HasAdminPage = true
 			item.MenuTitle = m.Title
 			item.MenuIcon = m.Icon
+			item.MenuParent = m.Parent
 		}
 		list = append(list, item)
 	}
@@ -115,6 +122,48 @@ func (h *AdminPlugins) Widgets(w http.ResponseWriter, r *http.Request) {
 		out = append(out, map[string]any{"plugin": name, "title": data.Title, "icon": data.Icon, "rows": data.Rows})
 	}
 	writeJSON(w, map[string]any{"ok": 1, "widgets": out})
+}
+
+// MailSenders 邮件出站渠道清单（内置 SMTP + 插件注册渠道；后台邮件设置页下拉）。
+func (h *AdminPlugins) MailSenders(w http.ResponseWriter, r *http.Request) {
+	if !adminRequire(w, r) {
+		return
+	}
+	out := []map[string]string{{"name": "smtp", "label": "内置 SMTP（多账号轮换）"}}
+	for _, s := range service.MailSenders() {
+		out = append(out, map[string]string{"name": s.Name(), "label": s.Label()})
+	}
+	writeJSON(w, map[string]any{"ok": 1, "senders": out})
+}
+
+// Injections 前台内容注入片段汇总（公开端点）：收集启用插件的 ClientInjection。
+// 单个插件 panic 隔离跳过；内容为站点主自装插件代码，不过滤（见 capability 注释）。
+func (h *AdminPlugins) Injections(w http.ResponseWriter, r *http.Request) {
+	out := []plugin.ClientInjection{}
+	for _, p := range plugin.All() {
+		name := p.Info().Name
+		if !plugin.Enabled(name) {
+			continue
+		}
+		cp, ok := p.(plugin.ClientInjectionProvider)
+		if !ok {
+			continue
+		}
+		func() {
+			defer func() {
+				if rec := recover(); rec != nil {
+					log.Printf("[plugin] 插件 %s 注入片段取数崩溃: %v", name, rec)
+				}
+			}()
+			for _, inj := range cp.ClientInjections() {
+				if inj.HTML == "" || (inj.Position != "head" && inj.Position != "body_bottom") {
+					continue
+				}
+				out = append(out, inj)
+			}
+		}()
+	}
+	writeJSON(w, map[string]any{"ok": 1, "injections": out})
 }
 
 // ClientList 前台插件菜单：启用且声明了前台页的插件（登录用户）。

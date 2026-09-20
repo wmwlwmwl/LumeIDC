@@ -5,8 +5,20 @@ import { fetchSMSProviders, type SMSProviderDescriptor, type SMSRange } from '..
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAdminSettings } from '../admin/useSettings'
 import { testAdminEmail } from '../admin/api'
+import { http } from '../http/index'
+
+// 邮件出站渠道清单（内置 smtp + 插件注册渠道）
+async function fetchMailSenders(): Promise<{ name: string; label: string }[]> {
+  const res = await http.get<{ ok: number; senders?: { name: string; label: string }[] }>('/mail-senders')
+  return res.senders || []
+}
 
 const { loading, saving, cfg, load, save } = useAdminSettings()
+
+// ---- 邮件出站渠道（smtp 内置；插件渠道经 MailSender 注册，密钥在各插件配置页）----
+const mailChannel = ref('smtp')
+const mailSenders = ref<{ name: string; label: string }[]>([])
+watch(() => cfg['mail_channel'], (v) => { mailChannel.value = v || 'smtp' }, { immediate: true })
 
 // ---- 邮件账号（多账号，密码留空保持旧值）----
 interface MailAccount {
@@ -61,6 +73,7 @@ async function saveMail() {
     {
       smtp_accounts: JSON.stringify(clean),
       smtp_cooldown_seconds: String(cooldownSeconds.value || 60),
+      mail_channel: mailChannel.value || 'smtp',
     },
     'mail',
   )) {
@@ -132,7 +145,7 @@ const smsRanges: { key: SMSRange; label: string }[] = [{ key: 'cn', label: '国�
 const smsRoutes = ref<Record<SMSRange, SMSRouteDraft>>({ cn: {}, global: {}, marketing: {} })
 const smsBaseline = ref('')
 const mailBaseline = ref('')
-const mailSnapshot = () => JSON.stringify({ accounts: accounts.value, cooldown: cooldownSeconds.value })
+const mailSnapshot = () => JSON.stringify({ accounts: accounts.value, cooldown: cooldownSeconds.value, channel: mailChannel.value })
 const routesBody = () => Object.fromEntries(smsRanges.filter(({ key }) => smsRoutes.value[key].provider).map(({ key }) => [key, { ...smsRoutes.value[key] }]))
 const smsBody = () => ({ sms_routes: JSON.stringify(routesBody()) })
 const dirty = computed(() => ready.value && (JSON.stringify(smsBody()) !== smsBaseline.value || mailSnapshot() !== mailBaseline.value || adminSnapshot() !== adminBaseline.value))
@@ -171,6 +184,8 @@ async function initialize() {
     if (!ok) throw new Error('读取设置失败')
     providers.value = descriptors
     parseRoutes()
+    // 邮件渠道清单失败不阻塞页面（无插件渠道时仅显示内置 SMTP）
+    fetchMailSenders().then((list) => { mailSenders.value = list }).catch(() => {})
     await nextTick()
     smsBaseline.value = JSON.stringify(smsBody())
     mailBaseline.value = mailSnapshot()
@@ -214,6 +229,18 @@ void initialize()
         <router-link class="template-link" :to="{ name: 'admin-email-templates' }">管理邮件模板</router-link>
       </header>
       <el-form :disabled="!ready || !!saving" label-position="top">
+
+      <div class="mail-channel">
+        <el-form-item label="出站渠道">
+          <el-select v-model="mailChannel" style="max-width: 420px; width: 100%">
+            <el-option label="内置 SMTP（多账号轮换）" value="smtp" />
+            <el-option v-for="s in mailSenders.filter((x) => x.name !== 'smtp')" :key="s.name" :label="s.label" :value="s.name" />
+          </el-select>
+        </el-form-item>
+        <p v-if="mailChannel !== 'smtp'" class="field-help">
+          当前使用插件渠道「{{ mailSenders.find((x) => x.name === mailChannel)?.label || mailChannel }}」，其密钥在对应插件的配置页维护；SMTP 账号仅作渠道移除时的回退。
+        </p>
+      </div>
 
       <div v-for="(a, i) in accounts" :key="a._key" class="account-card">
         <div class="account-heading">

@@ -52,13 +52,25 @@ type ClientPageProvider interface {
 	ClientPage() MenuItem
 }
 
+// 后台菜单业务分组标识（AdminMenu().Parent 取值；空 = 收拢进「插件」分组）。
+// 对齐魔方 v10：插件菜单可挂进对应业务分类，而非全部堆在插件分组。
+const (
+	MenuGroupOps      = "ops"      // 运营概览
+	MenuGroupBusiness = "business" // 业务管理
+	MenuGroupUsers    = "users"    // 用户与内容
+	MenuGroupSettings = "settings" // 设置
+	MenuGroupSystem   = "system"   // 系统设置
+)
+
 // MenuItem 菜单项。Icon 为 remixicon 标识，如 "ri:puzzle-line"。
 // To 为自定义跳转路径（前台菜单用；空 = 默认 /plugin/{name} 槽位页）。
+// Parent 为后台菜单归属（MenuGroupXxx 常量；空/未知 = 「插件」分组）。
 // 后台插件页固定走 /plugin/{name} 槽位，不读 To。
 type MenuItem struct {
-	Title string
-	Icon  string
-	To    string
+	Title  string
+	Icon   string
+	To     string
+	Parent string
 }
 
 // ---- 配置 schema 自动渲染 ----
@@ -123,4 +135,20 @@ type WidgetData struct {
 // 实现应 best-effort：取数失败返回 error 即可，该挂件跳过不显示。
 type AdminWidgetProvider interface {
 	AdminWidget(ctx context.Context) (*WidgetData, error)
+}
+
+// ---- 前台内容注入 ----
+
+// ClientInjection 前台注入片段（对应魔方 template 输出钩子：统计代码、客服悬浮窗等）。
+// Position: "head"（注入 document.head）| "body_bottom"（页面尾部渲染）。
+// 安全约定：内容为站点主自装插件代码，信任级等同核心模板——不过滤、不转义。
+type ClientInjection struct {
+	Position string `json:"position"`
+	HTML     string `json:"html"`
+}
+
+// ClientInjectionProvider 可选能力：向前台页面注入内容片段。
+// 经 GET /plugins/injections 公开输出（登录页也需生效）；插件禁用时自动停止注入。
+type ClientInjectionProvider interface {
+	ClientInjections() []ClientInjection
 }

@@ -18,6 +18,7 @@ import (
 	"unicode"
 
 	"lumeidc/internal/crypto"
+	"lumeidc/internal/plugin"
 	"lumeidc/internal/repo"
 	"lumeidc/internal/storage"
 )
@@ -274,6 +275,7 @@ func (s *Identity) SubmitForm(ctx context.Context, userID int64, form RealNameFo
 		s.Notifier.NotifyTemplate(ctx, userID, "identity_submitted", "实名申请已提交", "你的实名资料已提交，等待管理员人工审核。")
 	}
 	s.notifyAdminManualSubmitted(ctx, userID, submissionID)
+	plugin.Emit(ctx, plugin.EventIdentitySubmitted, plugin.UserPayload{UserID: userID})
 	return nil
 }
 
@@ -442,6 +444,9 @@ func (s *Identity) Review(ctx context.Context, id, adminID int64, approve bool, 
 		} else {
 			s.Notifier.NotifyTemplate(ctx, v.UserID, "identity_rejected", "实名审核未通过", "你的实名资料未通过人工审核，请登录账户查看原因并重新提交。")
 		}
+	}
+	if err == nil {
+		plugin.Emit(ctx, plugin.EventIdentityReviewed, plugin.IdentityReviewedPayload{UserID: v.UserID, Approved: approve})
 	}
 	return nil
 }

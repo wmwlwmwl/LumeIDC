@@ -509,6 +509,16 @@ func (n *Notifier) SendMail(ctx context.Context, to, subject, body string) error
 }
 
 func (n *Notifier) sendMailFormat(ctx context.Context, to, subject, body, format string) error {
+	// 邮件渠道分发：settings.mail_channel 选择出站渠道（空/smtp = 内置 SMTP 多账号）。
+	// 插件渠道失败原样返回错误，由 mail_outbox 退避重试；渠道插件被移除时回退 SMTP 兜底。
+	if n != nil && n.Settings != nil {
+		if channel, err := n.Settings.Get(ctx, "mail_channel"); err == nil && channel != "" && channel != "smtp" {
+			if s, ok := mailSenderFor(channel); ok {
+				return s.Send(ctx, to, subject, body, format)
+			}
+			log.Printf("邮件渠道 %s 未注册（插件可能已移除），回退 SMTP", channel)
+		}
+	}
 	ctx, done, err := n.beginMail(ctx, mailSendTimeout)
 	if err != nil {
 		return err

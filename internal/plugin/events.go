@@ -161,32 +161,67 @@ func EventCatalog() []EventMeta {
 // 核心事件常量；新增事件在此登记常量并 RegisterEvent 中文标签。埋点位置见各 service/handler。
 const (
 	EventOrderPaid         = "order.paid"          // payload: OrderPaidPayload
+	EventOrderCreated      = "order.created"       // payload: OrderCreatedPayload
 	EventServiceCreated    = "service.created"     // payload: ServicePayload
 	EventServiceSuspended  = "service.suspended"   // payload: ServicePayload
 	EventServiceTerminated = "service.terminated"  // payload: ServicePayload
 	EventServiceRenewed    = "service.renewed"     // payload: ServicePayload
+	EventServiceUnsuspended = "service.unsuspended" // payload: ServicePayload
 	EventUserRegistered    = "user.registered"     // payload: UserPayload
 	EventUserLogin         = "user.login"          // payload: UserPayload
 	EventInvoiceExpired    = "invoice.expired"     // payload: InvoiceExpiredPayload
+	EventRefundCreated     = "refund.created"      // payload: RefundPayload
+	EventIdentitySubmitted = "identity.submitted"  // payload: UserPayload
+	EventIdentityReviewed  = "identity.reviewed"   // payload: IdentityReviewedPayload
 )
 
 func init() {
 	RegisterEvent(EventOrderPaid, "订单支付成功")
+	RegisterEvent(EventOrderCreated, "订单创建")
 	RegisterEvent(EventServiceCreated, "服务开通交付")
 	RegisterEvent(EventServiceSuspended, "服务停用")
 	RegisterEvent(EventServiceTerminated, "服务删除")
 	RegisterEvent(EventServiceRenewed, "服务续费成功")
+	RegisterEvent(EventServiceUnsuspended, "服务解除停用")
 	RegisterEvent(EventUserRegistered, "用户注册成功")
 	RegisterEvent(EventUserLogin, "用户登录")
 	RegisterEvent(EventInvoiceExpired, "账单过期关闭")
+	RegisterEvent(EventRefundCreated, "退款单创建")
+	RegisterEvent(EventIdentitySubmitted, "实名认证提交")
+	RegisterEvent(EventIdentityReviewed, "实名认证审核")
 }
 
 // OrderPaidPayload 订单/账单支付成功。
 type OrderPaidPayload struct {
 	OrderID   int64   `json:"orderId"`
 	InvoiceID int64   `json:"invoiceId"`
+	InvoiceNo string  `json:"invoiceNo"`
 	UserID    int64   `json:"userId"`
 	Amount    float64 `json:"amount"`
+}
+
+// OrderCreatedPayload 订单创建（Kind: new 新购 / renew 续费 / upgrade 升降级）。
+type OrderCreatedPayload struct {
+	OrderID   int64   `json:"orderId"`
+	UserID    int64   `json:"userId"`
+	ProductID int64   `json:"productId"`
+	Amount    float64 `json:"amount"`
+	Kind      string  `json:"kind"`
+}
+
+// RefundPayload 退款单创建。
+type RefundPayload struct {
+	RefundID int64   `json:"refundId"`
+	OrderID  int64   `json:"orderId"`
+	UserID   int64   `json:"userId"`
+	Amount   float64 `json:"amount"`
+	Reason   string  `json:"reason"`
+}
+
+// IdentityReviewedPayload 实名认证审核。
+type IdentityReviewedPayload struct {
+	UserID   int64 `json:"userId"`
+	Approved bool  `json:"approved"`
 }
 
 // ServicePayload 服务实例生命周期事件（开通交付/停用/删除/续费）。

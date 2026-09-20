@@ -13,10 +13,12 @@ type SettingsStore interface {
 	Set(ctx context.Context, key, value string) error
 }
 
-// NotifySender 站内通知/邮件发送（窄接口，与 service.Notifier.NotifyTemplate 签名一致，
+// NotifySender 站内通知/邮件发送（窄接口，与 service.Notifier 对应方法签名一致，
 // 组合根直接注入）。
 type NotifySender interface {
 	NotifyTemplate(ctx context.Context, userID int64, code, title, body string, values ...map[string]string) error
+	// NotifyAdminOnce 按 alertKey 去重的管理员告警（同日同 key 只发一次，适合日报/告警）。
+	NotifyAdminOnce(ctx context.Context, alertKey, category, subject, body string) error
 }
 
 // Host 宿主注入给插件的能力。组合根在 Init 循环中经 forPlugin 派生

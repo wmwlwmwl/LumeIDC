@@ -257,7 +257,7 @@ func (p *Payment) MarkPaidByBalance(ctx context.Context, invoiceNo string, userI
 		return err
 	}
 	amt, _ := strconv.ParseFloat(amountStr, 64)
-	plugin.Emit(ctx, plugin.EventOrderPaid, plugin.OrderPaidPayload{OrderID: orderID, InvoiceID: invID, UserID: userID, Amount: amt})
+	plugin.Emit(ctx, plugin.EventOrderPaid, plugin.OrderPaidPayload{OrderID: orderID, InvoiceID: invID, InvoiceNo: invoiceNo, UserID: userID, Amount: amt})
 	if p.TriggerFulfillment != nil {
 		p.TriggerFulfillment()
 	}
@@ -673,7 +673,7 @@ func (p *Payment) MarkPaid(ctx context.Context, invoiceNo, tradeNo, gatewayCode 
 	if err := tx.Commit(); err != nil {
 		return err
 	}
-	plugin.Emit(ctx, plugin.EventOrderPaid, plugin.OrderPaidPayload{OrderID: orderID, InvoiceID: invID, UserID: userID, Amount: paidAmountFloat})
+	plugin.Emit(ctx, plugin.EventOrderPaid, plugin.OrderPaidPayload{OrderID: orderID, InvoiceID: invID, InvoiceNo: invoiceNo, UserID: userID, Amount: paidAmountFloat})
 	if p.TriggerFulfillment != nil {
 		p.TriggerFulfillment()
 	}
@@ -1296,11 +1296,18 @@ func (p *Payment) Refund(ctx context.Context, adminID, orderID int64, amount, re
 			return err
 		}
 	}
-	if _, err := tx.ExecContext(ctx,
+	var refundID int64
+	if err := tx.QueryRowContext(ctx,
 		`INSERT INTO refunds(user_id,order_id,invoice_id,amount,method,reason,admin_id,status)
-		 SELECT $1,$2,(SELECT id FROM invoices WHERE order_id=$2 LIMIT 1),$3,$4,$5,$6,'done'`,
-		userID, orderID, amount, method, reason, adminID); err != nil {
+		 SELECT $1,$2,(SELECT id FROM invoices WHERE order_id=$2 LIMIT 1),$3,$4,$5,$6,'done'
+		 RETURNING id`,
+		userID, orderID, amount, method, reason, adminID).Scan(&refundID); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	amt, _ := strconv.ParseFloat(amount, 64)
+	plugin.Emit(ctx, plugin.EventRefundCreated, plugin.RefundPayload{RefundID: refundID, OrderID: orderID, UserID: userID, Amount: amt, Reason: reason})
+	return nil
 }

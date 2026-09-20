@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"lumeidc/internal/money"
+	"lumeidc/internal/plugin"
 	"lumeidc/internal/repo"
 )
 
@@ -284,7 +285,16 @@ func (o *Orders) CreateOrder(ctx context.Context, userID, productID, pricesetID 
 			log.Printf("订单提交通知入队失败，订单编号=%d: %v", orderID, err)
 		}
 	}
+	emitOrderCreated(ctx, orderID, userID, productID, finalAmount, "new")
 	return orderID, invoiceID, finalAmount, nil
+}
+
+// emitOrderCreated 订单创建事件（事务提交后调用；金额字符串转数值，解析失败按 0）。
+func emitOrderCreated(ctx context.Context, orderID, userID, productID int64, amountStr, kind string) {
+	amt, _ := strconv.ParseFloat(amountStr, 64)
+	plugin.Emit(ctx, plugin.EventOrderCreated, plugin.OrderCreatedPayload{
+		OrderID: orderID, UserID: userID, ProductID: productID, Amount: amt, Kind: kind,
+	})
 }
 
 // couponUnavailable 判定优惠码校验失败是否属于「券本身不可用」这一类业务结论
@@ -574,6 +584,7 @@ func (o *Orders) CreateRenewOrder(ctx context.Context, userID, serviceID int64, 
 	if err := tx.Commit(); err != nil {
 		return 0, 0, "", err
 	}
+	emitOrderCreated(ctx, orderID, userID, productID, amountRaw, "renew")
 	return orderID, invoiceID, amountRaw, nil
 }
 
@@ -824,5 +835,6 @@ func (o *Orders) CreateUpgradeOrder(ctx context.Context, userID, serviceID, targ
 	if err := tx.Commit(); err != nil {
 		return 0, 0, "", 0, err
 	}
+	emitOrderCreated(ctx, orderID, userID, targetProductID, orderAmount, "upgrade")
 	return orderID, invoiceID, orderAmount, diff, nil
 }
