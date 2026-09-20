@@ -142,26 +142,54 @@ export interface PluginMenuInfo {
   hasAdminPage?: boolean
   menuTitle?: string
   menuIcon?: string
+  menuParent?: string
+}
+
+/** 插件菜单分组映射：后端 MenuItem.Parent 语义标识 → 侧栏分组 name（对齐魔方 v10 的插件菜单挂业务分类）。 */
+const pluginMenuGroups: Record<string, string> = {
+  ops: 'group-ops',
+  business: 'group-business',
+  users: 'group-users',
+  settings: 'group-settings',
+  system: 'group-system',
 }
 
 /**
- * 把有后台页的启用插件追加为「插件」菜单分组；无插件时原样返回核心菜单。
- * 插件页面路由统一为 /plugin/{name}（PluginShell 动态渲染）。
+ * 合并插件菜单：声明了业务分组的插件挂进对应分组末尾，未声明/未知归组的收拢进「插件」分组。
+ * 插件页面路由统一为 /plugin/{name}（PluginShell 动态渲染）。不污染传入的 base（返回新数组/新分组对象）。
  */
 export function mergePluginMenus(base: AppRouteRecord[], plugins: PluginMenuInfo[]): AppRouteRecord[] {
-  const items = plugins
-    .filter((p) => p.hasAdminPage && p.enabled !== false)
-    .map((p) =>
-      leaf(`/plugin/${p.name}`, `admin-plugin-${p.name}`, p.menuTitle || p.title || p.name, p.menuIcon || 'ri:puzzle-line'),
-    )
-  if (items.length === 0) return base
-  return [
-    ...base,
-    {
+  const active = plugins.filter((p) => p.hasAdminPage && p.enabled !== false)
+  if (active.length === 0) return base
+
+  const makeLeaf = (p: PluginMenuInfo) =>
+    leaf(`/plugin/${p.name}`, `admin-plugin-${p.name}`, p.menuTitle || p.title || p.name, p.menuIcon || 'ri:puzzle-line')
+
+  // 按归属拆分：业务组 vs 插件组兜底
+  const byGroup = new Map<string, AppRouteRecord[]>()
+  const fallback: AppRouteRecord[] = []
+  for (const p of active) {
+    const groupName = p.menuParent ? pluginMenuGroups[p.menuParent] : undefined
+    if (groupName) {
+      byGroup.set(groupName, [...(byGroup.get(groupName) || []), makeLeaf(p)])
+    } else {
+      fallback.push(makeLeaf(p))
+    }
+  }
+
+  // 拷贝 base：命中归属的分组替换为追加了插件项的新对象
+  const merged = base.map((group) => {
+    const items = typeof group.name === 'string' ? byGroup.get(group.name) : undefined
+    if (!items || !group.children) return group
+    return { ...group, children: [...group.children, ...items] }
+  })
+  if (fallback.length > 0) {
+    merged.push({
       path: '/group-plugins',
       name: 'group-plugins',
       meta: { title: '插件', icon: 'ri:puzzle-line' },
-      children: items,
-    },
-  ]
+      children: fallback,
+    })
+  }
+  return merged
 }

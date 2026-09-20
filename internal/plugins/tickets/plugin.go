@@ -62,7 +62,7 @@ var migrationsFS embed.FS
 func (p *Plugin) Migrations() fs.FS { return migrationsFS }
 
 func (p *Plugin) AdminMenu() plugin.MenuItem {
-	return plugin.MenuItem{Title: "工单管理", Icon: "ri:customer-service-2-line"}
+	return plugin.MenuItem{Title: "工单管理", Icon: "ri:customer-service-2-line", Parent: plugin.MenuGroupUsers}
 }
 
 // ClientPage 前台用户中心菜单；工单页路径保留 /tickets（存量路径不变）。

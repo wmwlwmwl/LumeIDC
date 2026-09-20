@@ -23,10 +23,9 @@ import (
 	"lumeidc/internal/handler"
 	"lumeidc/internal/middleware"
 	"lumeidc/internal/plugin"
-	_ "lumeidc/internal/plugins/all" // 业务插件聚合（init 自注册到 plugin 注册表）
+	_ "lumeidc/internal/plugins/all" // 扩展聚合：业务插件 + 内置供应商（init 自注册）
 	"lumeidc/internal/repo"
 	"lumeidc/internal/server"
-	_ "lumeidc/internal/server/all" // 内置供应商聚合（init 自注册到 server.DefaultRegistry）
 	"lumeidc/internal/service"
 	"lumeidc/internal/storage"
 	"lumeidc/internal/update"

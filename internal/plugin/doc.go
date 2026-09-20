@@ -1,5 +1,7 @@
 // Package plugin 是 LumeIDC 的编译期插件框架。
 //
+// 完整的插件开发指南见 docs/plugin.md（配置/事件/路由/页面/cron/启停语义）。
+//
 // # 定位
 //
 // 新功能收敛为独立目录，核心代码零改动；插件与核心同仓库、同构建，
@@ -33,13 +35,19 @@
 //	web/src/plugins/{name}/Admin.vue           可选后台页（adminRegistry 加一行映射）
 //	web/src/plugins/registry.ts                前端聚合（admin/client 双注册表）
 //
+// plugins/ 目录同时驻留接口类供应商实现（zjmf、easypanel）：它们不是业务插件
+// （不调 plugin.Register、不出现在插件管理页），仅在 init() 中 server.Register
+// 自注册到供应商注册表。判别方式：看 init 注册到哪个注册表。
+//
 // # 可选能力（类型断言探测，与 gateway.OrderQuerier 同风格）
 //
 //	Migrator               启动时执行插件迁移（先于 Init，前缀 plugin/{name}/）
 //	AdminRouteRegistrar    管理 API：子 mux 相对路径，挂 /admin/plugin/{name}/ 前缀
 //	ClientRouteRegistrar   用户侧 API：挂 /plugin/{name}/ 前缀
 //	ConfigSchemaProvider   声明配置项 → 框架自动提供 config API 与后台配置表单页
-//	AdminMenuProvider      后台侧栏菜单项（/admin#/plugin/{name} 槽位）
+//	AdminMenuProvider      后台侧栏菜单项（/admin#/plugin/{name} 槽位；
+//	                       MenuItem.Parent 选业务分组——MenuGroupOps/Business/Users/
+//	                       Settings/System，空则收拢进「插件」分组）
 //	ClientPageProvider     前台用户中心菜单项（MenuItem.To 可自定义存量路径）
 //	AdminWidgetProvider    后台首页挂件（JSON 卡片，前端统一渲染）
 //	CronContributor        定时任务（与核心任务同待遇：失败管理员告警）

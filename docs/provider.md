@@ -1,11 +1,11 @@
 # LumeIDC 上游供应商接入指南
 
 LumeIDC 通过 `server.Provider` 接口对接上游（参照 FOSSBilling 模块化思想，Go 编译期注册）。
-现有实现：`internal/server/zjmf`（智简魔方财务）、`internal/server/easypanel`（kangle+EasyPanel）。
+现有实现：`internal/plugins/zjmf`（智简魔方财务）、`internal/plugins/easypanel`（kangle+EasyPanel）。
 
 ## 快速接入新上游
 
-1. 新建包 `internal/server/<code>/`，实现 `server.Provider` 必选接口：
+1. 新建包 `internal/plugins/<code>/`，实现 `server.Provider` 必选接口：
 
 ```go
 type Provider interface {
@@ -20,7 +20,8 @@ type Provider interface {
 }
 ```
 
-2. 在 `internal/httpserver/server.go` 注册：`providers.Register(yourpkg.Provider{})`。
+2. 包内 `init()` 自注册：`server.Register(Provider{})`（注册到 `server.DefaultRegistry`）；
+   并在 `internal/plugins/all/all.go` 加一行 blank import。组合根无需改动。
 
 3. 凭据：统一用 `server.Config{APIURL, APIUsername, APIKey}`（对应 servers 表三件套，
    用不到的字段留空即可，如 EasyPanel 只用 APIURL+APIKey=面板安全码）。

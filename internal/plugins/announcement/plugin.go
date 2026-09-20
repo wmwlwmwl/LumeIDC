@@ -42,7 +42,7 @@ var migrationsFS embed.FS
 func (p *Plugin) Migrations() fs.FS { return migrationsFS }
 
 func (p *Plugin) AdminMenu() plugin.MenuItem {
-	return plugin.MenuItem{Title: "系统公告", Icon: "ri:notification-3-line"}
+	return plugin.MenuItem{Title: "系统公告", Icon: "ri:notification-3-line", Parent: plugin.MenuGroupUsers}
 }
 
 // 公告前台页是公开页 /notices（非用户中心页），故不实现 ClientPageProvider；

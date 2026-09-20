@@ -3,9 +3,9 @@ package server_test
 import (
 	"testing"
 
+	"lumeidc/internal/plugins/easypanel"
+	"lumeidc/internal/plugins/zjmf"
 	"lumeidc/internal/server"
-	"lumeidc/internal/server/easypanel"
-	"lumeidc/internal/server/zjmf"
 )
 
 // 自检：ProductFormHintsSets 合并能力接口（MarkupFree 自动填充）与声明接口；
