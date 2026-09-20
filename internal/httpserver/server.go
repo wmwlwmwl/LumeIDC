@@ -365,11 +365,19 @@ func Build(cfg *config.Config, version string) (*App, error) {
 		}
 		if adminSub != nil {
 			prefix := "/admin/plugin/" + name
-			mux.Handle(prefix+"/", plugin.Gate(name, http.StripPrefix(prefix, adminSub)))
+			// 必须带方法注册：无方法的全路子树与 SPA 兜底 "GET /{path...}"
+			// 构成"路径宽方法窄 vs 路径窄方法宽"的重叠，ServeMux 会 panic。
+			gated := plugin.Gate(name, http.StripPrefix(prefix, adminSub))
+			for _, method := range []string{http.MethodGet, http.MethodPost} {
+				mux.Handle(method+" "+prefix+"/", gated)
+			}
 		}
 		if clientSub != nil {
 			prefix := "/plugin/" + name
-			mux.Handle(prefix+"/", plugin.Gate(name, http.StripPrefix(prefix, clientSub)))
+			gated := plugin.Gate(name, http.StripPrefix(prefix, clientSub))
+			for _, method := range []string{http.MethodGet, http.MethodPost} {
+				mux.Handle(method+" "+prefix+"/", gated)
+			}
 		}
 	}
 	(&handler.AdminPlugins{}).Register(mux)
