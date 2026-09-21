@@ -534,11 +534,10 @@ func (h *Pages) homePromotions(ctx context.Context) []map[string]any {
 	if err != nil || len(all) == 0 {
 		return []map[string]any{}
 	}
-	now := time.Now()
 	ongoing := make([]repo.Promotion, 0, 4)
 	upcoming := make([]repo.Promotion, 0, 4)
 	for _, p := range all {
-		if !p.Enabled || now.After(p.EndsAt) {
+		if !p.Enabled || p.Status() == "ended" {
 			continue
 		}
 		switch p.Status() {

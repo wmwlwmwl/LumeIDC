@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"lumeidc/internal/repo"
+	"lumeidc/internal/service"
 )
 
 // adminPromotions GET /admin/promotions — 活动列表。
@@ -27,7 +28,7 @@ func (a *Admin) adminPromotions(w http.ResponseWriter, r *http.Request) {
 			"id": p.ID, "name": p.Name, "type": p.Type,
 			"starts_at": p.StartsAt.Format("2006-01-02 15:04"),
 			"ends_at":   p.EndsAt.Format("2006-01-02 15:04"),
-			"enabled": p.Enabled, "limit_per_user": p.LimitPerUser,
+			"enabled":   p.Enabled, "limit_per_user": p.LimitPerUser,
 			"status": p.Status(),
 		})
 	}
@@ -70,7 +71,7 @@ func (a *Admin) adminPromotionDetail(w http.ResponseWriter, r *http.Request) {
 			"banner": p.Banner, "notice": p.Notice, "rules_text": p.RulesText,
 			"starts_at": p.StartsAt.Format("2006-01-02T15:04"),
 			"ends_at":   p.EndsAt.Format("2006-01-02T15:04"),
-			"enabled": p.Enabled, "limit_per_user": p.LimitPerUser,
+			"enabled":   p.Enabled, "limit_per_user": p.LimitPerUser,
 		},
 		"products": pl,
 	})
@@ -119,6 +120,10 @@ func (a *Admin) adminPromotionSave(w http.ResponseWriter, r *http.Request) {
 		jsonStatus(w, r, 400, "活动名称不能为空")
 		return
 	}
+	if err := service.ValidatePromotionType(p.Type); err != nil {
+		jsonStatus(w, r, 400, err.Error())
+		return
+	}
 	// 商品绑定
 	var products []repo.PromotionProduct
 	if raw := fv("products"); raw != "" {
@@ -155,14 +160,14 @@ func (a *Admin) adminPromotionSave(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback()
 	if idStr == "" {
-		newID, err := a.Promotions.Create(r.Context(), &p)
+		newID, err := a.Promotions.CreateTx(r.Context(), tx, &p)
 		if err != nil {
 			jsonStatus(w, r, 500, "创建失败: "+err.Error())
 			return
 		}
 		p.ID = newID
 	} else {
-		if err := a.Promotions.Update(r.Context(), &p); err != nil {
+		if err := a.Promotions.UpdateTx(r.Context(), tx, &p); err != nil {
 			jsonStatus(w, r, 500, "更新失败: "+err.Error())
 			return
 		}

@@ -47,41 +47,38 @@ type ActivePromotion struct {
 
 // Status 活动状态：upcoming / ongoing / ended。
 func (p *Promotion) Status() string {
-	now := time.Now()
+	return p.statusAt(time.Now())
+}
+
+func (p *Promotion) statusAt(now time.Time) string {
 	if now.Before(p.StartsAt) {
 		return "upcoming"
 	}
-	if now.After(p.EndsAt) {
+	if !now.Before(p.EndsAt) {
 		return "ended"
 	}
 	return "ongoing"
 }
 
-// ActivePromotionFor 查询商品当前生效的活动（按优先级取一个）。
-// pricesetID / cycle 为 NULL 表示不限制；返回 nil 表示无活动。
-func (p *Promotions) ActivePromotionFor(ctx context.Context, productID, pricesetID int64, cycle string) (*ActivePromotion, error) {
-	rows, err := p.db.QueryContext(ctx,
-		`SELECT pr.id, pr.name, pr.type, pr.starts_at, pr.ends_at, pr.enabled, pr.limit_per_user,
+// activePromotionColumns 活动命中查询的公共列（活动主表 + 绑定 + 规则）。
+const activePromotionColumns = `SELECT pr.id, pr.name, pr.type, pr.starts_at, pr.ends_at, pr.enabled, pr.limit_per_user,
 		        pp.id, pp.product_id, pp.priceset_id, pp.cycle, pp.rules
 		   FROM promotion_products pp
 		   JOIN promotions pr ON pr.id=pp.promotion_id
-		  WHERE pp.product_id=$1
-		    AND pr.enabled=true
-		    AND now() BETWEEN pr.starts_at AND pr.ends_at
-		    AND (pp.priceset_id IS NULL OR pp.priceset_id=$2)
-		    AND (pp.cycle IS NULL OR pp.cycle=$3)
-		  ORDER BY CASE pr.type
+		  WHERE `
+
+// activePromotionOrder 活动解析优先级：折扣 > 抢购 > 满减 > 新客 > 赠券 > 其他。
+const activePromotionOrder = ` ORDER BY CASE pr.type
 		    WHEN 'discount' THEN 1
 		    WHEN 'flash_sale' THEN 2
 		    WHEN 'full_reduction' THEN 3
 		    WHEN 'new_user' THEN 4
 		    WHEN 'coupon_giveaway' THEN 5
 		    ELSE 99 END, pr.id DESC
-		  LIMIT 1`,
-		productID, pricesetID, cycle)
-	if err != nil {
-		return nil, err
-	}
+		  LIMIT 1`
+
+// scanActivePromotion 扫描单行活动命中结果并读取名额。
+func (p *Promotions) scanActivePromotion(ctx context.Context, rows *sql.Rows) (*ActivePromotion, error) {
 	defer rows.Close()
 	if !rows.Next() {
 		return nil, nil
@@ -107,6 +104,43 @@ func (p *Promotions) ActivePromotionFor(ctx context.Context, productID, priceset
 	ap.QuotaTotal = total
 	ap.QuotaSold = sold
 	return &ap, nil
+}
+
+// ActivePromotionFor 查询商品当前生效的活动（按优先级取一个）。
+// pricesetID / cycle 为 NULL 表示不限制；返回 nil 表示无活动。
+func (p *Promotions) ActivePromotionFor(ctx context.Context, productID, pricesetID int64, cycle string) (*ActivePromotion, error) {
+	rows, err := p.db.QueryContext(ctx,
+		activePromotionColumns+`pp.product_id=$1
+		    AND pr.enabled=true
+		    AND now() >= pr.starts_at
+		    AND now() < pr.ends_at
+		    AND (pp.priceset_id IS NULL OR pp.priceset_id=$2)
+		    AND (pp.cycle IS NULL OR pp.cycle=$3)`+activePromotionOrder,
+		productID, pricesetID, cycle)
+	if err != nil {
+		return nil, err
+	}
+	return p.scanActivePromotion(ctx, rows)
+}
+
+// ActivePromotionBindingFor 按活动绑定 ID 查询指定的生效活动。
+// 归属条件与 ActivePromotionFor 一致：必须属于同一商品、同一价格组/周期口径，
+// 且活动已启用并处于进行中；任一不满足即返回 nil，由调用方拒绝。
+func (p *Promotions) ActivePromotionBindingFor(ctx context.Context, promotionID, promotionProductID, productID, pricesetID int64, cycle string) (*ActivePromotion, error) {
+	rows, err := p.db.QueryContext(ctx,
+		activePromotionColumns+`pr.id=$1
+		    AND pp.id=$2
+		    AND pp.product_id=$3
+		    AND pr.enabled=true
+		    AND now() >= pr.starts_at
+		    AND now() < pr.ends_at
+		    AND (pp.priceset_id IS NULL OR pp.priceset_id=$4)
+		    AND (pp.cycle IS NULL OR pp.cycle=$5)`,
+		promotionID, promotionProductID, productID, pricesetID, cycle)
+	if err != nil {
+		return nil, err
+	}
+	return p.scanActivePromotion(ctx, rows)
 }
 
 // Get 按 ID 获取活动。
@@ -155,9 +189,30 @@ func (p *Promotions) Create(ctx context.Context, pr *Promotion) (int64, error) {
 	return id, err
 }
 
+// CreateTx 在调用方事务内创建活动。
+func (p *Promotions) CreateTx(ctx context.Context, tx *sql.Tx, pr *Promotion) (int64, error) {
+	var id int64
+	err := tx.QueryRowContext(ctx,
+		`INSERT INTO promotions(name,description,type,banner,notice,rules_text,starts_at,ends_at,enabled,limit_per_user)
+		 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
+		pr.Name, pr.Description, pr.Type, pr.Banner, pr.Notice, pr.RulesText,
+		pr.StartsAt, pr.EndsAt, pr.Enabled, pr.LimitPerUser).Scan(&id)
+	return id, err
+}
+
 // Update 更新活动。
 func (p *Promotions) Update(ctx context.Context, pr *Promotion) error {
 	_, err := p.db.ExecContext(ctx,
+		`UPDATE promotions SET name=$1,description=$2,type=$3,banner=$4,notice=$5,rules_text=$6,
+		        starts_at=$7,ends_at=$8,enabled=$9,limit_per_user=$10 WHERE id=$11`,
+		pr.Name, pr.Description, pr.Type, pr.Banner, pr.Notice, pr.RulesText,
+		pr.StartsAt, pr.EndsAt, pr.Enabled, pr.LimitPerUser, pr.ID)
+	return err
+}
+
+// UpdateTx 在调用方事务内更新活动。
+func (p *Promotions) UpdateTx(ctx context.Context, tx *sql.Tx, pr *Promotion) error {
+	_, err := tx.ExecContext(ctx,
 		`UPDATE promotions SET name=$1,description=$2,type=$3,banner=$4,notice=$5,rules_text=$6,
 		        starts_at=$7,ends_at=$8,enabled=$9,limit_per_user=$10 WHERE id=$11`,
 		pr.Name, pr.Description, pr.Type, pr.Banner, pr.Notice, pr.RulesText,
@@ -303,6 +358,26 @@ func (p *Promotions) GetQuota(ctx context.Context, promotionProductID int64) (to
 	return
 }
 
+// CouponTemplateID 返回活动商品绑定的优惠券模板 ID。
+func (p *Promotions) CouponTemplateID(ctx context.Context, promotionID, promotionProductID int64) (int64, error) {
+	var couponID int64
+	err := p.db.QueryRowContext(ctx,
+		`SELECT COALESCE((rules->>'coupon_id')::bigint,0)
+		   FROM promotion_products
+		  WHERE id=$1 AND promotion_id=$2`,
+		promotionProductID, promotionID).Scan(&couponID)
+	return couponID, err
+}
+
+func (p *Promotions) IncrementClaimedTx(ctx context.Context, tx *sql.Tx, promotionID int64) error {
+	_, err := tx.ExecContext(ctx,
+		`INSERT INTO promotion_stats(promotion_id,views,claimed,orders,paid_amount)
+		 VALUES($1,0,1,0,0)
+		 ON CONFLICT(promotion_id) DO UPDATE SET claimed=promotion_stats.claimed+1`,
+		promotionID)
+	return err
+}
+
 // ClaimCoupon 记录用户领券（UNIQUE 约束防重复）。
 func (p *Promotions) ClaimCoupon(ctx context.Context, promotionID, userID, couponID int64) error {
 	_, err := p.db.ExecContext(ctx,
@@ -367,6 +442,24 @@ func (p *Promotions) IsNewUser(ctx context.Context, userID int64) (bool, error) 
 	err := p.db.QueryRowContext(ctx,
 		`SELECT count(*) FROM orders WHERE user_id=$1`, userID).Scan(&n)
 	return n == 0, err
+}
+
+func (p *Promotions) IsNewUserTx(ctx context.Context, tx *sql.Tx, userID int64) (bool, error) {
+	var exists bool
+	err := tx.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM orders WHERE user_id=$1)`, userID).Scan(&exists)
+	return !exists, err
+}
+
+func (p *Promotions) CheckPromotionActiveTx(ctx context.Context, tx *sql.Tx, promotionID int64) error {
+	var active bool
+	err := tx.QueryRowContext(ctx,
+		`SELECT enabled AND now() >= starts_at AND now() < ends_at
+		   FROM promotions WHERE id=$1 FOR SHARE`, promotionID).Scan(&active)
+	if errors.Is(err, sql.ErrNoRows) || !active {
+		return errors.New("活动已结束或未启用")
+	}
+	return err
 }
 
 // CheckLimitPerUser 校验用户在该活动的下单数是否超限。

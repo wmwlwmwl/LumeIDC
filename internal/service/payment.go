@@ -253,6 +253,24 @@ func (p *Payment) MarkPaidByBalance(ctx context.Context, invoiceNo string, userI
 			return err
 		}
 	}
+	// 活动订单：累加活动统计入 tx，与 MarkPaid 一致——commit 成功才记统计，
+	// 避免服务已开通但统计少记一笔（余额支付此前完全不记，活动成交额会少算）。
+	var promoID sql.NullInt64
+	if orderID > 0 {
+		if err := tx.QueryRowContext(ctx, `SELECT promotion_id FROM orders WHERE id=$1`, orderID).Scan(&promoID); err != nil {
+			return err
+		}
+	}
+	if promoID.Valid && p.Promotion != nil {
+		paidAmountFloat, _ := strconv.ParseFloat(amountStr, 64)
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO promotion_stats(promotion_id,views,claimed,orders,paid_amount)
+			 VALUES($1,0,0,1,$2)
+			 ON CONFLICT(promotion_id) DO UPDATE SET orders=promotion_stats.orders+1, paid_amount=promotion_stats.paid_amount+EXCLUDED.paid_amount`,
+			promoID.Int64, paidAmountFloat); err != nil {
+			return err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return err
 	}

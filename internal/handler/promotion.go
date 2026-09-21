@@ -21,10 +21,13 @@ func (h *Pages) promotionList(w http.ResponseWriter, r *http.Request) {
 		jsonStatus(w, r, 500, "查询失败")
 		return
 	}
-	now := time.Now()
 	list := make([]map[string]any, 0, len(all))
 	for _, p := range all {
-		if !p.Enabled || now.After(p.EndsAt) {
+		if !p.Enabled || p.Status() == "ended" {
+			continue
+		}
+		// 纵深防御：数据库 CHECK 仍允许未实现类型，历史脏数据不得透出到前台。
+		if err := service.ValidatePromotionType(p.Type); err != nil {
 			continue
 		}
 		list = append(list, map[string]any{
@@ -50,6 +53,11 @@ func (h *Pages) promotionDetail(w http.ResponseWriter, r *http.Request) {
 	}
 	promo, err := h.Promotion.Promo.Get(r.Context(), id)
 	if err != nil {
+		jsonStatus(w, r, 404, "活动不存在")
+		return
+	}
+	// 纵深防御：未实现类型（历史脏数据）不得透出到前台，也不计入访问量。
+	if err := service.ValidatePromotionType(promo.Type); err != nil {
 		jsonStatus(w, r, 404, "活动不存在")
 		return
 	}
@@ -103,9 +111,10 @@ func (h *Pages) promotionDetail(w http.ResponseWriter, r *http.Request) {
 		_ = json.Unmarshal(pp.Rules, &rules)
 
 		card := map[string]any{
-			"product_id": pp.ProductID,
-			"name":       prodMap[pp.ProductID],
-			"cycle":      pp.Cycle.String,
+			"promotion_product_id": pp.ID,
+			"product_id":           pp.ProductID,
+			"name":                 prodMap[pp.ProductID],
+			"cycle":                pp.Cycle.String,
 		}
 		// 原价
 		origMonthly := 0.0
@@ -191,6 +200,17 @@ func (h *Pages) promotionClaim(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if h.Promotion == nil || h.Promotion.Promo == nil {
+		jsonStatus(w, r, 500, "活动模块未启用")
+		return
+	}
+	var input struct {
+		PromotionProductID int64 `json:"promotion_product_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil || input.PromotionProductID <= 0 {
+		jsonStatus(w, r, 400, "活动商品参数无效")
+		return
+	}
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	promo, err := h.Promotion.Promo.Get(r.Context(), id)
 	if err != nil {
@@ -201,20 +221,7 @@ func (h *Pages) promotionClaim(w http.ResponseWriter, r *http.Request) {
 		jsonStatus(w, r, 400, "该活动无优惠券可领")
 		return
 	}
-	// 取第一个绑定商品的 coupon_id
-	products, err := h.Promotion.Promo.ListProducts(r.Context(), id)
-	if err != nil || len(products) == 0 {
-		jsonStatus(w, r, 400, "活动配置错误")
-		return
-	}
-	var rules map[string]any
-	_ = json.Unmarshal(products[0].Rules, &rules)
-	couponID, _ := rules["coupon_id"].(float64)
-	if couponID == 0 {
-		jsonStatus(w, r, 400, "活动未配置优惠券")
-		return
-	}
-	if err := h.Promotion.ClaimCoupon(r.Context(), id, userID, int64(couponID)); err != nil {
+	if err := h.Promotion.ClaimCoupon(r.Context(), id, input.PromotionProductID, userID); err != nil {
 		jsonStatus(w, r, 400, err.Error())
 		return
 	}
