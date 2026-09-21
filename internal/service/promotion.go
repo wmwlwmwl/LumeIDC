@@ -129,6 +129,48 @@ func (s *PromotionService) ValidatePromotionType(promoType string) error {
 	return ValidatePromotionType(promoType)
 }
 
+// ValidatePromotionRules 校验活动商品的规则参数（管理端保存时调用）。
+// 从源头拦截「配置即坏」的活动：负价活动价、减到 0 的满减（会被下单处 0 元购防护拒绝）、
+// 抢购名额非正数等。coupon_giveaway 的 coupon_id 存在性由 handler 另行查库校验。
+func ValidatePromotionRules(promoType string, rules json.RawMessage) error {
+	var m map[string]any
+	if len(rules) > 0 {
+		if err := json.Unmarshal(rules, &m); err != nil {
+			return fmt.Errorf("规则参数不是合法 JSON")
+		}
+	}
+	num := func(key string) float64 {
+		v, _ := m[key].(float64)
+		return v
+	}
+	switch promoType {
+	case "discount", "flash_sale", "new_user":
+		if num("price") <= 0 {
+			return fmt.Errorf("活动价必须为正数")
+		}
+		if promoType == "flash_sale" {
+			if stock, ok := m["stock"]; ok {
+				s, isNum := stock.(float64)
+				if !isNum || s <= 0 || s != math.Trunc(s) {
+					return fmt.Errorf("限量名额必须为正整数")
+				}
+			}
+		}
+	case "full_reduction":
+		if num("threshold") <= 0 || num("reduce") <= 0 {
+			return fmt.Errorf("满减门槛与减免金额必须为正数")
+		}
+		if num("reduce") >= num("threshold") {
+			return fmt.Errorf("减免金额必须小于门槛金额（减到 0 的订单无法成交）")
+		}
+	case "coupon_giveaway":
+		if num("coupon_id") <= 0 {
+			return fmt.Errorf("领券活动必须配置优惠券")
+		}
+	}
+	return nil
+}
+
 // ApplyPromotion 对原售价应用活动规则。
 // 输入：原售价 sell（利润加成后）、活动类型、规则参数
 // 输出：最终金额 finalAmount、优惠金额 discount

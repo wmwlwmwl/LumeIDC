@@ -108,14 +108,26 @@ func (a *Admin) adminPromotionSave(w http.ResponseWriter, r *http.Request) {
 	p.RulesText = fv("rules_text")
 	p.Enabled = fv("enabled") == "1" || fv("enabled") == "true"
 	if v, err := strconv.Atoi(fv("limit_per_user")); err == nil {
-		p.LimitPerUser = v
+		// 负数限购与 0 同义（不限），钳为 0 避免列表展示混乱。
+		p.LimitPerUser = max(v, 0)
 	}
-	if v, err := time.Parse("2006-01-02T15:04", fv("starts_at")); err == nil {
-		p.StartsAt = v
+	// 时间必须合法且结束晚于开始：原实现解析失败静默保留零值，
+	// 新建活动会落成「永不开始/立即结束」的幽灵活动且无任何报错。
+	startsAt, err := time.Parse("2006-01-02T15:04", fv("starts_at"))
+	if err != nil {
+		jsonStatus(w, r, 400, "开始时间格式无效")
+		return
 	}
-	if v, err := time.Parse("2006-01-02T15:04", fv("ends_at")); err == nil {
-		p.EndsAt = v
+	endsAt, err := time.Parse("2006-01-02T15:04", fv("ends_at"))
+	if err != nil {
+		jsonStatus(w, r, 400, "结束时间格式无效")
+		return
 	}
+	if !endsAt.After(startsAt) {
+		jsonStatus(w, r, 400, "结束时间必须晚于开始时间")
+		return
+	}
+	p.StartsAt, p.EndsAt = startsAt, endsAt
 	if p.Name == "" {
 		jsonStatus(w, r, 400, "活动名称不能为空")
 		return
@@ -141,11 +153,34 @@ func (a *Admin) adminPromotionSave(w http.ResponseWriter, r *http.Request) {
 					pp.PricesetID = sql.NullInt64{Int64: int64(v), Valid: true}
 				}
 				if v, ok := item["cycle"].(string); ok && v != "" {
-					pp.Cycle = sql.NullString{String: v, Valid: true}
+					// 周期白名单与下单处 cycleCol 同集合：任意字符串落库后永不命中。
+					switch v {
+					case "monthly", "quarterly", "yearly":
+						pp.Cycle = sql.NullString{String: v, Valid: true}
+					default:
+						jsonStatus(w, r, 400, "绑定周期无效："+v)
+						return
+					}
 				}
 				if rules, ok := item["rules"].(map[string]any); ok {
 					if b, err := json.Marshal(rules); err == nil {
 						pp.Rules = b
+					}
+				}
+				// 规则数值校验：拦截负价、减到 0 的满减等「配置即坏」的活动。
+				if err := service.ValidatePromotionRules(p.Type, pp.Rules); err != nil {
+					jsonStatus(w, r, 400, err.Error())
+					return
+				}
+				// 领券活动的优惠券必须真实存在且可用。
+				if p.Type == "coupon_giveaway" {
+					var m map[string]any
+					_ = json.Unmarshal(pp.Rules, &m)
+					cid, _ := m["coupon_id"].(float64)
+					cp, cerr := a.Coupons.Get(r.Context(), int64(cid))
+					if cerr != nil || cp == nil || !cp.Active {
+						jsonStatus(w, r, 400, "领券活动引用的优惠券不存在或已停用")
+						return
 					}
 				}
 				products = append(products, pp)
