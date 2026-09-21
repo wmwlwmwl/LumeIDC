@@ -3,7 +3,7 @@ import { ref, computed, watch, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Search, ArrowDown } from '@element-plus/icons-vue'
-import { fetchCatalog, type Category, type CategoryChild, type ProductLite } from '../api/store'
+import { fetchCatalog, type Category, type CategoryChild, type ProductLite } from '@/api/store'
 import PublicContainer from '@/components/public/PublicContainer.vue'
 import PublicProductCard from '@/components/public/PublicProductCard.vue'
 

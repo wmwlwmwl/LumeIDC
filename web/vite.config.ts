@@ -47,6 +47,69 @@ function adminEntry(): Plugin {
   }
 }
 
+// 前台模板入口：扫描 themes/*/index.html，每套模板是独立的 SPA 入口。
+// key 形如 themes/default/index，产物落到 dist/themes/<name>/index.html。
+function themeEntries(): Record<string, string> {
+  const dir = resolvePath('themes')
+  const entries: Record<string, string> = {}
+  for (const name of fs.readdirSync(dir)) {
+    const html = path.join(dir, name, 'index.html')
+    if (fs.existsSync(html)) entries[`themes/${name}/index`] = html
+  }
+  return entries
+}
+
+// 构建后把模板元信息（theme.json/theme.png）拷到 dist/themes/<name>/，
+// Go 嵌入后由后台「前台模板」页列出与预览。
+function copyThemeMeta(): Plugin {
+  return {
+    name: 'lume-theme-meta',
+    apply: 'build',
+    closeBundle() {
+      const dir = resolvePath('themes')
+      const distThemes = resolvePath('../internal/handler/webui/dist/themes')
+      for (const name of fs.readdirSync(dir)) {
+        const srcDir = path.join(dir, name)
+        if (!fs.statSync(srcDir).isDirectory()) continue
+        const destDir = path.join(distThemes, name)
+        fs.mkdirSync(destDir, { recursive: true })
+        for (const file of ['theme.json', 'theme.png']) {
+          const f = path.join(srcDir, file)
+          if (fs.existsSync(f)) fs.copyFileSync(f, path.join(destDir, file))
+        }
+      }
+    },
+  }
+}
+
+// 开发期：前台导航（非 /admin、/__api）回退到默认模板入口。
+// 直接访问 /themes/<name>/index.html 可预览其他模板，不拦截。
+// 注意：必须挂在 Vite 内部中间件之前（pre），否则根 index.html 缺失时
+// Vite 的 SPA fallback 会先 404。
+function themeEntry(): Plugin {
+  return {
+    name: 'lume-theme-entry',
+    configureServer(server) {
+      server.middlewares.use(async (req, res, next) => {
+        const url = (req.url || '').split('?')[0]
+        if (url === ADMIN_BASE || url.startsWith(ADMIN_BASE + '/')) return next()
+        if (url.startsWith('/__api') || url.startsWith('/themes/')) return next()
+        if (!String(req.headers.accept || '').includes('text/html')) return next()
+        try {
+          const file = fileURLToPath(new URL('./themes/default/index.html', import.meta.url))
+          let html = await fs.promises.readFile(file, 'utf-8')
+          html = await server.transformIndexHtml(req.url || '/', html, req)
+          res.statusCode = 200
+          res.setHeader('Content-Type', 'text/html')
+          res.end(html)
+        } catch (err) {
+          next(err as Error)
+        }
+      })
+    },
+  }
+}
+
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd())
   return {
@@ -68,6 +131,8 @@ export default defineConfig(({ mode }) => {
       }),
       ElementPlus({ useSource: true }),
       adminEntry(),
+      themeEntry(),
+      copyThemeMeta(),
     ],
     resolve: {
       alias: {
@@ -87,8 +152,8 @@ export default defineConfig(({ mode }) => {
       chunkSizeWarningLimit: 2000,
       rolldownOptions: {
         input: {
-          store: fileURLToPath(new URL('./index.html', import.meta.url)),
           admin: fileURLToPath(new URL('./admin.html', import.meta.url)),
+          ...themeEntries(),
         },
       },
     },

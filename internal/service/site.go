@@ -21,6 +21,7 @@ const (
 	KeyListenPort       = "listen_port"       // 监听端口，留空使用 config.yaml 的 listen
 	KeyAdminPath        = "admin_path"        // 自定义后台访问路径（启动时读取，改后重启生效）
 	KeyUpstreamTimezone = "upstream_timezone" // 上游面板时区（IANA 名，如 Asia/Shanghai），留空按本机时区解释上游无时区时间
+	KeySiteTheme        = "site_theme"        // 激活的前台模板名（web/themes/ 下的目录名）
 
 	DefaultSiteName = "LumeIDC"
 )

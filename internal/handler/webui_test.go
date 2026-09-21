@@ -28,7 +28,7 @@ func TestWebUIRegistrationNoConflict(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /products", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("SSR-products")) })
 	mux.HandleFunc("POST /products", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(405) })
-	RegisterWebUI(mux) // 若模式冲突会在此 panic
+	RegisterWebUI(mux, nil) // 若模式冲突会在此 panic
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 	})
@@ -39,7 +39,7 @@ func TestWebUIRegistrationNoConflict(t *testing.T) {
 func TestWebUISpecificRouteWins(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /products", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("SSR-products")) })
-	RegisterWebUI(mux)
+	RegisterWebUI(mux, nil)
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest("GET", "/products", nil))
@@ -52,10 +52,10 @@ func TestWebUISpecificRouteWins(t *testing.T) {
 func TestWebUISPAFallbackKnownRoute(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /products", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("SSR-products")) })
-	RegisterWebUI(mux)
+	RegisterWebUI(mux, nil)
 
-	// dist 构建产物存在：兜底应返回 index.html 文档。
-	if _, err := fs.Stat(webUIFS, "webui/dist/index.html"); err != nil {
+	// dist 构建产物存在：兜底应返回默认模板 index.html 文档。
+	if _, err := fs.Stat(webUIFS, "webui/dist/themes/default/index.html"); err != nil {
 		t.Skip("webui/dist 未构建，跳过 SPA 兜底断言")
 	}
 	rec := httptest.NewRecorder()
@@ -90,7 +90,7 @@ func TestSpaOwned(t *testing.T) {
 
 // TestSPAGate 导航命中接管路径时返回 SPA 外壳；API 请求与未迁移路径透传。
 func TestSPAGate(t *testing.T) {
-	if _, err := fs.Stat(webUIFS, "webui/dist/index.html"); err != nil {
+	if _, err := fs.Stat(webUIFS, "webui/dist/themes/default/index.html"); err != nil {
 		t.Skip("webui/dist 未构建，SPAGate 不生效")
 	}
 	reached := false
@@ -98,7 +98,7 @@ func TestSPAGate(t *testing.T) {
 		reached = true
 		w.Write([]byte("SSR"))
 	})
-	h := SPAGate(next)
+	h := SPAGate(next, nil)
 
 	// 1) 浏览器导航 → SPA 外壳
 	rec := httptest.NewRecorder()
@@ -141,7 +141,7 @@ func TestSPAGateAdminEntry(t *testing.T) {
 		reached = true
 		w.Write([]byte("SSR"))
 	})
-	h := SPAGate(next)
+	h := SPAGate(next, nil)
 
 	// 1) /admin 导航 → 后台 SPA 外壳
 	rec := httptest.NewRecorder()

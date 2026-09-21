@@ -39,6 +39,7 @@ export const adminPageRoutes: RouteRecordRaw[] = [
   { path: 'gateway', name: 'admin-gateway', component: () => import('@views/AdminGateways.vue'), meta: { title: '支付网关', icon: 'ri:bank-card-line' } },
   { path: 'plugins', name: 'admin-plugins', component: () => import('@views/AdminPlugins.vue'), meta: { title: '插件管理', icon: 'ri:puzzle-line' } },
   { path: 'site', name: 'admin-site', component: () => import('@views/AdminSite.vue'), meta: { title: '站点设置', icon: 'ri:global-line' } },
+  { path: 'themes', name: 'admin-themes', component: () => import('@views/AdminThemes.vue'), meta: { title: '前台模板', icon: 'ri:palette-line' } },
   { path: 'settings', redirect: { name: 'admin-notify-settings' } },
   { path: 'settings/notify', name: 'admin-notify-settings', component: () => import('@views/AdminNotifySettings.vue'), meta: { title: '通知设置', icon: 'ri:mail-send-line' } },
   { path: 'email-templates', name: 'admin-email-templates', component: () => import('@views/AdminEmailTemplates.vue'), meta: { title: '邮件模板', icon: 'ri:mail-send-line' } },
@@ -111,6 +112,7 @@ export const adminMenu: AppRouteRecord[] = [
     meta: { title: '设置', icon: 'ri:settings-3-line' },
     children: [
       leaf('/site', 'admin-site', '站点设置', 'ri:global-line'),
+      leaf('/themes', 'admin-themes', '前台模板', 'ri:palette-line'),
       leaf('/settings/notify', 'admin-notify-settings', '通知设置', 'ri:mail-send-line'),
       leaf('/settings/lifecycle', 'admin-lifecycle-settings', '服务生命周期', 'ri:hourglass-line'),
       leaf('/email-templates', 'admin-email-templates', '邮件模板', 'ri:mail-send-line'),

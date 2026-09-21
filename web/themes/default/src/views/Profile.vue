@@ -2,14 +2,14 @@
 import { ref, onMounted, onBeforeUnmount } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Cellphone, Message, User } from '@element-plus/icons-vue'
-import { fetchProfile, updateProfile, type ProfileData } from '../api/user'
-import { fetchCaptcha, type CaptchaData } from '../api/store'
-import { http } from '../http/index'
+import { fetchProfile, updateProfile, type ProfileData } from '@/api/user'
+import { fetchCaptcha, type CaptchaData } from '@/api/store'
+import { http } from '@/http/index'
 import PublicPageHead from '@/components/public/PublicPageHead.vue'
-import { useSession } from '../http/session'
+import { useSession } from '@/http/session'
 import PhoneInput from '@/components/phone/PhoneInput.vue'
-import ExternalCaptcha from '../components/ExternalCaptcha.vue'
-import { hasCaptchaResult } from '../components/captcha-registry'
+import ExternalCaptcha from '@/components/ExternalCaptcha.vue'
+import { hasCaptchaResult } from '@/components/captcha-registry'
 
 const data = ref<ProfileData | null>(null)
 const loadError = ref(false)

@@ -9,10 +9,10 @@ import {
   sendPhoneCode,
   loginByPhoneCode,
   type CaptchaData,
-} from '../api/store'
-import { useSession } from '../http/session'
-import ExternalCaptcha from '../components/ExternalCaptcha.vue'
-import { hasCaptchaResult } from '../components/captcha-registry'
+} from '@/api/store'
+import { useSession } from '@/http/session'
+import ExternalCaptcha from '@/components/ExternalCaptcha.vue'
+import { hasCaptchaResult } from '@/components/captcha-registry'
 import PublicAuthCard from '@/components/public/PublicAuthCard.vue'
 import PhoneInput from '@/components/phone/PhoneInput.vue'
 
@@ -110,7 +110,7 @@ async function submit() {
       Object.assign(body, { captcha_id: captcha.value.id || '', captcha_answer: form.captchaAnswer })
     Object.assign(body, extFields.value)
     await login(body)
-    await import('../http/session').then((m) => m.loadSession({ force: true }))
+    await import('@/http/session').then((m) => m.loadSession({ force: true }))
     router.replace(nextPath())
   } catch (err: unknown) {
     ElMessage.error((err as Error).message || '登录失败')
@@ -219,7 +219,7 @@ async function submitPhone() {
   phoneLoading.value = true
   try {
     await loginByPhoneCode(phoneForm.phone, phoneForm.code, String(route.query.next || '/'))
-    await import('../http/session').then((m) => m.loadSession({ force: true }))
+    await import('@/http/session').then((m) => m.loadSession({ force: true }))
     router.replace(nextPath())
   } catch (err: unknown) {
     ElMessage.error((err as Error).message || '登录失败')

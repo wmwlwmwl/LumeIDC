@@ -3,8 +3,8 @@ import { compileScript, parse } from '@vue/compiler-sfc'
 import ts from 'typescript'
 import * as Vue from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { PayData, PayStatus } from '../api/pay'
-import { formatMoney } from '../utils/format'
+import type { PayData, PayStatus } from '@/api/pay'
+import { formatMoney } from '@/utils/format'
 
 const route = Vue.reactive({ params: { id: '1' } })
 const api = {
@@ -28,7 +28,7 @@ const modules: Record<string, unknown> = {
   'vue-router': { useRoute: () => route },
   'element-plus': { ElMessage: messages, ElMessageBox: { confirm } },
   '@element-plus/icons-vue': {},
-  '../api/pay': api,
+  '@/api/pay': api,
   '@/utils/format': { formatMoney },
   '@/components/public/PublicContainer.vue': {},
 }

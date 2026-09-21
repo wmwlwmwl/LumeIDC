@@ -167,9 +167,9 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Bell, Document, ArrowDown } from '@element-plus/icons-vue'
-import { http } from '../http'
+import { http } from '@/http'
 import { formatDate as fmtDateTime, formatMoney, parseDate } from '@/utils/format'
-import { buildPromotionBuyPath, canUsePromotion } from '../utils/promotion-context'
+import { buildPromotionBuyPath, canUsePromotion } from '@/utils/promotion-context'
 
 interface PromoProduct {
   promotion_product_id: number

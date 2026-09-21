@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { reactive, ref } from 'vue'
 import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
-import { http } from '../http'
+import { http } from '@/http'
 
 const formRef = ref<FormInstance>()
 const form = reactive({

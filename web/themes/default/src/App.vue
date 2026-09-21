@@ -4,8 +4,8 @@ import { useRoute } from 'vue-router'
 import { ElConfigProvider } from 'element-plus'
 import zhCn from 'element-plus/es/locale/lang/zh-cn'
 import PublicLayout from './components/layout/PublicLayout.vue'
-import { installPublicTheme } from './components/public/usePublicTheme'
-import { http } from './http/index'
+import { installPublicTheme } from '@/components/public/usePublicTheme'
+import { http } from '@/http/index'
 
 // 认证外壳（Art 两栏）按需加载，避免营销首包带上登录页资源。
 const PublicAuthLayout = defineAsyncComponent(

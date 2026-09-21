@@ -383,14 +383,14 @@ func Build(cfg *config.Config, version string) (*App, error) {
 	registerHealthRoutes(mux, database)
 	// Vite SPA 静态资源与文档兜底（GET 未命中任意 SSR/API 路由时）。
 	// "GET /{path...}" 比 "/" 更精确，GET 未知路径交给 SPA；其余方法仍走渲染 404。
-	handler.RegisterWebUI(mux)
+	handler.RegisterWebUI(mux, settingsRepo)
 	// 全局 404 兜底（未匹配路由统一渲染站点 404 页）
 	mux.HandleFunc("/", pages.NotFound)
 
 	// SPA 接管已迁移路径的「浏览器导航」（返回 SPA 外壳）；API 请求与
 	// 未迁移路径（服务子路径/回调等）透传，SSR 行为不变。
 	// 认证（含手机验证码）与实名（含自动实名插件）页均已迁移到 SPA。
-	root := handler.SPAGate(mux)
+	root := handler.SPAGate(mux, settingsRepo)
 	h := store.Middleware(middleware.CSRF(root))
 	h = middleware.AdminPath(h, adminPathCfg)
 	// 最外层兜 panic：任意中间件或 handler 崩溃都要变成结构化 500，而不是断连。

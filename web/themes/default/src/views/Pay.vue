@@ -3,7 +3,7 @@ import { ref, computed, onBeforeUnmount, onMounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Check, Wallet, CreditCard, Warning } from '@element-plus/icons-vue'
-import { fetchPay, startPay, payByBalance, payStatus, type PayData } from '../api/pay'
+import { fetchPay, startPay, payByBalance, payStatus, type PayData } from '@/api/pay'
 import { formatMoney } from '@/utils/format'
 import PublicContainer from '@/components/public/PublicContainer.vue'
 

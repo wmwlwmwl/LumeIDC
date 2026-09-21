@@ -25,6 +25,14 @@
       "@styles/*": ["./src/assets/styles/*"]
     }
   },
-  "include": ["src/**/*.ts", "src/**/*.d.ts", "src/**/*.tsx", "src/**/*.vue"],
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.d.ts",
+    "src/**/*.tsx",
+    "src/**/*.vue",
+    "themes/**/*.ts",
+    "themes/**/*.tsx",
+    "themes/**/*.vue"
+  ],
   "exclude": ["node_modules", "dist", "**/*.js"]
 }

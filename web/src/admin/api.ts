@@ -856,6 +856,27 @@ export async function changeAdminPassword(oldPassword: string, newPassword: stri
   await http.post('/password', { old_password: oldPassword, new_password: newPassword })
 }
 
+// ---- 前台模板 ----
+export interface ThemeInfo {
+  key: string
+  name: string
+  description: string
+  author: string
+  version: string
+  active: boolean
+}
+
+/** 模板列表（含当前激活标记）。 */
+export async function fetchThemes(): Promise<ThemeInfo[]> {
+  const res = await http.get<{ ok: number; themes?: ThemeInfo[] }>('/themes')
+  return res.themes || []
+}
+
+/** 切换前台模板。 */
+export async function switchTheme(key: string): Promise<void> {
+  await http.post('/themes/switch', { key })
+}
+
 // ---- 系统更新（仅 Linux 支持）----
 export interface UpdateInfo {
   current_version: string

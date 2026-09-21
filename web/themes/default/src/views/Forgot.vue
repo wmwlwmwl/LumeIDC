@@ -3,12 +3,12 @@ import { ref, reactive, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
 import { User, Lock, Message, ArrowRight, Refresh } from '@element-plus/icons-vue'
-import { fetchCaptcha, sendForgotCode, resetPassword, type CaptchaData } from '../api/store'
-import { useSession } from '../http/session'
+import { fetchCaptcha, sendForgotCode, resetPassword, type CaptchaData } from '@/api/store'
+import { useSession } from '@/http/session'
 import PublicAuthCard from '@/components/public/PublicAuthCard.vue'
 import PhoneInput from '@/components/phone/PhoneInput.vue'
-import ExternalCaptcha from '../components/ExternalCaptcha.vue'
-import { hasCaptchaResult } from '../components/captcha-registry'
+import ExternalCaptcha from '@/components/ExternalCaptcha.vue'
+import { hasCaptchaResult } from '@/components/captcha-registry'
 
 const router = useRouter()
 const phoneInputRef = ref<InstanceType<typeof PhoneInput>>()

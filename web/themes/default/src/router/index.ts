@@ -1,6 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
-import { useSession } from '../http/session'
-import { setPageTitle } from '../utils/router'
+import { useSession } from '@/http/session'
+import { setPageTitle } from '@/utils/router'
 
 const router = createRouter({
   history: createWebHistory('/'),
@@ -37,8 +37,8 @@ const router = createRouter({
       meta: { auth: true },
       children: [
         { path: '', name: 'services', component: () => import('../views/Services.vue'), meta: { title: '我的服务' } },
-        { path: ':id(\\d+)', name: 'service-detail', component: () => import('../views/ServiceDetail.vue'), meta: { title: '服务详情' } },
-        { path: ':id(\\d+)/upgrade', name: 'service-upgrade', component: () => import('../views/ServiceUpgrade.vue'), meta: { title: '升降级' } },
+        { path: ':id(\\d+)', name: 'service-detail', component: () => import('@views/ServiceDetail.vue'), meta: { title: '服务详情' } },
+        { path: ':id(\\d+)/upgrade', name: 'service-upgrade', component: () => import('@views/ServiceUpgrade.vue'), meta: { title: '升降级' } },
       ],
     },
     // VNC 控制台是满屏裸页：必须脱离 /services 的 UserShell（该外壳固定带侧栏，
@@ -46,7 +46,7 @@ const router = createRouter({
     {
       path: '/services/:id(\\d+)/console',
       name: 'service-console',
-      component: () => import('../views/ServiceConsole.vue'),
+      component: () => import('@views/ServiceConsole.vue'),
       meta: { auth: true, bare: true, title: 'VNC 控制台' },
     },
     {
@@ -110,10 +110,10 @@ const router = createRouter({
       meta: { auth: true },
       children: [{ path: '', name: 'profile', component: () => import('../views/Profile.vue'), meta: { title: '资料与手机号' } }],
     },
-    { path: '/403', name: 'error-403', component: () => import('../views/Exception403.vue'), meta: { title: '无访问权限' } },
-    { path: '/404', name: 'error-404', component: () => import('../views/Exception404.vue'), meta: { title: '页面不存在' } },
-    { path: '/500', name: 'error-500', component: () => import('../views/Exception500.vue'), meta: { title: '服务异常' } },
-    { path: '/:pathMatch(.*)*', name: 'not-found', component: () => import('../views/Exception404.vue'), meta: { title: '页面不存在' } },
+    { path: '/403', name: 'error-403', component: () => import('@views/Exception403.vue'), meta: { title: '无访问权限' } },
+    { path: '/404', name: 'error-404', component: () => import('@views/Exception404.vue'), meta: { title: '页面不存在' } },
+    { path: '/500', name: 'error-500', component: () => import('@views/Exception500.vue'), meta: { title: '服务异常' } },
+    { path: '/:pathMatch(.*)*', name: 'not-found', component: () => import('@views/Exception404.vue'), meta: { title: '页面不存在' } },
   ],
 })
 

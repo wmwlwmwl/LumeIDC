@@ -1,5 +1,5 @@
 /**
- * 图标子集生成：扫描 src 下所有 `ri:xxx` / `vaadin:xxx` 字面量引用，
+ * 图标子集生成：扫描 src 与 themes（前台模板）下所有 `ri:xxx` / `vaadin:xxx` 字面量引用，
  * 从 @iconify-json/<集合> 提取子集，避免全量图标集打进入口包。
  *
  * 产物：src/utils/ui/icons-subset.json（IconifyJSON 数组，构建生成物，已 gitignore），
@@ -34,7 +34,7 @@ const DYNAMIC_RE = /\b(?:ri|vaadin):[^\s'"`,;)]*(?:\$\{|\+)/
 // 字面量引用：集合前缀 + 图标名（kebab-case）
 const USE_RE = /\b(ri|vaadin):([a-z0-9]+(?:-[a-z0-9]+)*)\b/g
 
-const files = walk(srcDir)
+const files = walk(srcDir).concat(walk(join(root, 'themes')))
 const used = new Map(ICON_SETS.map((s) => [s, new Set()]))
 const dynamicHits = []
 for (const f of files) {

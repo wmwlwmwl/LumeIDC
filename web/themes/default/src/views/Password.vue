@@ -2,7 +2,7 @@
 import { ref, reactive, computed } from 'vue'
 import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
 import { Lock } from '@element-plus/icons-vue'
-import { changePassword } from '../api/user'
+import { changePassword } from '@/api/user'
 import PublicPageHead from '@/components/public/PublicPageHead.vue'
 
 const formRef = ref<FormInstance>()

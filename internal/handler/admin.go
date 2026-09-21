@@ -65,6 +65,10 @@ func (a *Admin) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /admin/settings", a.adminSettings)
 	mux.HandleFunc("POST /admin/settings", a.adminSettingsSave)
 	mux.HandleFunc("POST /admin/settings/test-email", a.adminTestEmail)
+	// 前台模板：列表 / 切换 / 预览图
+	mux.HandleFunc("GET /admin/themes", a.themesListCtx)
+	mux.HandleFunc("POST /admin/themes/switch", a.themeSwitchCtx)
+	mux.HandleFunc("GET /admin/themes/{key}/preview", a.themePreviewCtx)
 	mux.HandleFunc("GET /admin/email-templates", a.adminEmailTemplates)
 	mux.HandleFunc("POST /admin/email-templates/master", a.adminEmailTemplateMaster)
 	mux.HandleFunc("POST /admin/email-templates/save", a.adminEmailTemplateSave)

@@ -9,7 +9,7 @@ import {
   markAllNotificationsRead,
   markNotificationRead,
   type NotificationItem,
-} from '../api/user'
+} from '@/api/user'
 import PublicPageHead from '@/components/public/PublicPageHead.vue'
 import { refreshUnreadNotifications } from '@/components/public/useUnreadNotifications'
 

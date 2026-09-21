@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, reactive, onMounted } from 'vue'
-import { fetchHome, type HomeData } from '../api/store'
-import { useSession } from '../http/session'
+import { fetchHome, type HomeData } from '@/api/store'
+import { useSession } from '@/http/session'
 import HomeHero from './Home/HomeHero.vue'
 import HomePromotions from './Home/HomePromotions.vue'
 import HomeProductTabs from './Home/HomeProductTabs.vue'

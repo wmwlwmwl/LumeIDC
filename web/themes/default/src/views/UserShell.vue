@@ -2,8 +2,8 @@
 import { ref, computed, onMounted, type Component } from 'vue'
 import { useRoute } from 'vue-router'
 import { Grid, Monitor, Document, Wallet, Bell, User, Lock, ArrowRight, Ticket, MagicStick } from '@element-plus/icons-vue'
-import { useSession } from '../http/session'
-import { http } from '../http/index'
+import { useSession } from '@/http/session'
+import { http } from '@/http/index'
 import { formatMoney } from '@/utils/format'
 import PublicContainer from '@/components/public/PublicContainer.vue'
 

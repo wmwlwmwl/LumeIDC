@@ -8,8 +8,8 @@ import {
   startVerificationPlugin,
   pollVerificationPlugin,
   type VerificationData,
-} from '../api/user'
-import { http } from '../http/index'
+} from '@/api/user'
+import { http } from '@/http/index'
 import PublicPageHead from '@/components/public/PublicPageHead.vue'
 
 const data = ref<VerificationData | null>(null)

@@ -3,10 +3,10 @@ import { ref, reactive, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
 import { User, Lock, Message, ArrowRight, Refresh } from '@element-plus/icons-vue'
-import { register, fetchCaptcha, sendRegisterCode, type CaptchaData } from '../api/store'
-import { useSession } from '../http/session'
-import ExternalCaptcha from '../components/ExternalCaptcha.vue'
-import { hasCaptchaResult } from '../components/captcha-registry'
+import { register, fetchCaptcha, sendRegisterCode, type CaptchaData } from '@/api/store'
+import { useSession } from '@/http/session'
+import ExternalCaptcha from '@/components/ExternalCaptcha.vue'
+import { hasCaptchaResult } from '@/components/captcha-registry'
 import PublicAuthCard from '@/components/public/PublicAuthCard.vue'
 import PhoneInput from '@/components/phone/PhoneInput.vue'
 
@@ -391,7 +391,7 @@ async function submit() {
       Object.assign(body, { captcha_id: captcha.value.id || '', captcha_answer: form.captchaAnswer })
     Object.assign(body, extFields.value)
     await register(body)
-    await import('../http/session').then((m) => m.loadSession({ force: true }))
+    await import('@/http/session').then((m) => m.loadSession({ force: true }))
     ElMessage.success('注册成功，正在进入系统…')
     router.replace('/')
   } catch (err: unknown) {

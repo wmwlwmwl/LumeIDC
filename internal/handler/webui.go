@@ -7,19 +7,34 @@ import (
 	"strings"
 
 	"lumeidc/internal/middleware"
+	"lumeidc/internal/repo"
 )
 
 //go:embed all:webui/dist
 var webUIFS embed.FS
 
-// WebUIBuilt 报告 Vite 构建产物是否存在（index.html / admin.html）。
+// webUIDist 返回嵌入的前端构建产物根（webui/dist）。
+func webUIDist() (fs.FS, error) {
+	return fs.Sub(webUIFS, "webui/dist")
+}
+
+// defaultThemeDoc 内置默认模板的 SPA 入口文档。
+const defaultThemeDoc = "themes/default/index.html"
+
+// storefrontDoc 按当前激活模板返回前台 SPA 外壳路径；
+// 模板键非法或产物缺失时回退默认模板。
+func storefrontDoc(r *http.Request, settings *repo.Settings, dist fs.FS) string {
+	return "themes/" + activeThemeKey(r, settings, dist) + "/index.html"
+}
+
+// WebUIBuilt 报告 Vite 构建产物是否存在（默认前台模板入口 / admin.html）。
 // 生产运行要求前端已构建；缺失时组合根应拒绝启动并给出明确指引。
 func WebUIBuilt() bool {
-	dist, err := fs.Sub(webUIFS, "webui/dist")
+	dist, err := webUIDist()
 	if err != nil {
 		return false
 	}
-	if _, err := fs.Stat(dist, "index.html"); err != nil {
+	if _, err := fs.Stat(dist, defaultThemeDoc); err != nil {
 		return false
 	}
 	if _, err := fs.Stat(dist, "admin.html"); err != nil {
@@ -36,12 +51,12 @@ func WebUIBuilt() bool {
 // "GET /{path...}" 更精确，由 ServeMux 优先命中，因此不抢占保留的 SSR 页面。
 //
 // 若 dist 缺失（仅测试环境可能出现），则跳过注册；生产启动已在更早处拒绝。
-func RegisterWebUI(mux *http.ServeMux) {
-	dist, err := fs.Sub(webUIFS, "webui/dist")
+func RegisterWebUI(mux *http.ServeMux, settings *repo.Settings) {
+	dist, err := webUIDist()
 	if err != nil {
 		return
 	}
-	if _, err := fs.Stat(dist, "index.html"); err != nil {
+	if _, err := fs.Stat(dist, defaultThemeDoc); err != nil {
 		return // web/ 尚未构建，保持纯 SSR 现状
 	}
 
@@ -65,27 +80,27 @@ func RegisterWebUI(mux *http.ServeMux) {
 			return
 		}
 		// 后台路径下的未知深链交给后台壳（hash 路由自行兜底），避免显示前台 SPA
-		doc := "index.html"
 		if p == "/admin" || strings.HasPrefix(p, "/admin/") {
-			doc = "admin.html"
+			serveSPADoc(w, r, dist, "admin.html")
+			return
 		}
-		serveSPADoc(w, r, dist, doc)
+		serveSPADoc(w, r, dist, storefrontDoc(r, settings, dist))
 	})
 }
 
-// InstallPage 安装向导页：返回前台 SPA 外壳（/install）。
-// 仅在未安装时由安装器的 mux 注册；SPA 内 Install.vue 负责表单与提交。
+// InstallPage 安装向导页：返回默认模板 SPA 外壳（/install）。
+// 仅在未安装时由安装器的 mux 注册；此时设置表可能尚未就绪，固定用默认模板。
 func InstallPage(w http.ResponseWriter, r *http.Request) {
-	dist, err := fs.Sub(webUIFS, "webui/dist")
+	dist, err := webUIDist()
 	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
-	if _, err := fs.Stat(dist, "index.html"); err != nil {
+	if _, err := fs.Stat(dist, defaultThemeDoc); err != nil {
 		http.NotFound(w, r)
 		return
 	}
-	serveSPADoc(w, r, dist, "index.html")
+	serveSPADoc(w, r, dist, defaultThemeDoc)
 }
 
 // spaOwned 判定该 GET 路径在「浏览器导航」时是否由 SPA 接管。
@@ -154,12 +169,12 @@ func isAllDigits(s string) bool {
 // authReady / verifyReady 在每次请求时求值，为假则对应页面保持 SSR
 // （/login、/register 与 /user/verification）。
 // webui/dist 未构建时不包裹，保持纯 SSR。
-func SPAGate(next http.Handler) http.Handler {
-	dist, err := fs.Sub(webUIFS, "webui/dist")
+func SPAGate(next http.Handler, settings *repo.Settings) http.Handler {
+	dist, err := webUIDist()
 	if err != nil {
 		return next
 	}
-	if _, err := fs.Stat(dist, "index.html"); err != nil {
+	if _, err := fs.Stat(dist, defaultThemeDoc); err != nil {
 		return next // 未构建前端：不接管任何路径
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -173,7 +188,7 @@ func SPAGate(next http.Handler) http.Handler {
 			// explicit format=json marker, so unusual browser Accept headers
 			// cannot make the raw API response appear in the address bar.
 			if isPaymentPage {
-				serveSPADoc(w, r, dist, "index.html")
+				serveSPADoc(w, r, dist, storefrontDoc(r, settings, dist))
 				return
 			}
 			if !wantsJSON(r) {
@@ -187,7 +202,7 @@ func SPAGate(next http.Handler) http.Handler {
 				isPaymentReturn := strings.HasPrefix(r.URL.Path, "/pay/") &&
 					r.URL.Query().Get("out_trade_no") != ""
 				if !isPaymentReturn && spaOwned(r.URL.Path) {
-					serveSPADoc(w, r, dist, "index.html")
+					serveSPADoc(w, r, dist, storefrontDoc(r, settings, dist))
 					return
 				}
 			}

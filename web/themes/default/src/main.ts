@@ -4,23 +4,23 @@ import { createPinia } from 'pinia'
 import '@/utils/ui/iconify-loader'
 import '@styles/core/tailwind.css'
 import '@styles/index.scss'
-import './style.css'
+import '@/style.css'
 
 import App from './App.vue'
 import router from './router'
 import language from '@/locales'
-import { setAppRouter } from './router/registry'
-import { loadSession, installSessionRefresh } from './http/session'
-import { setOnUnauthorized } from './http/index'
-import { installSiteConfig } from './config/site'
-import { bindNProgress } from './utils/router'
+import { setAppRouter } from '@/router/registry'
+import { loadSession, installSessionRefresh } from '@/http/session'
+import { setOnUnauthorized } from '@/http/index'
+import { installSiteConfig } from '@/config/site'
+import { bindNProgress } from '@/utils/router'
 
 setAppRouter(router)
 
 async function bootstrap() {
   // 后端暂不可达时也挂载界面，保留明确错误状态；后续焦点恢复/请求可再次刷新会话。
   await loadSession().catch(() => undefined)
-  const { useSession } = await import('./http/session')
+  const { useSession } = await import('@/http/session')
   installSiteConfig()
   setOnUnauthorized(() => {
     const s = useSession()

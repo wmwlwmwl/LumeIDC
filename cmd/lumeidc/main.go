@@ -37,7 +37,7 @@ func main() {
 // 免手动重启（安装向导与完整应用分属两套路由，切换是必需的）。
 func runInstaller(version string) {
 	mux := http.NewServeMux()
-	handler.RegisterWebUI(mux) // 安装向导页由 SPA 承载（/app/* 资源 + index.html）
+	handler.RegisterWebUI(mux, nil) // 安装向导页由 SPA 承载（/app/* 资源 + 默认模板外壳）
 	inst := &handler.Installer{ConfigPath: "config.yaml"}
 	inst.Register(mux) // POST /install（JSON）
 	// 精确匹配优先于 RegisterWebUI 的 GET /{path...} 兜底。

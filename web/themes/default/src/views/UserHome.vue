@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import { http } from '../http/index'
-import { useSession } from '../http/session'
+import { http } from '@/http/index'
+import { useSession } from '@/http/session'
 import { formatDate, formatMoney } from '@/utils/format'
 import PublicPageHead from '@/components/public/PublicPageHead.vue'
 import ArtStatsCard from '@/components/core/cards/art-stats-card/index.vue'

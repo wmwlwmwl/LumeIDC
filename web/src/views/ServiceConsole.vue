@@ -4,8 +4,8 @@ import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { WarningFilled } from '@element-plus/icons-vue'
 import RFB from '@novnc/novnc'
-import { fetchServiceDetail, fetchVncPass } from '../api/user'
-import { apiPrefix } from '../http/index'
+import { fetchServiceDetail, fetchVncPass } from '@/api/user'
+import { apiPrefix } from '@/http/index'
 
 // VNC 控制台：满屏裸页（前台路由 meta.bare；后台挂在顶层路由，均不套框架头尾），
 // noVNC 随前端打包，wss 隧道与会话密码都走本站后端（见 internal/handler/user_vnc.go），
