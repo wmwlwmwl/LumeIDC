@@ -35,11 +35,12 @@
 //	web/src/plugins/{name}/Admin.vue           可选后台页（adminRegistry 加一行映射）
 //	web/src/plugins/registry.ts                前端聚合（admin/client 双注册表）
 //
-// plugins/ 目录同时驻留接口类供应商实现（zjmf、easypanel、sms、verify）：它们不是业务插件
+// plugins/ 目录同时驻留接口类供应商实现（zjmf、easypanel、sms、verify、captcha）：它们不是业务插件
 // （不调 plugin.Register、不出现在插件管理页），仅在 init() 中 server.Register /
-// smsdk.RegisterSMSProvider / vsdk.Register 自注册到各领域注册表。判别方式：看 init 注册到哪个注册表。
-// 短信渠道开发包在 internal/smsdk、实名渠道开发包在 internal/vsdk（类型/注册表/HTTP 工具），
-// 内置适配器分别在 internal/plugins/sms/、internal/plugins/verify/，新增渠道同目录加文件即插即用。
+// smsdk.RegisterSMSProvider / vsdk.Register / csdk.Register 自注册到各领域注册表。判别方式：看 init 注册到哪个注册表。
+// 短信渠道开发包在 internal/smsdk、实名渠道开发包在 internal/vsdk、验证码开发包在 internal/csdk
+// （类型/注册表/HTTP 工具），内置适配器分别在 internal/plugins/sms/、verify/、captcha/，
+// 新增渠道同目录加文件即插即用。
 //
 // # 可选能力（类型断言探测，与 gateway.OrderQuerier 同风格）
 //

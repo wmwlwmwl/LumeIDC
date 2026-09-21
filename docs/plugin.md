@@ -280,3 +280,40 @@ func init() { vsdk.Register(descriptorXxx, newXxxAdapter) }
 `ResponseOK`、`StringValue/FirstString`、`SHA256Hex/RandomHex`。
 
 参考实现：`verification_adapter_smapi.go`（最简）、`verification_adapter_leaf_face.go`（HMAC 签名完整示例）。
+
+## 十四、接口类扩展：新增验证码供应商
+
+外部人机验证同属**接口类扩展**，走 `internal/csdk` 注册表自注册。新增一家验证码商三步，
+核心与前端零改动：
+
+1. 在 `internal/plugins/captcha/` 新建 `captcha_adapter_xxx.go`（package `captcha`），实现
+   `csdk.Provider` 接口（`PublicConfig` 返回浏览器侧安全配置、`Verify` 服务器端校验）
+2. 同文件内联描述符并在 `init()` 注册。描述符除配置字段外还需声明前端 SDK 元数据
+   （SDKURL/SDKVersion，inline 渲染的填 RenderMode/APIBaseURL）：
+
+```go
+var descriptorXxx = csdk.Descriptor{
+	Key:        "xxx",
+	Name:       "某某验证",
+	SDKURL:     "https://cdn.example.com/sdk.js",
+	SDKVersion: "v1",
+	Fields: []csdk.ConfigField{
+		{Key: "captcha_xxx_id", Label: "XXX ID"},
+		{Key: "captcha_xxx_key", Label: "XXX Key", Secret: true},
+	},
+}
+
+func init() { csdk.Register(descriptorXxx, func(h *csdk.Host) (csdk.Provider, error) { return &xxxAdapter{host: h}, nil }) }
+```
+
+3. 完成。后台「安全设置」的服务商下拉、字段表单、保存校验全部经
+   `GET /admin/captcha-providers` + 注册表驱动自动生效。
+
+`PublicConfig` 用 `描述符.BaseConfig(publicID, scene)` 构造（配置完整时置 `Enabled=true`）；
+宿主 `csdk.Host` 提供 `Get`（读设置）与 `HTTPClient()`（nil client 兜底 10s），
+校验响应用 `csdk.ReadResponse`（64KB 上限），签名用 `csdk.HexString`。
+
+场景开关（哪个场景启用外部验证）是系统层逻辑（`external_captcha_*_enabled` 设置项），
+不属于适配器；适配器只需关心「配置完整时给出公开配置」与「服务器端校验」两件事。
+
+参考实现：`captcha_adapter_geetest.go`（HMAC 签名 + 表单校验）、`captcha_adapter_corptcha.go`（Bearer JSON 最简）。

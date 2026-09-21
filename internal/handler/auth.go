@@ -23,7 +23,7 @@ type Auth struct {
 	Lockout      *repo.LoginAttempts
 	Notifier     *service.Notifier
 	Challenges   *service.AuthChallengeService
-	Captcha      service.CaptchaProvider
+	Captcha      *service.ConfiguredCaptchaProvider
 	LocalCaptcha *captcha.Service
 	*Deps
 }
@@ -115,7 +115,7 @@ func jsonVals(r *http.Request) map[string]string {
 // checkCaptcha 支持 SPA JSON 请求体：vals 为空时回退 r.PostFormValue。
 // 本地图形码与外部验证共用；外部验证启用时优先（避免「本地+外部」双重人机验证）。
 // 场景名即人机验证设置页的行（register/register_code/forgot_code/profile_code/login/phone_login_code/admin_login）。
-func checkCaptcha(ctx context.Context, local *captcha.Service, provider service.CaptchaProvider, scene string, r *http.Request, forceLocal bool, vals map[string]string) error {
+func checkCaptcha(ctx context.Context, local *captcha.Service, provider *service.ConfiguredCaptchaProvider, scene string, r *http.Request, forceLocal bool, vals map[string]string) error {
 	fv := func(k string) string {
 		if vals != nil {
 			return vals[k]

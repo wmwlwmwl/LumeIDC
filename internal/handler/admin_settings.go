@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"lumeidc/internal/csdk"
 	"lumeidc/internal/middleware"
 	"lumeidc/internal/service"
 	"lumeidc/internal/vsdk"
@@ -33,7 +34,7 @@ func (a *Admin) adminSettings(w http.ResponseWriter, r *http.Request) {
 		"sms_region", "sms_global_access_key", "sms_global_sign_name", "sms_routes",
 		"sms_provider", "sms_endpoint", "sms_access_key", "sms_username",
 		"sms_sign_name", "sms_template_code", "sms_template_content",
-		"captcha_provider", "captcha_geetest_id", "captcha_vaptcha_vid", "captcha_corptcha_site_key",
+		"captcha_provider",
 		"verification_provider", "verification_endpoint",
 		"manual_identity_enabled",
 		"registration_email_enabled", "registration_phone_enabled",
@@ -65,6 +66,14 @@ func (a *Admin) adminSettings(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	// 验证码供应商配置字段键同样由注册表枚举。
+	for _, d := range csdk.Registry() {
+		for _, f := range d.Fields {
+			if !f.Secret {
+				settingKeys = append(settingKeys, f.Key)
+			}
+		}
+	}
 	vals, err := s.GetMany(r.Context(), settingKeys...)
 	if err != nil {
 		log.Printf("[settings] 读取设置失败: %v", err)
@@ -77,31 +86,28 @@ func (a *Admin) adminSettings(w http.ResponseWriter, r *http.Request) {
 		manualRequiresPhone = "1"
 	}
 	cfg := map[string]string{
-		"smtp_host":                                get("smtp_host"),
-		"smtp_port":                                get("smtp_port"),
-		"smtp_user":                                get("smtp_user"),
-		"smtp_pass":                                "", // 不回传明文；多账号列表内的密码同样已掩码
-		"smtp_from":                                get("smtp_from"),
-		"sms_region":                               get("sms_region"),
-		"sms_global_access_key":                    get("sms_global_access_key"),
-		"sms_global_sign_name":                     get("sms_global_sign_name"),
-		"sms_global_secret_key":                    "",
-		"sms_secret_key":                           "",
-		"sms_provider":                             get("sms_provider"),
-		"sms_endpoint":                             get("sms_endpoint"),
-		"sms_access_key":                           get("sms_access_key"),
-		"sms_username":                             get("sms_username"),
-		"sms_api_key":                              "",
-		"sms_sign_name":                            get("sms_sign_name"),
-		"sms_template_code":                        get("sms_template_code"),
-		"sms_template_content":                     get("sms_template_content"),
-		"captcha_provider":                         get("captcha_provider"),
-		"captcha_geetest_id":                       get("captcha_geetest_id"),
-		"captcha_vaptcha_vid":                      get("captcha_vaptcha_vid"),
-		"captcha_corptcha_site_key":                get("captcha_corptcha_site_key"),
-		"verification_provider":                    get("verification_provider"),
-		"verification_endpoint":                    get("verification_endpoint"),
-		"verification_token":                       "",
+		"smtp_host":             get("smtp_host"),
+		"smtp_port":             get("smtp_port"),
+		"smtp_user":             get("smtp_user"),
+		"smtp_pass":             "", // 不回传明文；多账号列表内的密码同样已掩码
+		"smtp_from":             get("smtp_from"),
+		"sms_region":            get("sms_region"),
+		"sms_global_access_key": get("sms_global_access_key"),
+		"sms_global_sign_name":  get("sms_global_sign_name"),
+		"sms_global_secret_key": "",
+		"sms_secret_key":        "",
+		"sms_provider":          get("sms_provider"),
+		"sms_endpoint":          get("sms_endpoint"),
+		"sms_access_key":        get("sms_access_key"),
+		"sms_username":          get("sms_username"),
+		"sms_api_key":           "",
+		"sms_sign_name":         get("sms_sign_name"),
+		"sms_template_code":     get("sms_template_code"),
+		"sms_template_content":  get("sms_template_content"),
+		"captcha_provider":      get("captcha_provider"),
+		"verification_provider": get("verification_provider"),
+		"verification_endpoint": get("verification_endpoint"),
+		"verification_token":    "",
 		"manual_identity_requires_verified_phone":  manualRequiresPhone,
 		"manual_identity_enabled":                  get("manual_identity_enabled"),
 		"registration_email_enabled":               get("registration_email_enabled"),
@@ -136,6 +142,16 @@ func (a *Admin) adminSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	// 实名服务商字段：普通键回传已存值，Secret 键恒回传空串（不回传明文，与 sms_secret_key 同策略）。
 	for _, d := range vsdk.Registry() {
+		for _, f := range d.Fields {
+			if f.Secret {
+				cfg[f.Key] = ""
+			} else {
+				cfg[f.Key] = get(f.Key)
+			}
+		}
+	}
+	// 验证码供应商字段：同款策略。
+	for _, d := range csdk.Registry() {
 		for _, f := range d.Fields {
 			if f.Secret {
 				cfg[f.Key] = ""
@@ -367,7 +383,8 @@ func (c *settingsSaveCtx) saveManualIdentity() {
 // 状态分请求提交，这里仅保证「同一场景不在一次提交里同时勾为本地+外部」。
 func (c *settingsSaveCtx) saveExternalCaptcha() bool {
 	provider := strings.ToLower(strings.TrimSpace(c.fv("captcha_provider")))
-	if provider != "" && provider != "geetest" && provider != "vaptcha" && provider != "corptcha" {
+	d, registered := csdk.DescriptorFor(provider)
+	if provider != "" && !registered {
 		c.fail("外部验证码 provider 无效")
 		return false
 	}
@@ -382,12 +399,17 @@ func (c *settingsSaveCtx) saveExternalCaptcha() bool {
 		return false
 	}
 	c.set("captcha_provider", provider)
-	c.set("captcha_geetest_id", strings.TrimSpace(c.fv("captcha_geetest_id")))
-	c.set("captcha_vaptcha_vid", strings.TrimSpace(c.fv("captcha_vaptcha_vid")))
-	c.set("captcha_corptcha_site_key", strings.TrimSpace(c.fv("captcha_corptcha_site_key")))
-	for _, key := range []string{"captcha_geetest_key", "captcha_vaptcha_key", "captcha_corptcha_secret"} {
-		if value := strings.TrimSpace(c.fv(key)); value != "" {
-			c.set(key, value)
+	// 配置字段由注册表驱动：普通字段直存，Secret 字段留空保留旧值（与 saveAutomaticIdentity 同策略）。
+	if registered {
+		for _, f := range d.Fields {
+			v := strings.TrimSpace(c.fv(f.Key))
+			if f.Secret {
+				if v != "" {
+					c.set(f.Key, v)
+				}
+			} else {
+				c.set(f.Key, v)
+			}
 		}
 	}
 	for _, key := range []string{"external_captcha_register_enabled", "external_captcha_login_enabled", "external_captcha_register_code_enabled", "external_captcha_forgot_code_enabled", "external_captcha_profile_code_enabled", "external_captcha_phone_login_code_enabled"} {
@@ -429,6 +451,20 @@ func (a *Admin) adminVerificationProviders(w http.ResponseWriter, r *http.Reques
 	}
 	list := make([]vsdk.Descriptor, 0, 8)
 	for _, d := range vsdk.Registry() {
+		list = append(list, d)
+	}
+	sort.Slice(list, func(i, j int) bool { return list[i].Key < list[j].Key })
+	writeJSON(w, map[string]any{"ok": 1, "list": list})
+}
+
+// adminCaptchaProviders GET /admin/captcha-providers — 外部验证码供应商清单（注册表枚举，含配置字段声明）。
+func (a *Admin) adminCaptchaProviders(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	if !a.require(w, r) {
+		return
+	}
+	list := make([]csdk.Descriptor, 0, 8)
+	for _, d := range csdk.Registry() {
 		list = append(list, d)
 	}
 	sort.Slice(list, func(i, j int) bool { return list[i].Key < list[j].Key })

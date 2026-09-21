@@ -73,6 +73,7 @@ func (a *Admin) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /admin/email-templates/test", a.adminEmailTemplateTest)
 	mux.HandleFunc("GET /admin/sms-providers", a.adminSMSProviders)
 	mux.HandleFunc("GET /admin/verification-providers", a.adminVerificationProviders)
+	mux.HandleFunc("GET /admin/captcha-providers", a.adminCaptchaProviders)
 	mux.HandleFunc("POST /admin/sms-templates/remote", a.adminSMSTemplateRemote)
 	mux.HandleFunc("GET /admin/sms-templates", a.adminSMSTemplates)
 	mux.HandleFunc("POST /admin/sms-templates/save", a.adminSMSTemplateSave)

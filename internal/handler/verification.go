@@ -23,7 +23,7 @@ type VerificationHandler struct {
 	// StepKey 用于签发/校验两步换绑的中间凭证（应为站内密钥，如 cfg.SecretKey）
 	StepKey      []byte
 	LocalCaptcha *captcha.Service
-	Captcha      service.CaptchaProvider
+	Captcha      *service.ConfiguredCaptchaProvider
 	*Deps
 }
 

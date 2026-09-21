@@ -1,32 +1,33 @@
 package service
 
 import (
-	"bytes"
-	"io"
-	"net/http"
 	"testing"
+
+	"lumeidc/internal/csdk"
+	// 注册验证码适配器：描述符断言依赖 init 自注册。
+	_ "lumeidc/internal/plugins/captcha"
 )
 
-func TestExternalCaptchaSDKAllowlist(t *testing.T) {
-	cases := []struct{ provider, want string }{
-		{"geetest", "https://static.geetest.com/v4/gt4.js"},
-		{"vaptcha", "https://cdn4.vaptcha.com/src/v4.js"},
-		{"corptcha", "https://res.25y.cn/corptcha/corptcha.iife.js"},
+// 三家内置供应商的 SDK 地址必须在描述符白名单内（防误改/回收原 captchaSDK 硬编码的护栏）。
+func TestExternalCaptchaDescriptorAllowlist(t *testing.T) {
+	cases := map[string]string{
+		"geetest":  "https://static.geetest.com/v4/gt4.js",
+		"vaptcha":  "https://cdn4.vaptcha.com/src/v4.js",
+		"corptcha": "https://res.25y.cn/corptcha/corptcha.iife.js",
 	}
-	for _, tc := range cases {
-		got, version := captchaSDK(tc.provider)
-		if got != tc.want || version == "" {
-			t.Fatalf("captchaSDK(%q) = %q, %q", tc.provider, got, version)
+	for key, want := range cases {
+		d, ok := csdk.DescriptorFor(key)
+		if !ok {
+			t.Fatalf("供应商 %s 未注册", key)
+		}
+		if d.SDKURL != want || d.SDKVersion == "" {
+			t.Fatalf("供应商 %s 描述符不符: %+v", key, d)
+		}
+		if len(d.Fields) == 0 {
+			t.Fatalf("供应商 %s 未声明配置字段", key)
 		}
 	}
-	if got, _ := captchaSDK("unknown"); got != "" {
-		t.Fatalf("unknown SDK URL = %q", got)
-	}
-}
-
-func TestExternalCaptchaResponseLimit(t *testing.T) {
-	resp := &http.Response{Body: io.NopCloser(bytes.NewReader(bytes.Repeat([]byte("x"), maxCaptchaResponseBytes+1)))}
-	if _, err := readCaptchaResponse(resp); err == nil {
-		t.Fatal("oversized response should fail")
+	if _, ok := csdk.DescriptorFor("unknown"); ok {
+		t.Fatal("未知供应商不应注册")
 	}
 }

@@ -1,10 +1,19 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { ElMessage } from 'element-plus'
+import { http, type ApiResult } from '../http/index'
 import { useAdminSettings } from '../admin/useSettings'
 import { saveAdminSettings } from '../admin/api'
 
 const { loading, saving, cfg, load, save, flags } = useAdminSettings()
+
+// 外部验证码服务商由后端注册表驱动（GET /admin/captcha-providers）：新增供应商零前端改动。
+interface CaptchaField { key: string; label: string; secret?: boolean }
+interface CaptchaProvider { key: string; name: string; fields: CaptchaField[] }
+const captchaProviders = ref<CaptchaProvider[]>([])
+const captchaFields = computed<CaptchaField[]>(
+  () => captchaProviders.value.find((p) => p.key === cfg['captcha_provider'])?.fields || [],
+)
 
 const REGISTRATION_KEYS = [
   'registration_email_enabled',
@@ -57,6 +66,12 @@ function flagOf(key: string): string {
 
 async function init() {
   await load()
+  try {
+    const res = await http.get<ApiResult & { list: CaptchaProvider[] }>('/captcha-providers')
+    captchaProviders.value = res.list || []
+  } catch {
+    captchaProviders.value = []
+  }
   regMode.value = cfg['external_captcha_register_enabled'] === '1'
     ? 'external'
     : cfg['captcha_register_enabled'] === '1'
@@ -97,6 +112,11 @@ async function saveCaptchaSetup() {
     ElMessage.warning('选择「外部」验证码前，请先配置外部验证码服务商')
     return
   }
+  // 已选服务商但字段清单未拉到（接口失败或供应商未注册）时拒绝保存，避免空字段覆盖已存配置。
+  if (cfg['captcha_provider'] && captchaFields.value.length === 0) {
+    ElMessage.warning('服务商字段清单加载失败，请刷新后重试')
+    return
+  }
   // 本地图形码主开关：任一场景未设为「关闭」即开启（找回密码、发码类等未接入外部的场景由它兜底）。
   const anyOn = modes.some((m) => m !== 'off') || adminLoginMode.value === 'local'
   const local: Record<string, string> = {
@@ -111,12 +131,6 @@ async function saveCaptchaSetup() {
   }
   const ext: Record<string, string> = {
     captcha_provider: cfg['captcha_provider'] || '',
-    captcha_geetest_id: cfg['captcha_geetest_id'] || '',
-    captcha_geetest_key: cfg['captcha_geetest_key'] || '',
-    captcha_vaptcha_vid: cfg['captcha_vaptcha_vid'] || '',
-    captcha_vaptcha_key: cfg['captcha_vaptcha_key'] || '',
-    captcha_corptcha_site_key: cfg['captcha_corptcha_site_key'] || '',
-    captcha_corptcha_secret: cfg['captcha_corptcha_secret'] || '',
     // 携带本地场景值供后端互斥校验（同一场景 radio 单值，本地/外部不会同时为 1）
     captcha_register_enabled: regMode.value === 'local' ? '1' : '0',
     captcha_login_enabled: loginMode.value === 'local' ? '1' : '0',
@@ -127,6 +141,10 @@ async function saveCaptchaSetup() {
     external_captcha_forgot_code_enabled: forgotMode.value === 'external' ? '1' : '0',
     external_captcha_profile_code_enabled: profileMode.value === 'external' ? '1' : '0',
     external_captcha_phone_login_code_enabled: phoneCodeMode.value === 'external' ? '1' : '0',
+  }
+  // 服务商配置字段由注册表声明驱动（Secret 字段留空表示不修改，后端保留旧值）。
+  for (const f of captchaFields.value) {
+    ext[f.key] = cfg[f.key] || ''
   }
   saving.value = 'captcha'
   try {
@@ -241,35 +259,18 @@ init()
         </el-radio-group>
       </div>
 
-      <!-- 外部验证码服务商（任一场景选「外部」时需配置） -->
+      <!-- 外部验证码服务商（任一场景选「外部」时需配置；清单与字段由注册表驱动） -->
       <div class="admin-form-grid mt-3">
         <el-form-item label="外部验证码服务商">
           <el-select v-model="cfg['captcha_provider']" clearable class="w-full">
-            <el-option label="Geetest" value="geetest" />
-            <el-option label="Vaptcha" value="vaptcha" />
-            <el-option label="Corptcha" value="corptcha" />
+            <el-option v-for="p in captchaProviders" :key="p.key" :label="p.name" :value="p.key" />
           </el-select>
         </el-form-item>
       </div>
       <div v-if="cfg['captcha_provider']" class="admin-form-grid">
-        <template v-if="cfg['captcha_provider'] === 'geetest'">
-          <el-form-item label="Geetest ID"><el-input v-model="cfg['captcha_geetest_id']" /></el-form-item>
-          <el-form-item label="Geetest Key（留空保持不变）">
-            <el-input v-model="cfg['captcha_geetest_key']" type="password" show-password />
-          </el-form-item>
-        </template>
-        <template v-if="cfg['captcha_provider'] === 'vaptcha'">
-          <el-form-item label="Vaptcha VID"><el-input v-model="cfg['captcha_vaptcha_vid']" /></el-form-item>
-          <el-form-item label="Vaptcha Key（留空保持不变）">
-            <el-input v-model="cfg['captcha_vaptcha_key']" type="password" show-password />
-          </el-form-item>
-        </template>
-        <template v-if="cfg['captcha_provider'] === 'corptcha'">
-          <el-form-item label="Corptcha Site Key"><el-input v-model="cfg['captcha_corptcha_site_key']" /></el-form-item>
-          <el-form-item label="Corptcha Secret（留空保持不变）">
-            <el-input v-model="cfg['captcha_corptcha_secret']" type="password" show-password />
-          </el-form-item>
-        </template>
+        <el-form-item v-for="f in captchaFields" :key="f.key" :label="f.secret ? `${f.label}（留空保持不变）` : f.label">
+          <el-input v-model="cfg[f.key]" :type="f.secret ? 'password' : 'text'" :show-password="f.secret" />
+        </el-form-item>
       </div>
 
       <div class="admin-section__actions">
