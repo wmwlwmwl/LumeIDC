@@ -33,6 +33,43 @@ func TestApplyProfit(t *testing.T) {
 	}
 }
 
+func TestApplyPromotionRejectsUnsupportedTypes(t *testing.T) {
+	service := &PromotionService{}
+	for _, promoType := range []string{"bogo", "group_buy", "unknown"} {
+		t.Run(promoType, func(t *testing.T) {
+			if err := service.ValidatePromotionType(promoType); err == nil {
+				t.Fatalf("未实现活动类型 %q 必须拒绝", promoType)
+			}
+		})
+	}
+}
+
+func TestApplyPromotionRuleMatrix(t *testing.T) {
+	cases := []struct {
+		name     string
+		promo    *ActivePromotion
+		sell     float64
+		want     float64
+		discount float64
+	}{
+		{name: "discount", promo: &ActivePromotion{Type: "discount", Price: 80}, sell: 100, want: 80, discount: 20},
+		{name: "flash_sale", promo: &ActivePromotion{Type: "flash_sale", Price: 60}, sell: 100, want: 60, discount: 40},
+		{name: "full_reduction", promo: &ActivePromotion{Type: "full_reduction", Threshold: 100, Reduce: 20}, sell: 100, want: 80, discount: 20},
+		{name: "new_user", promo: &ActivePromotion{Type: "new_user", Price: 70}, sell: 100, want: 70, discount: 30},
+		{name: "coupon_giveaway", promo: &ActivePromotion{Type: "coupon_giveaway", CouponID: 9}, sell: 100, want: 100, discount: 0},
+		{name: "full_reduction_cannot_exceed_sell", promo: &ActivePromotion{Type: "full_reduction", Threshold: 10, Reduce: 80}, sell: 50, want: 0, discount: 50},
+	}
+	service := &PromotionService{}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, discount := service.ApplyPromotion(tc.sell, tc.promo)
+			if got != tc.want || discount != tc.discount {
+				t.Fatalf("ApplyPromotion()=(%v,%v), want (%v,%v)", got, discount, tc.want, tc.discount)
+			}
+		})
+	}
+}
+
 // 首购要收上游一次性初装费（并与周期费一起参与利润加成），续费不收。
 // 之前同步丢掉了初装费，本地售价低于上游成本，每笔首购都亏这笔钱。
 func TestCreateOrderChargesSetupFeeOnce(t *testing.T) {
@@ -96,7 +133,7 @@ func TestCreateOrderChargesSetupFeeOnce(t *testing.T) {
 	sel := map[string]string{"cpu": "2核", "bw": "10"}
 
 	// 首购：(3+10+10+5) × 1.2 = 33.60；漏掉初装费只有 27.60
-	orderID, _, amount, err := orders.CreateOrder(ctx, uid, pid, psID, "monthly", sel, "")
+	orderID, _, amount, err := orders.CreateOrder(ctx, uid, pid, psID, "monthly", sel, "", 0, 0)
 	if err != nil {
 		t.Fatalf("下单失败: %v", err)
 	}
@@ -346,7 +383,7 @@ func TestCreateOrderSkipsNewUserPromotionForExistingUser(t *testing.T) {
 		t.Fatalf("夹具前提不成立：老用户应被判为不适用，实得 %v", applicableErr)
 	}
 
-	_, _, amount, err := orders.CreateOrder(ctx, uid, pid, psID, "monthly", map[string]string{}, "")
+	_, _, amount, err := orders.CreateOrder(ctx, uid, pid, psID, "monthly", map[string]string{}, "", 0, 0)
 	if err != nil {
 		t.Fatalf("新客活动对老用户应跳过活动、按原价下单，实得错误: %v", err)
 	}
@@ -443,11 +480,108 @@ func TestCreateOrderFallsBackWhenGiveawayCouponUnavailable(t *testing.T) {
 		t.Fatal("夹具前提不成立：专属券不应存在（本用例模拟未领取）")
 	}
 
-	_, _, amount, err := orders.CreateOrder(ctx, uid, pid, psID, "monthly", map[string]string{}, "")
+	_, _, amount, err := orders.CreateOrder(ctx, uid, pid, psID, "monthly", map[string]string{}, "", 0, 0)
 	if err != nil {
 		t.Fatalf("专属券不可用时应按原价下单，实得错误: %v", err)
 	}
 	if amount != "100.00" {
 		t.Fatalf("应按原价 100.00 下单，实得 %s", amount)
+	}
+}
+
+// 活动结束或被禁用后，服务端必须拒绝携带该活动绑定的新订单（不落单、不改判其他活动）。
+// 前端隐藏入口只是体验层，这里保证绕过前端直接带参下单也拿不到活动价。
+func TestCreateOrderRejectsEndedOrDisabledPromotion(t *testing.T) {
+	cases := []struct {
+		name    string
+		endsAt  string
+		enabled bool
+	}{
+		{"已结束", `now()-interval '1 hour'`, true},
+		{"已禁用", `now()+interval '1 day'`, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			d := testDB(t)
+			ctx := context.Background()
+			products := repo.NewProducts(d)
+			psID, err := products.DefaultPricesetID(ctx)
+			if err != nil {
+				t.Skip("库中暂无价格组，跳过")
+			}
+			var uid, typeID, pid, promoID, bindingID int64
+			if err := d.QueryRowContext(ctx,
+				`INSERT INTO users(email,password_hash) VALUES($1,'x') RETURNING id`,
+				"promoended-"+time.Now().Format("150405.000000000")+"@example.invalid").Scan(&uid); err != nil {
+				t.Fatal(err)
+			}
+			if err := d.QueryRowContext(ctx,
+				`INSERT INTO product_types(name) VALUES($1) RETURNING id`,
+				"单元测试-结束活动-"+time.Now().Format("150405.000000000")).Scan(&typeID); err != nil {
+				t.Fatal(err)
+			}
+			if err := d.QueryRowContext(ctx,
+				`INSERT INTO products(type_id,name,stock,requires_identity) VALUES($1,$2,-1,false) RETURNING id`,
+				typeID, "单元测试-结束活动商品-"+time.Now().Format("150405.000000000")).Scan(&pid); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := d.ExecContext(ctx,
+				`INSERT INTO product_prices(product_id,priceset_id,monthly,quarterly,yearly) VALUES($1,$2,100,0,0)`,
+				pid, psID); err != nil {
+				t.Fatal(err)
+			}
+			if err := d.QueryRowContext(ctx, fmt.Sprintf(
+				`INSERT INTO promotions(name,type,starts_at,ends_at,enabled,limit_per_user)
+				 VALUES($1,'discount',now()-interval '1 day',%s,$2,0) RETURNING id`,
+				c.endsAt), "单元测试-结束折扣-"+time.Now().Format("150405.000000000"), c.enabled).Scan(&promoID); err != nil {
+				t.Fatal(err)
+			}
+			if err := d.QueryRowContext(ctx,
+				`INSERT INTO promotion_products(promotion_id,product_id,priceset_id,cycle,rules)
+				 VALUES($1,$2,$3,'monthly','{"price":1}'::jsonb) RETURNING id`,
+				promoID, pid, psID).Scan(&bindingID); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				ctx := context.Background()
+				// 顺序照顾外键：活动（级联绑定）→ 账单/订单 → 价格 → 商品 → 类型 → 用户
+				for _, q := range []struct {
+					query string
+					arg   int64
+				}{
+					{`DELETE FROM invoices WHERE user_id=$1`, uid},
+					{`DELETE FROM orders WHERE user_id=$1`, uid},
+					{`DELETE FROM promotions WHERE id=$1`, promoID},
+					{`DELETE FROM product_prices WHERE product_id=$1`, pid},
+					{`DELETE FROM products WHERE id=$1`, pid},
+					{`DELETE FROM product_types WHERE id=$1`, typeID},
+					{`DELETE FROM users WHERE id=$1`, uid},
+				} {
+					if _, err := d.ExecContext(ctx, q.query, q.arg); err != nil {
+						t.Errorf("清理测试数据失败(%s): %v", q.query, err)
+					}
+				}
+			})
+
+			orders := &Orders{db: d, Products: products,
+				Promotion: NewPromotionService(d, repo.NewPromotions(d), repo.NewCoupons(d))}
+
+			// 夹具前提自检：该活动确实没有生效绑定可供采纳。
+			if ap, apErr := orders.Promotion.ActivePromotionForRequested(ctx, pid, psID, "monthly", promoID, bindingID); apErr == nil && ap != nil {
+				t.Fatal("夹具前提不成立：结束/禁用的活动不应存在生效绑定")
+			}
+
+			orderID, _, _, err := orders.CreateOrder(ctx, uid, pid, psID, "monthly", map[string]string{}, "", promoID, bindingID)
+			if !errors.Is(err, ErrPromotionBindingMismatch) {
+				t.Fatalf("结束/禁用的活动应拒绝下单，实得 orderID=%d err=%v", orderID, err)
+			}
+			var n int
+			if err := d.QueryRowContext(ctx, `SELECT count(*) FROM orders WHERE user_id=$1`, uid).Scan(&n); err != nil {
+				t.Fatal(err)
+			}
+			if n != 0 {
+				t.Fatal("拒绝下单时不得落单")
+			}
+		})
 	}
 }

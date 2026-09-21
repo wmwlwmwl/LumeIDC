@@ -50,7 +50,9 @@ func userOrderLockKey(userID int64) string {
 // CreateOrder validates product/priceset/cycle and creates order + unpaid invoice atomically.
 // selection 用户提交的配置选择，键为 field（cfg_ 前缀已由 handler 剥离）。
 // couponCode 可选优惠码；有效时按规则抵扣并写入使用记录。
-func (o *Orders) CreateOrder(ctx context.Context, userID, productID, pricesetID int64, cycle string, selection map[string]string, couponCode string) (orderID, invoiceID int64, amount string, err error) {
+// promotionID / promotionProductID 购买页从活动详情页带来的活动绑定（0 表示未指定）；
+// 指定时必须通过归属校验，否则拒绝下单，绝不静默改判为其他活动。
+func (o *Orders) CreateOrder(ctx context.Context, userID, productID, pricesetID int64, cycle string, selection map[string]string, couponCode string, promotionID, promotionProductID int64) (orderID, invoiceID int64, amount string, err error) {
 	col, ok := cycleCol[cycle]
 	if !ok {
 		return 0, 0, "", fmt.Errorf("无效的计费周期: %s", cycle)
@@ -171,14 +173,33 @@ func (o *Orders) CreateOrder(ctx context.Context, userID, productID, pricesetID 
 	var promoType string
 	var promoDiscount float64
 	if o.Promotion != nil {
-		ap, apErr := o.Promotion.ActivePromotionFor(ctx, productID, pricesetID, cycle)
-		if apErr != nil {
-			return 0, 0, "", fmt.Errorf("查询活动失败: %w", apErr)
+		var ap *ActivePromotion
+		if promotionID > 0 || promotionProductID > 0 {
+			// 购买页从活动详情页带来了活动绑定：按该绑定校验后采纳。
+			// 绑定不属于当前商品/价格组/周期，或活动已结束、被禁用、ID 非正数时，
+			// 一律原样返回 ErrPromotionBindingMismatch 拒绝下单（不落单、不改判其他活动）。
+			requested, reqErr := o.Promotion.ActivePromotionForRequested(ctx, productID, pricesetID, cycle, promotionID, promotionProductID)
+			if reqErr != nil {
+				return 0, 0, "", reqErr
+			}
+			ap = requested
+		} else {
+			resolved, resErr := o.Promotion.ActivePromotionFor(ctx, productID, pricesetID, cycle)
+			if resErr != nil {
+				return 0, 0, "", fmt.Errorf("查询活动失败: %w", resErr)
+			}
+			ap = resolved
 		}
 		// 活动不适用于该用户（如新客专享遇到老用户）时按原价继续下单，而不是拒绝下单：
 		// 否则挂了活动的商品对该用户彻底不可购买。其余校验错误仍然中断下单。
 		if ap != nil {
-			if apErr := o.Promotion.ValidatePromotionApplicable(ctx, ap, userID); apErr != nil {
+			if apErr := o.Promotion.ValidatePromotionType(ap.Type); apErr != nil {
+				return 0, 0, "", apErr
+			}
+			if apErr := o.Promotion.CheckPromotionActiveTx(ctx, tx, ap.PromotionID); apErr != nil {
+				return 0, 0, "", apErr
+			}
+			if apErr := o.Promotion.ValidatePromotionApplicableTx(ctx, tx, ap, userID); apErr != nil {
 				if !errors.Is(apErr, ErrPromotionNotApplicable) {
 					return 0, 0, "", apErr
 				}
@@ -190,6 +211,13 @@ func (o *Orders) CreateOrder(ctx context.Context, userID, productID, pricesetID 
 				return 0, 0, "", apErr
 			}
 			promoFinal, promoDisc := o.Promotion.ApplyPromotion(sell, ap)
+			if ap.Type == "discount" || ap.Type == "flash_sale" || ap.Type == "new_user" {
+				if ap.Price > 0 && ap.Price < quote.Base {
+					activityCost := ap.Price + (quote.Total - quote.Base) + quote.Setup
+					promoFinal = mathRound(activityCost)
+					promoDisc = mathRound(sell - promoFinal)
+				}
+			}
 			sell = promoFinal
 			promoDiscount = promoDisc
 			promoType = ap.Type

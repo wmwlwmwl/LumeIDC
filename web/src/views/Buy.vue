@@ -22,6 +22,15 @@ const cycle = ref<'monthly' | 'quarterly' | 'yearly'>('monthly')
 const coupon = ref('')
 const sel = reactive<Record<string, string>>({})
 
+const promotionContext = computed(() => {
+  const promotionID = Number(route.query.promotion_id)
+  const promotionProductID = Number(route.query.promotion_product_id)
+  if (!Number.isInteger(promotionID) || promotionID <= 0 || !Number.isInteger(promotionProductID) || promotionProductID <= 0) {
+    return null
+  }
+  return { promotionID, promotionProductID }
+})
+
 const cycleName = { monthly: '月付', quarterly: '季付', yearly: '年付' } as const
 
 const product = computed(() => data.value?.product)
@@ -189,8 +198,13 @@ async function loadProduct() {
 }
 
 onMounted(loadProduct)
-// 同一路由换产品时组件复用，需监听参数重新加载
-watch(() => route.params.id, loadProduct)
+// 同一路由换产品时组件复用，需监听参数重新加载；
+// 活动上下文（promotion_id / promotion_product_id）变化时同样要重新加载，
+// 避免用户带着上一个活动的 stale 上下文下单。
+watch(
+  () => [route.params.id, route.query.promotion_id, route.query.promotion_product_id],
+  loadProduct,
+)
 
 async function submit() {
   if (!data.value) return
@@ -202,6 +216,10 @@ async function submit() {
   submitting.value = true
   try {
     const body: Record<string, unknown> = { product_id: data.value.product.id, cycle: cycle.value, coupon: coupon.value.trim() }
+    if (promotionContext.value) {
+      body.promotion_id = promotionContext.value.promotionID
+      body.promotion_product_id = promotionContext.value.promotionProductID
+    }
     for (const opt of data.value.options) {
       const v = sel[opt.field]
       if (v !== undefined && v !== '') body[`cfg_${opt.field}`] = v
@@ -232,6 +250,14 @@ async function submit() {
     if (code === 'unshelved') {
       ElMessage.error((err as Error).message || '商品已下架')
       router.push('/cart')
+      return
+    }
+    // 指定的活动已失效（结束/被禁用/不属于该商品或周期）：去掉活动上下文重新加载，
+    // 让用户按服务端当前真实价格继续购买，而不是卡在失败状态。
+    if (code === 'promotion_invalid') {
+      ElMessage.warning((err as Error).message || '活动已结束，已为你刷新价格')
+      await router.replace({ path: route.path })
+      await loadProduct()
       return
     }
     ElMessage.error((err as Error).message || '下单失败')

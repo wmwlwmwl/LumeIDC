@@ -144,6 +144,21 @@ func (h *Pay) paymentStatus(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]bool{"paid": status == 1, "expired": status == 3})
 }
 
+// promotionContextFromForm 解析购买页表单里的活动上下文（活动详情页带入）。
+// 缺失、非数字、非正数、负数一律归零，表示「未指定」，
+// 由服务端回退到按优先级的活动解析，绝不在前端把非法值当成指定活动。
+func promotionContextFromForm(fv func(string) string) (promotionID, promotionProductID int64) {
+	promotionID, _ = strconv.ParseInt(strings.TrimSpace(fv("promotion_id")), 10, 64)
+	promotionProductID, _ = strconv.ParseInt(strings.TrimSpace(fv("promotion_product_id")), 10, 64)
+	if promotionID < 0 {
+		promotionID = 0
+	}
+	if promotionProductID < 0 {
+		promotionProductID = 0
+	}
+	return promotionID, promotionProductID
+}
+
 // createOrder POST product_id & cycle -> 创建订单+账单，跳转支付页
 func (h *Pay) createOrder(w http.ResponseWriter, r *http.Request) {
 	userID, ok := middleware.RequireUser(w, r)
@@ -191,7 +206,9 @@ func (h *Pay) createOrder(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	coupon := strings.TrimSpace(fv("coupon"))
-	orderID, invID, amount, err := h.Orders.CreateOrder(r.Context(), userID, productID, psID, cycle, selection, coupon)
+	// 活动上下文：购买页从活动详情页带入的活动绑定；服务端校验归属后才采纳。
+	promotionID, promotionProductID := promotionContextFromForm(fv)
+	orderID, invID, amount, err := h.Orders.CreateOrder(r.Context(), userID, productID, psID, cycle, selection, coupon, promotionID, promotionProductID)
 	if err != nil {
 		if errors.Is(err, service.ErrIdentityRequired) {
 			if wantsJSON(r) {
@@ -220,6 +237,17 @@ func (h *Pay) createOrder(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			http.Redirect(w, r, "/cart", http.StatusSeeOther)
+			return
+		}
+		// 指定的活动绑定已失效（活动结束/被禁用、不属于该商品、周期或价格组不匹配）：
+		// 前端据此重载购买页，让用户以当前真实活动重新确认。
+		if errors.Is(err, service.ErrPromotionBindingMismatch) {
+			if wantsJSON(r) {
+				w.WriteHeader(http.StatusBadRequest)
+				writeJSON(w, map[string]any{"ok": 0, "code": "promotion_invalid", "msg": err.Error()})
+				return
+			}
+			http.Redirect(w, r, "/buy/"+strconv.FormatInt(productID, 10), http.StatusSeeOther)
 			return
 		}
 		jsonStatus(w, r, 400, err.Error())

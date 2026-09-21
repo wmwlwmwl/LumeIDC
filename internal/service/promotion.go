@@ -42,12 +42,8 @@ type ActivePromotion struct {
 	RulesRaw  json.RawMessage
 }
 
-// ActivePromotionFor 查询商品当前生效的活动。
-func (s *PromotionService) ActivePromotionFor(ctx context.Context, productID, pricesetID int64, cycle string) (*ActivePromotion, error) {
-	ap, err := s.Promo.ActivePromotionFor(ctx, productID, pricesetID, cycle)
-	if err != nil || ap == nil {
-		return nil, err
-	}
+// activePromotionFromRepo 把 repo 层命中的活动转成活动服务模型并解析规则参数。
+func (s *PromotionService) activePromotionFromRepo(ap *repo.ActivePromotion) *ActivePromotion {
 	out := &ActivePromotion{
 		PromotionID:        ap.Promotion.ID,
 		PromotionProductID: ap.Product.ID,
@@ -80,7 +76,57 @@ func (s *PromotionService) ActivePromotionFor(ctx context.Context, productID, pr
 			out.CouponID = int64(v)
 		}
 	}
-	return out, nil
+	return out
+}
+
+// ActivePromotionFor 查询商品当前生效的活动。
+func (s *PromotionService) ActivePromotionFor(ctx context.Context, productID, pricesetID int64, cycle string) (*ActivePromotion, error) {
+	ap, err := s.Promo.ActivePromotionFor(ctx, productID, pricesetID, cycle)
+	if err != nil || ap == nil {
+		return nil, err
+	}
+	return s.activePromotionFromRepo(ap), nil
+}
+
+// ErrPromotionBindingMismatch 客户端指定的活动绑定与服务端校验结果不一致。
+var ErrPromotionBindingMismatch = errors.New("活动信息已失效，请刷新后重试")
+
+// ActivePromotionForRequested 校验并采纳购买页指定的活动绑定。
+// 前端从活动详情页进入购买页时会带上 promotion_id / promotion_product_id；
+// 服务端必须确认该绑定确实属于「当前商品 + 价格组 + 周期」且活动已启用并在进行中，
+// 任一条件不满足（含 ID 非正数）一律拒绝，绝不在服务端静默改判为其他活动。
+func (s *PromotionService) ActivePromotionForRequested(ctx context.Context, productID, pricesetID int64, cycle string, promotionID, promotionProductID int64) (*ActivePromotion, error) {
+	if promotionID <= 0 || promotionProductID <= 0 {
+		return nil, fmt.Errorf("%w", ErrPromotionBindingMismatch)
+	}
+	ap, err := s.Promo.ActivePromotionBindingFor(ctx, promotionID, promotionProductID, productID, pricesetID, cycle)
+	if err != nil {
+		return nil, err
+	}
+	if ap == nil {
+		return nil, fmt.Errorf("%w", ErrPromotionBindingMismatch)
+	}
+	if ap.Promotion.ID != promotionID || ap.Product.ID != promotionProductID || ap.Product.ProductID != productID {
+		return nil, fmt.Errorf("%w", ErrPromotionBindingMismatch)
+	}
+	return s.activePromotionFromRepo(ap), nil
+}
+
+var ErrUnsupportedPromotionType = errors.New("暂不支持该活动类型")
+
+// ValidatePromotionType 校验活动类型是否已实现。
+// 数据库 CHECK 还允许 bogo / group_buy，但业务未实现，必须在入口拒绝，避免配置出用户可见却无法生效的活动。
+func ValidatePromotionType(promoType string) error {
+	switch promoType {
+	case "discount", "flash_sale", "full_reduction", "new_user", "coupon_giveaway":
+		return nil
+	default:
+		return fmt.Errorf("%w: %s", ErrUnsupportedPromotionType, promoType)
+	}
+}
+
+func (s *PromotionService) ValidatePromotionType(promoType string) error {
+	return ValidatePromotionType(promoType)
 }
 
 // ApplyPromotion 对原售价应用活动规则。
@@ -100,12 +146,13 @@ func (s *PromotionService) ApplyPromotion(sell float64, promo *ActivePromotion) 
 		return sell, 0
 	case "full_reduction":
 		// 满减：达到门槛则减免
-		if promo.Threshold > 0 && sell >= promo.Threshold && promo.Reduce > 0 {
+		if promo.Threshold > 0 && promo.Reduce > 0 && sell >= promo.Threshold {
 			reduced := sell - promo.Reduce
 			if reduced < 0 {
 				reduced = 0
 			}
-			return math.Round(reduced*100) / 100, math.Round(promo.Reduce*100) / 100
+			actualDiscount := sell - reduced
+			return math.Round(reduced*100) / 100, math.Round(actualDiscount*100) / 100
 		}
 		return sell, 0
 	case "coupon_giveaway":
@@ -118,6 +165,14 @@ func (s *PromotionService) ApplyPromotion(sell float64, promo *ActivePromotion) 
 // CheckNewUser 校验是否新客。
 func (s *PromotionService) CheckNewUser(ctx context.Context, userID int64) (bool, error) {
 	return s.Promo.IsNewUser(ctx, userID)
+}
+
+func (s *PromotionService) CheckNewUserTx(ctx context.Context, tx *sql.Tx, userID int64) (bool, error) {
+	return s.Promo.IsNewUserTx(ctx, tx, userID)
+}
+
+func (s *PromotionService) CheckPromotionActiveTx(ctx context.Context, tx *sql.Tx, promotionID int64) error {
+	return s.Promo.CheckPromotionActiveTx(ctx, tx, promotionID)
 }
 
 // CheckQuotaAndLimit 下单时校验名额 + 限购（事务内调用）。
@@ -139,7 +194,7 @@ func (s *PromotionService) CheckQuotaAndLimit(ctx context.Context, tx *sql.Tx, p
 	return nil
 }
 
-func (s *PromotionService) ClaimCoupon(ctx context.Context, promotionID, userID, templateCouponID int64) error {
+func (s *PromotionService) ClaimCoupon(ctx context.Context, promotionID, promotionProductID, userID int64) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -169,6 +224,23 @@ func (s *PromotionService) ClaimCoupon(ctx context.Context, promotionID, userID,
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return err
+	}
+
+	var templateCouponID int64
+	err = tx.QueryRowContext(ctx,
+		`SELECT COALESCE((rules->>'coupon_id')::bigint,0)
+		   FROM promotion_products
+		  WHERE id=$1 AND promotion_id=$2
+		  FOR UPDATE`,
+		promotionProductID, promotionID).Scan(&templateCouponID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return errors.New("活动商品不存在")
+	}
+	if err != nil {
+		return err
+	}
+	if templateCouponID == 0 {
+		return errors.New("活动未配置优惠券")
 	}
 
 	var tpl repo.Coupon
@@ -209,6 +281,9 @@ func (s *PromotionService) ClaimCoupon(ctx context.Context, promotionID, userID,
 	if err != nil {
 		return err
 	}
+	if err := s.Promo.IncrementClaimedTx(ctx, tx, promotionID); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
@@ -229,6 +304,19 @@ var ErrPromotionNotApplicable = errors.New("该活动不适用于您的账户")
 func (s *PromotionService) ValidatePromotionApplicable(ctx context.Context, promo *ActivePromotion, userID int64) error {
 	if promo.Type == "new_user" {
 		isNew, err := s.CheckNewUser(ctx, userID)
+		if err != nil {
+			return fmt.Errorf("校验新客状态失败: %w", err)
+		}
+		if !isNew {
+			return ErrPromotionNotApplicable
+		}
+	}
+	return nil
+}
+
+func (s *PromotionService) ValidatePromotionApplicableTx(ctx context.Context, tx *sql.Tx, promo *ActivePromotion, userID int64) error {
+	if promo.Type == "new_user" {
+		isNew, err := s.CheckNewUserTx(ctx, tx, userID)
 		if err != nil {
 			return fmt.Errorf("校验新客状态失败: %w", err)
 		}

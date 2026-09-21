@@ -111,7 +111,7 @@ const columns = ref<ColumnOption[]>([
     prop: 'actions', label: '操作', width: 180, fixed: 'right',
     formatter: (row) => h('div', { class: 'flex gap-2' }, [
       h(ElButton, { size: 'small', link: true, type: 'primary', onClick: () => router.push(`/promotions/${row.id}/edit`) }, () => '编辑'),
-      h(ElButton, { size: 'small', link: true, type: 'primary', onClick: () => router.push(`/promotion/${row.id}`) }, () => '预览'),
+      h(ElButton, { size: 'small', link: true, type: 'primary', onClick: () => window.open(`/promotion/${row.id}`, '_blank') }, () => '预览'),
       h(ElButton, { size: 'small', link: true, type: 'danger', onClick: () => remove(row) }, () => '删除'),
     ]),
   },

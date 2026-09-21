@@ -121,7 +121,7 @@
                 plain
                 class="flex-1"
                 :loading="couponClaiming"
-                :disabled="couponClaimed"
+                :disabled="couponClaimed || !canUsePromotion(status)"
                 @click="claimCoupon(item)"
               >{{ couponClaimed ? '已领取' : '领取优惠券' }}</el-button>
             </template>
@@ -169,8 +169,10 @@ import { ElMessage } from 'element-plus'
 import { Bell, Document, ArrowDown } from '@element-plus/icons-vue'
 import { http } from '../http'
 import { formatDate as fmtDateTime, formatMoney, parseDate } from '@/utils/format'
+import { buildPromotionBuyPath, canUsePromotion } from '../utils/promotion-context'
 
 interface PromoProduct {
+  promotion_product_id: number
   product_id: number
   name: string
   original_price: string
@@ -226,11 +228,11 @@ function updateCountdown() {
   let diff = Math.max(0, Number.isNaN(end) ? 0 : end - now)
   countdown.value.days = Math.floor(diff / 86400000)
   diff %= 86400000
-  countdown.value.hours = pad(Math.floor(diff / 3600000)) as any
+  countdown.value.hours = Number(pad(Math.floor(diff / 3600000)))
   diff %= 3600000
-  countdown.value.minutes = pad(Math.floor(diff / 60000)) as any
+  countdown.value.minutes = Number(pad(Math.floor(diff / 60000)))
   diff %= 60000
-  countdown.value.seconds = pad(Math.floor(diff / 1000)) as any
+  countdown.value.seconds = Number(pad(Math.floor(diff / 1000)))
 }
 
 function formatDate(s: string) {
@@ -254,14 +256,17 @@ function quotaPercent(item: PromoProduct) {
 }
 
 function goBuy(item: PromoProduct) {
-  router.push(`/buy/${item.product_id}`)
+  if (!canUsePromotion(status.value)) return
+  router.push(buildPromotionBuyPath(item.product_id, promotion.value.id, item.promotion_product_id))
 }
 
 async function claimCoupon(item: PromoProduct) {
   if (couponClaiming.value || couponClaimed.value) return
   couponClaiming.value = true
   try {
-    const res = await http.post(`/promotion/${promotion.value.id}/claim`)
+    const res = await http.post(`/promotion/${promotion.value.id}/claim`, {
+      promotion_product_id: item.promotion_product_id,
+    })
     if (res.ok) {
       couponClaimed.value = true
       ElMessage.success('领取成功，可在下单时使用')

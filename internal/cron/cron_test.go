@@ -309,6 +309,121 @@ func TestExpireInvoicesReleasesOnce(t *testing.T) {
 	}
 }
 
+// 活动结束提醒必须同时覆盖领券用户与下单用户（UNION 去重后同一用户只收一条），
+// 且只有通知真正入队成功才写去重标记——否则用户将永远收不到提醒；
+// 重复运行 cron 不得再次发送。
+func TestNotifyEndingPromotionsCoversParticipantsOnce(t *testing.T) {
+	dsn := os.Getenv("TEST_DATABASE_DSN")
+	if dsn == "" {
+		t.Skip("未设置隔离测试数据库")
+	}
+	cfg, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		t.Fatal("测试数据库配置无效")
+	}
+	if !strings.Contains(strings.ToLower(cfg.Database), "test") || (cfg.Host != "localhost" && !net.ParseIP(cfg.Host).IsLoopback()) {
+		t.Fatal("仅允许本机测试数据库")
+	}
+	admin := stdlib.OpenDB(*cfg)
+	schema := fmt.Sprintf("promo_end_cron_test_%d", time.Now().UnixNano())
+	if _, err := admin.Exec(`CREATE SCHEMA ` + schema); err != nil {
+		t.Fatal(err)
+	}
+	cfg.RuntimeParams["search_path"] = schema
+	d := stdlib.OpenDB(*cfg)
+	d.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = d.Close(); _, _ = admin.Exec(`DROP SCHEMA ` + schema + ` CASCADE`); _ = admin.Close() })
+	exec := func(q string) {
+		t.Helper()
+		if _, err := d.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	exec(`CREATE TABLE users(id bigint PRIMARY KEY,email text,status int,phone_e164 text,phone_verified_at timestamptz);
+	CREATE TABLE settings(key text PRIMARY KEY,value text);
+	CREATE TABLE promotions(id bigint PRIMARY KEY,name text,ends_at timestamptz,enabled boolean NOT NULL DEFAULT true);
+	CREATE TABLE coupons(id bigint PRIMARY KEY);
+	CREATE TABLE promotion_coupon_claims(id bigint PRIMARY KEY,promotion_id bigint,user_id bigint,coupon_id bigint);
+	CREATE TABLE orders(id bigint PRIMARY KEY,user_id bigint,promotion_id bigint);
+	CREATE TABLE promotion_ending_notifications(promotion_id bigint,user_id bigint,notified_at timestamptz DEFAULT now(),PRIMARY KEY(promotion_id,user_id));
+	INSERT INTO users VALUES(1,'u1@x.test',1,NULL,NULL),(2,'u2@x.test',1,NULL,NULL),(3,'u3@x.test',1,NULL,NULL);
+	INSERT INTO settings VALUES('notify_email_forward_enabled','1');
+	-- 活动 1 即将结束（24 小时内），活动 2 还早
+	INSERT INTO promotions VALUES(1,'夏日特惠',now()+interval '23 hours',true),(2,'长期活动',now()+interval '48 hours',true);
+	INSERT INTO coupons VALUES(1);
+	-- 用户 1 既领券又下单（UNION 应去重为一条），用户 2 仅下单，用户 3 只参与未到期活动
+	INSERT INTO promotion_coupon_claims VALUES(1,1,1,1);
+	INSERT INTO orders VALUES(1,1,1),(2,2,1),(3,3,2)`)
+	// 与 TestReminderMarksOnlyAfterEnqueue 相同：notify 在同一事务里写站内信与邮件队列，
+	// 缺短信相关迁移会让入队整体失败，测出的"标记与入队不一致"是夹具缺表而非业务缺陷。
+	for _, name := range []string{"020_notifications.sql", "045_notifications_enhance.sql", "060_mail_outbox.sql", "064_email_templates.sql",
+		"065_sms_templates.sql", "066_sms_provider_capabilities.sql", "067_sms_routes.sql"} {
+		b, err := fs.ReadFile(db.Migrations(), "migrations/"+name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		exec(string(b))
+	}
+	j := Jobs{DB: d, Notifier: service.NewNotifier(d, repo.NewSettings(d))}
+	ctx := context.Background()
+	marked := func() int {
+		t.Helper()
+		var n int
+		if err := d.QueryRow(`SELECT count(*) FROM promotion_ending_notifications`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	mails := func() int {
+		t.Helper()
+		var n int
+		if err := d.QueryRow(`SELECT count(*) FROM mail_outbox`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	// 第一轮：入队必然失败 → 不写去重标记，站内信也不留残片（事务整体回滚）。
+	exec(`ALTER TABLE mail_outbox ADD CONSTRAINT reject_test CHECK (subject='不可能的主题')`)
+	j.notifyEndingPromotions(ctx)
+	if marked() != 0 {
+		t.Fatal("通知入队失败时不得写去重标记，否则该用户将永远收不到提醒")
+	}
+	if mails() != 0 {
+		t.Fatal("入队失败不应留下邮件队列记录")
+	}
+	var notes int
+	if err := d.QueryRow(`SELECT count(*) FROM notifications`).Scan(&notes); err != nil {
+		t.Fatal(err)
+	}
+	if notes != 0 {
+		t.Fatal("入队失败时站内信应随事务回滚")
+	}
+	// 第二轮：正常入队，领券用户与下单用户各收一条，用户 1 去重后仍只一条，用户 3 不收到。
+	exec(`ALTER TABLE mail_outbox DROP CONSTRAINT reject_test`)
+	j.notifyEndingPromotions(ctx)
+	if mails() != 2 {
+		t.Fatalf("应按参与者各发一条：用户 1（领券+下单去重）与用户 2，实得 %d", mails())
+	}
+	var recipients int
+	if err := d.QueryRow(`SELECT count(DISTINCT recipient) FROM mail_outbox`).Scan(&recipients); err != nil {
+		t.Fatal(err)
+	}
+	if recipients != 2 {
+		t.Fatalf("收件人应去重为用户 1、用户 2 两人，实得 %d", recipients)
+	}
+	if marked() != 2 {
+		t.Fatalf("入队成功后应写两条去重标记，实得 %d", marked())
+	}
+	// 第三轮：重复运行不得再次发送。
+	j.notifyEndingPromotions(ctx)
+	if mails() != 2 {
+		t.Fatalf("重复运行不得再次发送，实得 %d", mails())
+	}
+	if marked() != 2 {
+		t.Fatalf("重复运行不得新增去重标记，实得 %d", marked())
+	}
+}
+
 func TestSplitByPresence(t *testing.T) {
 	sorted := func(v []int64) []int64 {
 		out := append([]int64(nil), v...)
