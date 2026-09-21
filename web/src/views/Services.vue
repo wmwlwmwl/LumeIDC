@@ -87,11 +87,13 @@ function daysText(s: ServiceLite): string {
 const renewDialog = ref(false)
 const renewTarget = ref<ServiceLite | null>(null)
 const renewCycle = ref('monthly')
+const renewCoupon = ref('')
 const renewBusy = ref(false)
 
 function openRenew(s: ServiceLite) {
   renewTarget.value = s
   renewCycle.value = s.default_cycle || 'monthly'
+  renewCoupon.value = ''
   renewDialog.value = true
 }
 
@@ -99,7 +101,7 @@ async function doRenew() {
   if (!renewTarget.value) return
   renewBusy.value = true
   try {
-    const result = await renewService(renewTarget.value.id, renewCycle.value)
+    const result = await renewService(renewTarget.value.id, renewCycle.value, renewCoupon.value.trim())
     if (result.redirect) {
       location.href = result.redirect
       return
@@ -259,6 +261,9 @@ async function doRenew() {
             <el-option v-if="renewTarget?.show_q" value="quarterly" label="按季付" />
             <el-option v-if="renewTarget?.show_y" value="yearly" label="按年付" />
           </el-select>
+        </el-form-item>
+        <el-form-item label="优惠码（选填）">
+          <el-input v-model="renewCoupon" placeholder="有续费优惠码可在此输入" clearable />
         </el-form-item>
       </el-form>
       <template #footer>

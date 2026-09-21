@@ -68,7 +68,8 @@ func (h *Pages) serviceRenew(w http.ResponseWriter, r *http.Request) {
 		return r.PostFormValue(k)
 	}
 	cycle := fv("cycle")
-	_, invID, amount, err := h.Orders.CreateRenewOrder(r.Context(), userID, serviceID, cycle)
+	couponCode := strings.TrimSpace(fv("coupon"))
+	_, invID, amount, err := h.Orders.CreateRenewOrder(r.Context(), userID, serviceID, cycle, couponCode)
 	if err != nil {
 		if errors.Is(err, service.ErrIdentityRequired) {
 			if wantsJSON(r) {

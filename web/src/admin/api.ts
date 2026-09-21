@@ -553,6 +553,9 @@ export interface AdminCoupon {
   usage_limit: number
   used: number
   active: boolean
+  apply_scope: string
+  recurring: number
+  need_product_ids: number[] | null
 }
 export async function fetchAdminCoupons(): Promise<AdminCoupon[]> {
   const res = await http.get<{ ok: number; list?: AdminCoupon[] }>('/coupons')
@@ -566,6 +569,9 @@ export async function createAdminCoupon(body: {
   min_amount: number
   usage_limit: number
   expires_at: string
+  apply_scope: string
+  recurring: number
+  need_product_ids: number[]
 }): Promise<void> {
   await http.post('/coupons/save', {
     code: body.code,
@@ -574,6 +580,9 @@ export async function createAdminCoupon(body: {
     min_amount: String(body.min_amount),
     usage_limit: String(body.usage_limit),
     expires_at: body.expires_at,
+    apply_scope: body.apply_scope,
+    recurring: String(body.recurring),
+    need_product_ids: JSON.stringify(body.need_product_ids),
   })
 }
 

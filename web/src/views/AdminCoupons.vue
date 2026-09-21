@@ -4,16 +4,18 @@ import { ref, computed, onMounted, h } from 'vue'
 import { ElMessage, ElTag, ElButton } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
 import type { ColumnOption } from '@/types'
-import { fetchAdminCoupons, createAdminCoupon, type AdminCoupon } from '../admin/api'
+import { fetchAdminCoupons, createAdminCoupon, fetchAdminProducts, type AdminCoupon, type AdminProduct } from '../admin/api'
 import { formatMoney } from '@/utils/format'
 
 const list = ref<AdminCoupon[]>([])
+const products = ref<AdminProduct[]>([])
 const loading = ref(false)
 const saving = ref(false)
 const dialog = ref(false)
 const showSearchBar = ref(true)
 const searchForm = ref<{ q: string; status: string }>({ q: '', status: '' })
-const form = ref({ code: '', type: 'fixed', value: 10, min_amount: 0, usage_limit: 0, expires_at: '' })
+const emptyForm = () => ({ code: '', type: 'fixed', value: 10, min_amount: 0, usage_limit: 0, expires_at: '', apply_scope: 'new', recurring: 0, need_product_ids: [] as number[] })
+const form = ref(emptyForm())
 
 const searchItems = [
   { label: '关键词', key: 'q', type: 'input', placeholder: '搜索优惠码', clearable: true },
@@ -75,6 +77,7 @@ const columns = ref<ColumnOption[]>([
       ),
   },
   { prop: 'type', label: '规则', width: 140, sortable: true, formatter: (row) => typeLabel(row) },
+  { prop: 'apply_scope', label: '适用范围', width: 110, formatter: (row) => scopeCell(row) },
   {
     prop: 'min_amount',
     label: '最低消费',
@@ -158,8 +161,14 @@ async function load() {
 onMounted(load)
 
 function openNew() {
-  form.value = { code: '', type: 'fixed', value: 10, min_amount: 0, usage_limit: 0, expires_at: '' }
+  form.value = emptyForm()
   dialog.value = true
+  // 需求商品多选需要商品清单（拉取失败不阻塞，多选框为空）
+  if (products.value.length === 0) {
+    fetchAdminProducts()
+      .then((ps) => (products.value = ps))
+      .catch(() => {})
+  }
 }
 
 async function save() {
@@ -182,6 +191,18 @@ async function save() {
 
 function typeLabel(c: AdminCoupon): string {
   return c.type === 'fixed' ? `满减 ￥${formatMoney(c.value)}` : `折扣 ${c.value}%`
+}
+
+function scopeCell(row: AdminCoupon) {
+  const labels: Record<string, string> = { new: '仅新购', renew: '仅续费', both: '新购+续费' }
+  const tags = [labels[row.apply_scope] || labels.new]
+  if (row.recurring > 0) tags.push(`循环${row.recurring}期`)
+  if (row.need_product_ids && row.need_product_ids.length > 0) tags.push('需持指定产品')
+  return h(
+    'div',
+    { style: 'display:flex;flex-wrap:wrap;gap:4px' },
+    tags.map((t) => h(ElTag, { size: 'small', effect: 'plain' }, () => t)),
+  )
 }
 
 // 过期判断：expires_at 为 'YYYY-MM-DD'，当天仍有效
@@ -230,6 +251,21 @@ function isExpired(c: AdminCoupon): boolean {
           <el-form-item label="使用次数（0 不限）"><el-input-number v-model="form.usage_limit" :min="0" class="w-full" /></el-form-item>
         </div>
         <el-form-item label="过期日期"><el-date-picker v-model="form.expires_at" type="date" value-format="YYYY-MM-DD" placeholder="留空不限" class="w-full" /></el-form-item>
+        <div class="admin-form-grid">
+          <el-form-item label="适用范围">
+            <el-select v-model="form.apply_scope" class="w-full">
+              <el-option label="仅新购" value="new" />
+              <el-option label="仅续费" value="renew" />
+              <el-option label="新购+续费" value="both" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="循环期数（续费可再用次数，0=每人一次）"><el-input-number v-model="form.recurring" :min="0" :max="120" class="w-full" /></el-form-item>
+        </div>
+        <el-form-item label="需求商品（须持有激活服务才可用，留空不限）">
+          <el-select v-model="form.need_product_ids" multiple clearable filterable placeholder="不限" class="w-full">
+            <el-option v-for="p in products" :key="p.id" :label="p.name" :value="p.id" />
+          </el-select>
+        </el-form-item>
       </el-form>
       <template #footer><el-button @click="dialog = false">取消</el-button><el-button type="primary" :loading="saving" @click="save">创建</el-button></template>
     </el-dialog>

@@ -148,10 +148,12 @@ async function loadServiceInvoices() {
 
 const renewDialog = ref(false)
 const renewCycle = ref('monthly')
+const renewCoupon = ref('')
 const renewBusy = ref(false)
 
 function openRenew() {
   renewCycle.value = data.value?.default_cycle || 'monthly'
+  renewCoupon.value = ''
   renewDialog.value = true
 }
 
@@ -159,7 +161,7 @@ async function doRenew() {
   if (!data.value) return
   renewBusy.value = true
   try {
-    const result = await renewService(data.value.svc.id, renewCycle.value)
+    const result = await renewService(data.value.svc.id, renewCycle.value, renewCoupon.value.trim())
     if (result.redirect) {
       // 后台代管：无前台支付/实名页，改为提示后原地刷新（订单已生成，去「订单管理」处理）
       if (isAdminView.value) {
@@ -389,6 +391,9 @@ function openUpgrade() {
                 :label="`按年付 · ￥${formatMoney(data.renew_prices?.yearly || 0)}`"
               />
             </el-select>
+          </el-form-item>
+          <el-form-item label="优惠码（选填）">
+            <el-input v-model="renewCoupon" placeholder="有续费优惠码可在此输入" clearable />
           </el-form-item>
         </el-form>
         <template #footer>

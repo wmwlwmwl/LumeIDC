@@ -146,7 +146,7 @@ func TestCreateOrderChargesSetupFeeOnce(t *testing.T) {
 	}
 
 	// 续费：(3+10+10) × 1.2 = 27.60，初装费是一次性的，不再收
-	_, _, renewAmount, err := orders.CreateRenewOrder(ctx, uid, svcID, "monthly")
+	_, _, renewAmount, err := orders.CreateRenewOrder(ctx, uid, svcID, "monthly", "")
 	if err != nil {
 		t.Fatalf("续费下单失败: %v", err)
 	}
@@ -210,7 +210,7 @@ func TestCreateRenewOrderFreeProduct(t *testing.T) {
 	orders := &Orders{db: d, Products: products}
 
 	t.Run("月付价 0 的免费商品可续费且金额为 0", func(t *testing.T) {
-		_, invID, amount, err := orders.CreateRenewOrder(ctx, uid, svcID, "monthly")
+		_, invID, amount, err := orders.CreateRenewOrder(ctx, uid, svcID, "monthly", "")
 		if err != nil {
 			t.Fatalf("免费商品应能续费，实得: %v", err)
 		}
@@ -220,7 +220,7 @@ func TestCreateRenewOrderFreeProduct(t *testing.T) {
 	})
 
 	t.Run("三周期价全 0 的免费商品季付也可续费", func(t *testing.T) {
-		_, invID, amount, err := orders.CreateRenewOrder(ctx, uid, svcID, "quarterly")
+		_, invID, amount, err := orders.CreateRenewOrder(ctx, uid, svcID, "quarterly", "")
 		if err != nil {
 			t.Fatalf("免费商品应能季付续费，实得: %v", err)
 		}
@@ -583,5 +583,96 @@ func TestCreateOrderRejectsEndedOrDisabledPromotion(t *testing.T) {
 				t.Fatal("拒绝下单时不得落单")
 			}
 		})
+	}
+}
+
+// 续费支持优惠码（080 场景化）：renew/both 券可抵扣续费金额；new 券被场景拒绝且不落单。
+func TestCreateRenewOrderWithCoupon(t *testing.T) {
+	d := testDB(t)
+	ctx := context.Background()
+	products := repo.NewProducts(d)
+	coupons := repo.NewCoupons(d)
+	psID, err := products.DefaultPricesetID(ctx)
+	if err != nil {
+		t.Skip("库中暂无价格组，跳过")
+	}
+	stamp := time.Now().Format("150405.000000000")
+	var uid, pid, svcID int64
+	if err := d.QueryRowContext(ctx,
+		`INSERT INTO users(email,password_hash) VALUES($1,'x') RETURNING id`,
+		"renewcoupon-"+stamp+"@example.invalid").Scan(&uid); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.QueryRowContext(ctx,
+		`INSERT INTO products(type_id,name,stock,requires_identity) VALUES(NULL,'单元测试-续费用券',-1,false) RETURNING id`).Scan(&pid); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.ExecContext(ctx,
+		`INSERT INTO product_prices(product_id,priceset_id,monthly,quarterly,yearly) VALUES($1,$2,100,0,0)`,
+		pid, psID); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.QueryRowContext(ctx,
+		`INSERT INTO services(user_id,product_id,status,cycle,expires_at) VALUES($1,$2,1,'monthly',now()) RETURNING id`,
+		uid, pid).Scan(&svcID); err != nil {
+		t.Fatal(err)
+	}
+	renewCode := "T-RENEW-" + strconv.FormatInt(time.Now().UnixNano()%100000000, 10)
+	newCode := "T-NEW-" + strconv.FormatInt(time.Now().UnixNano()%100000000, 10)
+	if err := coupons.CreateWithOptions(ctx, renewCode, "fixed", 30, 0, 0, nil, repo.CouponOptions{ApplyScope: "renew"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := coupons.Create(ctx, newCode, "fixed", 30, 0, 0, nil); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx := context.Background()
+		for _, q := range []struct {
+			query string
+			arg   any
+		}{
+			{`DELETE FROM coupon_usages WHERE coupon_id IN (SELECT id FROM coupons WHERE code IN ($1,$2))`, nil},
+			{`DELETE FROM coupons WHERE code IN ($1,$2)`, nil},
+			{`DELETE FROM invoices WHERE user_id=$1`, uid},
+			{`DELETE FROM orders WHERE user_id=$1`, uid},
+			{`DELETE FROM services WHERE id=$1`, svcID},
+			{`DELETE FROM product_prices WHERE product_id=$1`, pid},
+			{`DELETE FROM products WHERE id=$1`, pid},
+			{`DELETE FROM users WHERE id=$1`, uid},
+		} {
+			var err error
+			if q.arg != nil {
+				_, err = d.ExecContext(ctx, q.query, q.arg)
+			} else {
+				_, err = d.ExecContext(ctx, q.query, renewCode, newCode)
+			}
+			if err != nil {
+				t.Errorf("清理测试数据失败(%s): %v", q.query, err)
+			}
+		}
+	})
+
+	orders := &Orders{db: d, Products: products, Coupons: coupons}
+
+	// new 券用于续费：场景拒绝且不落单
+	_, _, _, err = orders.CreateRenewOrder(ctx, uid, svcID, "monthly", newCode)
+	if !errors.Is(err, repo.ErrCouponScene) {
+		t.Fatalf("new 券续费应报场景错误，实得 %v", err)
+	}
+	var n int
+	if err := d.QueryRowContext(ctx, `SELECT count(*) FROM orders WHERE user_id=$1`, uid).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatal("场景拒绝时不得落单")
+	}
+
+	// renew 券抵扣：100 - 30 = 70.00
+	_, _, amount, err := orders.CreateRenewOrder(ctx, uid, svcID, "monthly", renewCode)
+	if err != nil {
+		t.Fatalf("renew 券续费下单失败: %v", err)
+	}
+	if amount != "70.00" {
+		t.Fatalf("续费用券金额应为 70.00，实得 %s", amount)
 	}
 }

@@ -238,7 +238,7 @@ func (o *Orders) CreateOrder(ctx context.Context, userID, productID, pricesetID 
 	var couponID int64
 	var couponDiscount string
 	if couponCode != "" && o.Coupons != nil {
-		cid, discount, cerr := o.Coupons.Validate(ctx, tx, couponCode, userID, finalAmount)
+		cid, discount, cerr := o.Coupons.Validate(ctx, tx, couponCode, userID, finalAmount, "new")
 		switch {
 		case cerr == nil:
 			couponID = cid
@@ -427,7 +427,10 @@ func CycleInterval(cycle string) (string, error) {
 }
 
 // CreateRenewOrder 为既有服务生成续费订单+账单。
-func (o *Orders) CreateRenewOrder(ctx context.Context, userID, serviceID int64, cycle string) (orderID, invoiceID int64, amount string, err error) {
+// couponCode 可选优惠码（仅 apply_scope 为 renew/both 的券可用）；有效时按规则抵扣并写入使用记录。
+// 已知取舍：「复用未支付账单」分支优先于用券——已存在未支付续费账单时传入的券不生效，
+// 用户需先等账单过期（cron 释放券占用）或支付。
+func (o *Orders) CreateRenewOrder(ctx context.Context, userID, serviceID int64, cycle string, couponCode string) (orderID, invoiceID int64, amount string, err error) {
 	col, ok := cycleCol[cycle]
 	if !ok {
 		return 0, 0, "", fmt.Errorf("无效的计费周期: %s", cycle)
@@ -583,6 +586,18 @@ func (o *Orders) CreateRenewOrder(ctx context.Context, userID, serviceID int64, 
 	if ov != nil && *ov > 0 {
 		amountRaw = strconv.FormatFloat(mathRound(*ov), 'f', 2, 64)
 	}
+	// 优惠码抵扣（续费场景）：与新购同事务内锁定校验，避免并发超发；提前到建单前，失败不留孤儿订单。
+	var couponID int64
+	var couponDiscount string
+	if couponCode != "" && o.Coupons != nil {
+		cid, discount, cerr := o.Coupons.Validate(ctx, tx, couponCode, userID, amountRaw, "renew")
+		if cerr != nil {
+			return 0, 0, "", cerr
+		}
+		couponID = cid
+		couponDiscount = discount
+		amountRaw = subtractAmount(amountRaw, discount)
+	}
 	// 金额为 0 不再拒绝：月付价为 0 的免费商品同样要能续费（0 元单由调用方直接核销并延期）。
 	// 季/年付为 0 属于"未配置该周期"，已在上面拦掉，不会走到这里。
 	// 配置快照落库：续费前比价要用"下单时的成本额"（quote.total）当基准，
@@ -608,6 +623,12 @@ func (o *Orders) CreateRenewOrder(ctx context.Context, userID, serviceID int64, 
 		no, userID, orderID, amountRaw, invoiceDueInterval).Scan(&invoiceID)
 	if err != nil {
 		return 0, 0, "", err
+	}
+	// 写入优惠码使用记录（已在校验阶段锁定）
+	if couponID > 0 {
+		if e := o.Coupons.Use(ctx, tx, couponID, userID, orderID, couponDiscount); e != nil {
+			return 0, 0, "", e
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, 0, "", err

@@ -119,8 +119,8 @@ export async function consoleAction(id: number, body: Record<string, unknown>): 
   return res as unknown as ActionResult
 }
 
-export async function renewService(id: number, cycle: string): Promise<ActionResult> {
-  return (await http.post<ActionResult>(`/services/${id}/renew`, { cycle })) as unknown as ActionResult
+export async function renewService(id: number, cycle: string, coupon?: string): Promise<ActionResult> {
+  return (await http.post<ActionResult>(`/services/${id}/renew`, { cycle, coupon: coupon || '' })) as unknown as ActionResult
 }
 
 export async function renameService(id: number, name: string, remark: string): Promise<ActionResult> {
