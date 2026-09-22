@@ -290,10 +290,22 @@ func (p *Plugin) approveFlow(ctx context.Context, req *Request, adminID int64) s
 	if refundID, err := p.requests.LatestRefundID(ctx, req.OrderID); err == nil && refundID > 0 {
 		_ = p.requests.SetRefundID(ctx, req.ID, refundID)
 	}
-	// 退款后产品操作：按商品规则执行（暂停/终止），仅本地状态变更。
+	// 退款后产品操作：按商品规则执行（暂停/终止），仅本地状态变更，不触达上游；
+	// 状态变更后外发核心生命周期事件，webhook 类订阅方能感知服务被停用/删除。
 	if pid, perr := p.requests.ProductIDByOrder(ctx, req.OrderID); perr == nil {
 		if rule, rerr := p.requests.RuleForProduct(ctx, pid); rerr == nil && rule != nil {
-			_ = p.requests.ApplyPostRefundAction(ctx, req.OrderID, rule.PostRefundAction)
+			affected, aerr := p.requests.ApplyPostRefundAction(ctx, req.OrderID, rule.PostRefundAction)
+			if aerr == nil {
+				evt := plugin.EventServiceSuspended
+				if rule.PostRefundAction == "terminate" {
+					evt = plugin.EventServiceTerminated
+				}
+				for _, s := range affected {
+					plugin.Emit(ctx, evt, plugin.ServicePayload{
+						ServiceID: s.ServiceID, UserID: s.UserID, ProductID: s.ProductID,
+					})
+				}
+			}
 		}
 	}
 	plugin.Emit(ctx, EventRefundApproved, RefundPayload{

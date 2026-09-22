@@ -327,8 +327,13 @@ func (p *Plugin) adminDelete(w http.ResponseWriter, r *http.Request) {
 		plugin.StatusFail(w, 400, "参数错误")
 		return
 	}
-	if err := p.records.Delete(r.Context(), id); err != nil {
+	deleted, err := p.records.Delete(r.Context(), id)
+	if err != nil {
 		plugin.JSONFail(w, "删除失败")
+		return
+	}
+	if !deleted {
+		plugin.JSONFail(w, "记录不存在")
 		return
 	}
 	plugin.Emit(r.Context(), EventViolationRemoved, ViolationPayload{RecordID: id})
