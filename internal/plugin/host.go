@@ -17,8 +17,16 @@ type SettingsStore interface {
 // 组合根直接注入）。
 type NotifySender interface {
 	NotifyTemplate(ctx context.Context, userID int64, code, title, body string, values ...map[string]string) error
+	// Notify 通用站内消息（无邮件模板 code；开启邮件转发时以纯文本补发）。供业务插件通知用户。
+	Notify(ctx context.Context, userID int64, title, body string) error
 	// NotifyAdminOnce 按 alertKey 去重的管理员告警（同日同 key 只发一次，适合日报/告警）。
 	NotifyAdminOnce(ctx context.Context, alertKey, category, subject, body string) error
+}
+
+// Refunder 已支付订单退款（窄接口，与 service.Payment.Refund 签名一致，组合根注入）。
+// 未注入（nil）时插件应降级为「仅记录待人工处理」，不得 panic。
+type Refunder interface {
+	Refund(ctx context.Context, adminID, orderID int64, amount, reason, method string) error
 }
 
 // Host 宿主注入给插件的能力。组合根在 Init 循环中经 forPlugin 派生
@@ -27,6 +35,8 @@ type Host struct {
 	DB       *sql.DB
 	Settings SettingsStore
 	Notify   NotifySender
+	// Refunder 退款执行能力（可选）；核心未注入时为 nil，插件需自行降级。
+	Refunder Refunder
 	// PrivateRoot 站点私有数据根目录（不可公网访问）；插件派生自有目录用
 	// PrivateDir()，未配置时为空串。
 	PrivateRoot string

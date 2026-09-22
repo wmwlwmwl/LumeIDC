@@ -222,14 +222,7 @@ func Build(cfg *config.Config, version string) (*App, error) {
 
 	// 通知/实名服务：Notifier 先建，供身份/验证码/Auth 共享。
 	notifier := service.NewNotifier(database, settingsRepo)
-	// 插件初始化（事件订阅在此生效；Init 失败即启动失败——编译期插件的问题应启动期暴露）
 	pluginHost := &plugin.Host{DB: database, Settings: settingsRepo, Notify: notifier, PrivateRoot: cfg.PrivateDataDir}
-	for _, pl := range plugin.All() {
-		if err := pl.Init(pluginHost.ForPlugin(pl.Info().Name)); err != nil {
-			database.Close()
-			return nil, fmt.Errorf("插件 %s 初始化失败: %w", pl.Info().Name, err)
-		}
-	}
 	identity := service.NewIdentity(identityStore, users, piiCryptor, identityFiles,
 		notifier, identityKey, notifier, settingsRepo, cfg.BaseURL,
 		service.NewConfiguredVerificationProvider(settingsRepo, ""))
@@ -245,6 +238,14 @@ func Build(cfg *config.Config, version string) (*App, error) {
 	lifecycle := service.NewLifecycle(database, serversRepo, products, providers, provisions, jobs)
 	paymentSvc := service.NewPayment(database, lifecycle, serversRepo, products, provisions, jobs, balanceRepo, providers, periodGrants, notifier, cryptor)
 	paymentSvc.Promotion = promotionSvc
+	// 插件初始化（Refunder 已就绪；事件订阅在此生效；Init 失败即启动失败——编译期插件的问题应启动期暴露）
+	pluginHost.Refunder = paymentSvc
+	for _, pl := range plugin.All() {
+		if err := pl.Init(pluginHost.ForPlugin(pl.Info().Name)); err != nil {
+			database.Close()
+			return nil, fmt.Errorf("插件 %s 初始化失败: %w", pl.Info().Name, err)
+		}
+	}
 	// 支付网关：各驱动包 init() 自注册（新增见 gateway/registry.go）。
 	gateways := gateway.All()
 	// 支持订单查询的网关（异步通知丢失时补单）。
@@ -367,7 +368,7 @@ func Build(cfg *config.Config, version string) (*App, error) {
 			// 必须带方法注册：无方法的全路子树与 SPA 兜底 "GET /{path...}"
 			// 构成"路径宽方法窄 vs 路径窄方法宽"的重叠，ServeMux 会 panic。
 			gated := plugin.Gate(name, http.StripPrefix(prefix, adminSub))
-			for _, method := range []string{http.MethodGet, http.MethodPost} {
+			for _, method := range []string{http.MethodGet, http.MethodPost, http.MethodDelete} {
 				mux.Handle(method+" "+prefix+"/", gated)
 			}
 		}
