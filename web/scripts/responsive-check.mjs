@@ -133,6 +133,8 @@ const TARGETS = [
   ['admin-types', '/admin#/types'],
   ['admin-announcements', '/admin#/announcements'],
   ['admin-verifications', '/admin#/verifications'],
+  ['admin-plugin-refund', '/admin#/plugin/refund'],
+  ['client-plugin-refund', '/plugin/refund'],
 ]
 
 const VIEWPORTS = [

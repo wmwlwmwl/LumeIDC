@@ -10,10 +10,13 @@ const adminRegistry: Record<string, () => Promise<Component>> = {
   webhooknotify: () => import('./webhooknotify/Admin.vue'),
   announcement: () => import('./announcement/Admin.vue'),
   tickets: () => import('./tickets/Admin.vue'),
+  refund: () => import('./refund/Admin.vue'),
 }
 
 /** 前台用户中心插件页（ClientShell 使用，路由 /plugin/{name}） */
-const clientRegistry: Record<string, () => Promise<Component>> = {}
+const clientRegistry: Record<string, () => Promise<Component>> = {
+  refund: () => import('./refund/MyRefunds.vue'),
+}
 
 /** 按插件名取后台页组件加载器；未注册返回 undefined。 */
 export function pluginComponent(name: string): (() => Promise<Component>) | undefined {
