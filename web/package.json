@@ -19,7 +19,7 @@
     "@iconify/vue": "^5.0.0",
     "@novnc/novnc": "^1.7.0",
     "@tailwindcss/vite": "^4.1.14",
-    "@vueuse/core": "^13.9.0",
+    "@vueuse/core": "^15.0.0",
     "echarts": "^6.1.0",
     "element-plus": "~2.11.2",
     "mitt": "^3.0.1",
