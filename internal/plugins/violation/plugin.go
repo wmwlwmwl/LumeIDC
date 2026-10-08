@@ -3,16 +3,22 @@
 package violation
 
 import (
+	"context"
 	"embed"
 	"io/fs"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"lumeidc/internal/plugin"
 )
 
 const Name = "violation"
+
+// defAdminOpRate 管理端操作限流默认值（checkAdminRate 兜底与 ConfigSchema 展示共用）。
+const defAdminOpRate = 30
 
 // 插件事件（供 webhooknotify 等订阅）。
 const (
@@ -47,6 +53,30 @@ type Plugin struct {
 	records *Records
 	anns    *Announcements
 	users   *Users
+	// adminLimiter 管理端危险操作限流器（按 adminID|IP|op 三重键；懒加载）。
+	// 防脚本批量点击 / 误操作刷量；纯内存无外部依赖，语义见 plugin.RateLimiter。
+	adminLimiterOnce sync.Once
+	adminLimiter     *plugin.RateLimiter
+}
+
+func (p *Plugin) limiter() *plugin.RateLimiter {
+	p.adminLimiterOnce.Do(func() {
+		p.adminLimiter = plugin.NewRateLimiter()
+	})
+	return p.adminLimiter
+}
+
+// checkAdminRate 管理端危险操作统一节流闸门（保存/删除等共用）。
+// 限流强度取插件配置 adminOpRatePerMin（<=0 表示关闭，本地开发/单管理员机房）；
+// 键为 <adminID>|<ip>|<op>，限额语义详见 plugin.RateLimiter.AllowAdmin。
+func (p *Plugin) checkAdminRate(r *http.Request, adminID int64, op string) (bool, time.Duration) {
+	rate := defAdminOpRate
+	if v := strings.TrimSpace(p.host.Config(r.Context(), "adminOpRatePerMin")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			rate = n
+		}
+	}
+	return p.limiter().AllowAdmin(r, rate, adminID, op)
 }
 
 func (p *Plugin) Info() plugin.Info {
@@ -87,7 +117,20 @@ func (p *Plugin) ConfigSchema() []plugin.ConfigField {
 			Default: "警告\n限制功能\n暂停服务\n停用账户", Tip: "每行一个措施；仅记录展示，不联动账户状态"},
 		{Key: "defaultPublic", Title: "新增时默认公示", Type: "switch", Default: "0",
 			Tip: "添加违规表单中「是否公示」的默认值"},
+		{Key: "notifyUser", Title: "通知用户", Type: "switch", Default: "1",
+			Tip: "新增/实质变更违规记录时向对应用户发送站内信；开启邮件转发的站点将同步补发"},
+		{Key: "adminOpRatePerMin", Title: "管理端操作限流（次/分钟）", Type: "number", Default: strconv.Itoa(defAdminOpRate),
+			Tip: "保存/删除等危险操作按 <管理员>|<IP>|<操作> 限流；0 表示关闭（本地开发/单管理员环境）"},
 	}
+}
+
+// cfgBool 开关配置解析：空串（未配置）回退默认值，""/"0"/"false" 为 false，其余 true。
+func (p *Plugin) cfgBool(ctx context.Context, key string, def bool) bool {
+	v := strings.TrimSpace(p.host.Config(ctx, key))
+	if v == "" {
+		return def
+	}
+	return parseBool(v)
 }
 
 func (p *Plugin) RegisterAdminRoutes(mux *http.ServeMux) {

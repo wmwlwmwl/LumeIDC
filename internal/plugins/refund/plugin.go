@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"lumeidc/internal/money"
@@ -76,6 +77,8 @@ const (
 	defMaxAmount   = "0"
 	defNotifyAdmin = "1"
 	defNotifyUser  = "1"
+	// defAdminRate 审核限流默认值（数值形态供 cfgInt 兜底，字符串形态供配置页展示）。
+	defAdminRate = "30"
 )
 
 func init() {
@@ -89,6 +92,17 @@ func init() {
 type Plugin struct {
 	host     *plugin.Host
 	requests *Requests
+	// adminLimiter 管理端审核操作限流器（按 adminID|IP|op 三重键；懒加载）。
+	// 拒防审核被脚本批量点击 / 误操作刷量；纯内存无外部依赖，语义见 plugin.RateLimiter。
+	adminLimiterOnce sync.Once
+	adminLimiter     *plugin.RateLimiter
+}
+
+func (p *Plugin) limiter() *plugin.RateLimiter {
+	p.adminLimiterOnce.Do(func() {
+		p.adminLimiter = plugin.NewRateLimiter()
+	})
+	return p.adminLimiter
 }
 
 func (p *Plugin) Info() plugin.Info {
@@ -151,6 +165,9 @@ func (p *Plugin) ConfigSchema() []plugin.ConfigField {
 		{Key: "notifyFeishu", Title: "飞书通知", Type: "switch", Default: "0"},
 		{Key: "notifyFeishuUrl", Title: "飞书机器人 Webhook", Type: "text",
 			Tip: "开启后新退款申请/审核结果将推送到该机器人"},
+		// ---- 管理端审核限流 ----
+		{Key: "adminApproveRatePerMin", Title: "审核操作限流（次/分钟）", Type: "number", Default: defAdminRate,
+			Tip: "通过/驳回等危险操作按 <管理员>|<IP>|<操作> 限流；0 表示关闭（本地开发/单管理员环境）"},
 	}
 }
 
@@ -337,4 +354,14 @@ func isValidDecimal(s string) bool {
 		}
 	}
 	return true
+}
+
+// ---- 管理端审核操作限流（防刷 / 防误操作） ----
+
+// checkAdminRate 管理员入口统一节流闸门（approve/reject 共用）。
+// 限流强度取插件配置 adminApproveRatePerMin（<=0 表示关闭，本地开发/单管理员机房）；
+// 键为 <adminID>|<ip>|<op>，限额语义详见 plugin.RateLimiter.AllowAdmin。
+func (p *Plugin) checkAdminRate(r *http.Request, adminID int64, op string) (bool, time.Duration) {
+	rate := p.cfgInt(r.Context(), "adminApproveRatePerMin", 30)
+	return p.limiter().AllowAdmin(r, rate, adminID, op)
 }

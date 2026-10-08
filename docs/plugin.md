@@ -232,6 +232,7 @@ func (p *Plugin) CronJobs() []plugin.CronJob {
 | `refund` | 复用核心能力（Host.Refunder）、商品级规则表、自定义事件、多渠道通知 |
 | `violation` | 公示页（前台公开路由）、跨插件复用公告仓储、记录生命周期事件 |
 | `dailyreport` | 最薄插件：纯配置 + cron + 管理员通知，零建表零前端 |
+| `spaceship` | 外部 API 客户端 + 异步注册轮询（cron）+ 前后台 CRUD + 迁移建表 + 余额扣减 |
 
 注：dailyreport 目前直接查 tickets 插件的表统计工单数（跨插件表耦合），
 tickets 禁用后日报仍会统计其历史工单——如需严格隔离请自行加启用态判断。

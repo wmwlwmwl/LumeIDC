@@ -5,10 +5,12 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"lumeidc/internal/money"
 	"lumeidc/internal/plugin"
@@ -149,6 +151,11 @@ func (p *Plugin) adminApprove(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if allowed, retry := p.checkAdminRate(r, sess.UserID, "approve"); !allowed {
+		w.Header().Set("Retry-After", strconv.Itoa(int(retry.Seconds())+1))
+		plugin.StatusFail(w, http.StatusTooManyRequests, "操作过于频繁，请稍后再试")
+		return
+	}
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		plugin.StatusFail(w, 400, "参数错误")
@@ -168,7 +175,7 @@ func (p *Plugin) adminApprove(w http.ResponseWriter, r *http.Request) {
 		plugin.JSONFail(w, "该申请已处理")
 		return
 	}
-	if msg := p.approveFlow(ctx, req, sess.UserID); msg != "" {
+	if msg := p.approveFlow(ctx, req, sql.NullInt64{Int64: sess.UserID, Valid: true}); msg != "" {
 		plugin.JSONFail(w, msg)
 		return
 	}
@@ -181,6 +188,11 @@ func (p *Plugin) adminReject(w http.ResponseWriter, r *http.Request) {
 	}
 	sess, ok := plugin.AdminSession(w, r)
 	if !ok {
+		return
+	}
+	if allowed, retry := p.checkAdminRate(r, sess.UserID, "reject"); !allowed {
+		w.Header().Set("Retry-After", strconv.Itoa(int(retry.Seconds())+1))
+		plugin.StatusFail(w, http.StatusTooManyRequests, "操作过于频繁，请稍后再试")
 		return
 	}
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
@@ -208,6 +220,10 @@ func (p *Plugin) adminReject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	note := strings.TrimSpace(vals["handle_note"])
+	if len([]rune(note)) > 500 {
+		plugin.StatusFail(w, 400, "驳回备注过长")
+		return
+	}
 	claimed, err := p.requests.Claim(ctx, id, statusRejected, sess.UserID, note)
 	if err != nil {
 		plugin.JSONFail(w, "操作失败")
@@ -226,7 +242,9 @@ func (p *Plugin) adminReject(w http.ResponseWriter, r *http.Request) {
 		if note != "" {
 			body += "原因：" + note
 		}
-		_ = p.host.Notify.Notify(ctx, req.UserID, "退款申请未通过", body)
+		if err := p.host.Notify.Notify(ctx, req.UserID, "退款申请未通过", body); err != nil {
+			log.Printf("[refund] 驳回结果通知用户失败 req=%d user=%d: %v", req.ID, req.UserID, err)
+		}
 	}
 	// 多渠道机器人通知。
 	rejectMsg := fmt.Sprintf("订单 #%d 的退款申请已驳回\n金额：%s 元", req.OrderID, req.Amount)
@@ -239,9 +257,9 @@ func (p *Plugin) adminReject(w http.ResponseWriter, r *http.Request) {
 
 // approveFlow 执行通过流程：原子占位 → 核心退款 → 回写退款单号 → 事件与通知。
 // 返回空串表示成功；否则为失败原因（已回滚 pending，可重试）。
-// 记账与通知失败不影响已执行的退款结果。
-func (p *Plugin) approveFlow(ctx context.Context, req *Request, adminID int64) string {
-	claimed, err := p.requests.Claim(ctx, req.ID, statusApproved, adminID, "")
+// 记账与通知失败不影响已执行的退款结果，但会通过 NotifyAdminOnce 告知管理员处理人复核。
+func (p *Plugin) approveFlow(ctx context.Context, req *Request, admin sql.NullInt64) string {
+	claimed, err := p.requests.ClaimBy(ctx, req.ID, statusApproved, admin, "")
 	if err != nil {
 		return "操作失败"
 	}
@@ -277,25 +295,33 @@ func (p *Plugin) approveFlow(ctx context.Context, req *Request, adminID int64) s
 			}
 		}
 	}
-	if err := p.host.Refunder.Refund(ctx, adminID, req.OrderID, refundAmount,
+	// Refunder.Refund 不返回退款单 ID；为了避免把"取最新ID"和"写回"之间被并发插入覆盖，
+	// 将"读最新 ID + 写回"放进一个事务里（FOR UPDATE 锁住当前订单的最新 refunds 行）。
+	// 即便失败，也已经完成了退款，状态保留 approved，仅通知管理员人工补 refund_id。
+	refunderAdmin := admin.Int64
+	if err := p.host.Refunder.Refund(ctx, refunderAdmin, req.OrderID, refundAmount,
 		"用户自助退款："+req.Reason, req.Method); err != nil {
 		_ = p.requests.Reopen(ctx, req.ID)
 		return "退款执行失败：" + err.Error()
 	}
 	// 实退金额与申请金额不一致时（扣除了手续费），回写申请记录金额。
 	if refundAmount != req.Amount {
-		_ = p.requests.UpdateAmount(ctx, req.ID, refundAmount)
+		if err := p.requests.UpdateAmount(ctx, req.ID, refundAmount); err != nil {
+			p.alertAdmin(ctx, req, "回写实退金额失败", err)
+		}
 		req.Amount = refundAmount
 	}
-	if refundID, err := p.requests.LatestRefundID(ctx, req.OrderID); err == nil && refundID > 0 {
-		_ = p.requests.SetRefundID(ctx, req.ID, refundID)
+	if _, err := p.requests.AttachRefundID(ctx, req.ID, req.OrderID); err != nil {
+		p.alertAdmin(ctx, req, "回写核心退款单号失败", err)
 	}
 	// 退款后产品操作：按商品规则执行（暂停/终止），仅本地状态变更，不触达上游；
 	// 状态变更后外发核心生命周期事件，webhook 类订阅方能感知服务被停用/删除。
 	if pid, perr := p.requests.ProductIDByOrder(ctx, req.OrderID); perr == nil {
 		if rule, rerr := p.requests.RuleForProduct(ctx, pid); rerr == nil && rule != nil {
 			affected, aerr := p.requests.ApplyPostRefundAction(ctx, req.OrderID, rule.PostRefundAction)
-			if aerr == nil {
+			if aerr != nil {
+				p.alertAdmin(ctx, req, "退款后产品操作失败", aerr)
+			} else {
 				evt := plugin.EventServiceSuspended
 				if rule.PostRefundAction == "terminate" {
 					evt = plugin.EventServiceTerminated
@@ -315,7 +341,9 @@ func (p *Plugin) approveFlow(ctx context.Context, req *Request, adminID int64) s
 	if p.cfgBool(ctx, "notifyUserOnResult", true) && p.host.Notify != nil {
 		body := fmt.Sprintf("您对订单 #%d 的退款申请（%s 元）已通过审核并完成退款。%s",
 			req.OrderID, req.Amount, feeNote)
-		_ = p.host.Notify.Notify(ctx, req.UserID, "退款申请已通过", body)
+		if err := p.host.Notify.Notify(ctx, req.UserID, "退款申请已通过", body); err != nil {
+			log.Printf("[refund] 通过结果通知用户失败 req=%d user=%d: %v", req.ID, req.UserID, err)
+		}
 	}
 	// 多渠道机器人通知。
 	notifyMsg := fmt.Sprintf("订单 #%d 的退款申请已通过\n金额：%s 元", req.OrderID, req.Amount)
@@ -324,6 +352,21 @@ func (p *Plugin) approveFlow(ctx context.Context, req *Request, adminID int64) s
 	}
 	p.notifyChannels(ctx, "退款已通过", notifyMsg)
 	return ""
+}
+
+// alertAdmin 退款执行后的"记账失败"统一通道：单条告警，按日去重，确保管理员会看到。
+func (p *Plugin) alertAdmin(ctx context.Context, req *Request, subject string, cause error) {
+	if p.host == nil || p.host.Notify == nil {
+		return
+	}
+	key := fmt.Sprintf("refund_post:%s:%d:%s", subject, req.ID, time.Now().Format("2006-01-02"))
+	body := fmt.Sprintf("退款申请 #%d（订单 #%d，用户 #%d，金额 %s 元）后续处理失败：%s。请人工复核。",
+		req.ID, req.OrderID, req.UserID, req.Amount, cause.Error())
+	if aerr := p.host.Notify.NotifyAdminOnce(ctx, key, "退款复核", subject, body); aerr != nil {
+		// 此时记账已失败 + 告警又发不出去 = 双重静默，必须留日志供人工复核
+		//（与 notifier.go alertChannelOnce 的失败处理保持一致）。
+		log.Printf("[refund] 退款申请 #%d 复核告警发送失败（subject=%s）: %v", req.ID, subject, aerr)
+	}
 }
 
 // ---- 商品退款规则管理 ----
